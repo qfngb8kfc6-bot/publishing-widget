@@ -1,0 +1,52 @@
+/** Sanitized example of the generic response shape expected by the adapter. */
+export const realPublisherSearchFixture = {
+  results: [
+    {
+      id: 'rp-001',
+      headline: 'The infrastructure of a cooler city',
+      standfirst: 'Designers are combining shade, water and materials to make urban life more resilient.',
+      canonical_url: 'https://example-publisher.invalid/articles/infrastructure-of-a-cooler-city',
+      image: { url: 'https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?auto=format&fit=crop&w=900&q=82' },
+      published_at: '2026-09-12',
+      byline: 'Example Reporter',
+      section: { name: 'Climate' },
+      tags: [{ name: 'sustainability' }, { name: 'cities' }],
+      content: 'Urban designers are testing tree canopies, reflective surfaces and public cooling spaces for hotter summers.',
+      audiences: ['curious-reader', 'executive'],
+    },
+    {
+      id: 'rp-002',
+      title: 'Why small models are useful tools',
+      description: 'Compact software systems are giving teams more control over cost, speed and data.',
+      url: 'https://example-publisher.invalid/articles/why-small-models-are-useful',
+      imageUrl: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=82',
+      publishedAt: '2026-09-05',
+      author: { name: 'Example Editor' },
+      categories: ['Technology'],
+      keywords: ['technology', 'software'],
+      snippet: 'Developers are choosing smaller models when local control and predictable performance matter.',
+      audiences: ['developer', 'student'],
+    },
+    {
+      id: 'rp-003',
+      title: 'The repair economy finds a new audience',
+      description: 'Maintenance is moving from the workshop into the strategy of companies that make things.',
+      link: 'https://example-publisher.invalid/articles/repair-economy-new-audience',
+      date: '2026-08-28',
+      section: 'Business',
+      topics: ['sustainability', 'manufacturing'],
+      body: 'Product makers are exploring repair networks and longer warranties as a business and sustainability measure.',
+      audience: ['manufacturer', 'executive'],
+    },
+    {
+      id: 'rp-004',
+      headline: 'A result with partial metadata',
+      canonical_url: 'https://example-publisher.invalid/articles/partial-metadata',
+      category: 'Ideas',
+    },
+    {
+      headline: 'Malformed result without a source id',
+      description: 'This item should be safely ignored by the normalizer.',
+    },
+  ],
+};

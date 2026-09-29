@@ -1,0 +1,92 @@
+import type { BrandingConfig, PublisherConfig, QuestionConfig } from '../core';
+
+export interface PublisherManifestBranding extends Partial<BrandingConfig> {
+  primaryAccent?: string;
+  surfaceTreatment?: BrandingConfig['backgroundTreatment'];
+  borderRadius?: BrandingConfig['radiusPreference'];
+  articleLinkBehavior?: 'same-tab' | 'new-tab';
+}
+
+export interface PublisherManifest {
+  publisherId: string;
+  name: string;
+  enabled: boolean;
+  environment: 'development' | 'staging' | 'production';
+  publisherConfigVersion: string;
+  branding: PublisherManifestBranding;
+  questions: QuestionConfig[];
+  content: {
+    adapterId: string;
+    resultLimit: number;
+    candidateRetrievalLimit: number;
+    searchBehavior?: 'intent' | 'keywords';
+    categoryMappings?: Record<string, string[]>;
+  };
+  results: PublisherConfig['results'];
+  ranking?: {
+    mode: 'deterministic' | 'hybrid';
+    deterministicWeight?: number;
+    semanticWeight?: number;
+  };
+  features?: {
+    aiEnabled?: boolean;
+    explanationsEnabled?: boolean;
+    analyticsEnabled?: boolean;
+  };
+  api?: {
+    baseUrl?: string;
+    searchEndpoint?: string;
+    articleEndpoint?: string;
+    authentication?: 'none' | 'server-proxy';
+    timeoutMs?: number;
+    candidateLimit?: number;
+  };
+  allowedOrigins?: string[];
+}
+
+export function manifestToPublisherConfig(manifest: PublisherManifest): PublisherConfig {
+  const branding = manifest.branding;
+  return {
+    publisherId: manifest.publisherId,
+    publisherName: manifest.name,
+    branding: {
+      primaryColor: branding.primaryAccent ?? branding.primaryColor ?? '#244d3b',
+      secondaryColor: branding.secondaryColor ?? '#e8efe6',
+      fontFamily: branding.fontFamily,
+      launcherText: branding.launcherText ?? 'Find stories for you',
+      widgetTitle: branding.widgetTitle ?? `Your ${manifest.name} guide`,
+      introductoryCopy: branding.introductoryCopy ?? 'Answer two quick questions and we will find relevant stories from this publisher.',
+      radiusPreference: branding.borderRadius ?? branding.radiusPreference,
+      backgroundTreatment: branding.surfaceTreatment ?? branding.backgroundTreatment,
+      logo: branding.logo,
+    },
+    questions: manifest.questions,
+    content: {
+      adapterType: manifest.content.adapterId,
+      resultLimit: manifest.content.resultLimit,
+      candidateRetrievalLimit: manifest.content.candidateRetrievalLimit,
+    },
+    results: {
+      ...manifest.results,
+      openArticleInNewTab: manifest.branding.articleLinkBehavior === 'same-tab' ? false : manifest.results.openArticleInNewTab,
+    },
+  };
+}
+
+export function manifestFromPublisherConfig(config: PublisherConfig): PublisherManifest {
+  return {
+    publisherId: config.publisherId,
+    name: config.publisherName,
+    enabled: true,
+    environment: 'development',
+    publisherConfigVersion: 'legacy',
+    branding: config.branding,
+    questions: config.questions,
+    content: {
+      adapterId: config.content.adapterType,
+      resultLimit: config.content.resultLimit,
+      candidateRetrievalLimit: config.content.candidateRetrievalLimit,
+    },
+    results: config.results,
+  };
+}

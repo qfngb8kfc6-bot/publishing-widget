@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Demo host page for the publisher content discovery widget" />
+    <title>Northstar Journal — Content Discovery Demo</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #172018; background: #f4f5ef; }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      .demo-site { min-height: 100vh; }
+      .demo-nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; max-width: 1180px; margin: 0 auto; padding: 24px 28px; }
+      .demo-brand { font-family: Georgia, serif; font-size: 1.35rem; font-weight: 700; letter-spacing: -.03em; }
+      .demo-nav a { color: #586258; font-size: .85rem; text-decoration: none; }
+      .demo-nav-links { display: flex; gap: 22px; }
+      .demo-hero { max-width: 1180px; margin: 0 auto; padding: 88px 28px 100px; }
+      .demo-kicker { color: #758064; font-size: .76rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+      .demo-hero h1 { max-width: 780px; margin: 18px 0; font-family: Georgia, serif; font-size: clamp(3rem, 8vw, 6.6rem); font-weight: 500; letter-spacing: -.075em; line-height: .92; }
+      .demo-hero p { max-width: 560px; color: #626c63; font-size: 1.12rem; line-height: 1.65; }
+      .demo-story-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; max-width: 1180px; margin: 0 auto; padding: 0 28px 100px; }
+      .demo-story { min-height: 220px; padding: 24px; border: 1px solid #dce0d6; border-radius: 20px; background: rgba(255,255,255,.55); }
+      .demo-story span { color: #7e8d72; font-size: .75rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+      .demo-story h2 { margin: 28px 0 0; font-family: Georgia, serif; font-size: 1.65rem; font-weight: 500; letter-spacing: -.04em; }
+      .demo-preview { position: fixed; z-index: 10; top: 78px; right: 20px; display: flex; flex-wrap: wrap; gap: 6px; max-width: 260px; padding: 10px; border: 1px solid #dce0d6; border-radius: 13px; background: rgba(255,255,255,.84); box-shadow: 0 8px 24px rgba(40,55,42,.08); backdrop-filter: blur(10px); }
+      .demo-preview strong { width: 100%; color: #758064; font-size: .63rem; letter-spacing: .1em; text-transform: uppercase; }
+      .demo-preview a { padding: 5px 7px; border-radius: 7px; color: #536354; background: #f1f4ee; font-size: .68rem; text-decoration: none; }
+      .demo-preview a:hover { color: #172018; background: #e5ece2; }
+      @media (max-width: 720px) { .demo-preview { top: auto; right: 12px; bottom: 12px; max-width: 210px; } }
+      @media (max-width: 720px) { .demo-nav-links { display: none; } .demo-hero { padding-top: 58px; } .demo-story-grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main class="demo-site">
+      <nav class="demo-nav" aria-label="Main navigation">
+        <div class="demo-brand">Northstar Journal</div>
+        <div class="demo-nav-links"><a href="#journal">Journal</a><a href="#ideas">Ideas</a><a href="/analytics?publisher=demo">Analytics</a><a href="#about">About</a></div>
+      </nav>
+      <nav class="demo-preview" aria-label="Development preview states">
+        <strong>Preview states</strong>
+        <a href="?preview=intro">Intro</a><a href="?preview=question-1">Q1</a><a href="?preview=question-2">Q2</a><a href="?preview=progress">Progress</a><a href="?preview=results&ai=mock">Results</a><a href="?preview=empty">Empty</a><a href="?preview=error">Error</a>
+      </nav>
+      <section class="demo-hero" id="journal">
+        <div class="demo-kicker">Independent reporting for a changing world</div>
+        <h1>Ideas with somewhere to go.</h1>
+        <p>Northstar follows the people, technologies and choices shaping what comes next. Open the discovery guide to find a considered starting point.</p>
+      </section>
+      <section class="demo-story-grid" id="ideas" aria-label="Featured sections">
+        <article class="demo-story"><span>Field notes</span><h2>What the next decade is asking of us</h2></article>
+        <article class="demo-story"><span>Making</span><h2>The patient work behind useful things</h2></article>
+        <article class="demo-story"><span>Common ground</span><h2>Small systems, meaningful change</h2></article>
+      </section>
+    </main>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>
