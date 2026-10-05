@@ -10,6 +10,7 @@ export interface RealPublisherProxyConfig {
   tokenHeader?: string;
   timeoutMs?: number;
   allowedOrigins?: string[];
+  allowedQueryParameters?: string[];
 }
 
 /**
@@ -26,12 +27,14 @@ export function createRealPublisherProxy(config: RealPublisherProxyConfig, fetch
     const upstreamPath = isArticleRequest ? config.articleEndpoint?.replace(':id', encodeURIComponent(decodeURIComponent(articleId as string))) : config.searchEndpoint;
     if (!upstreamPath) return Response.json({ error: 'not_configured' }, { status: 503 });
     const upstreamUrl = new URL(/^https?:\/\//i.test(upstreamPath) ? upstreamPath : `${config.upstreamBaseUrl.replace(/\/+$/, '')}/${upstreamPath.replace(/^\/+/, '')}`);
-    incoming.searchParams.forEach((value, key) => upstreamUrl.searchParams.set(key, value));
+    incoming.searchParams.forEach((value, key) => {
+      if (!config.allowedQueryParameters || config.allowedQueryParameters.includes(key)) upstreamUrl.searchParams.set(key, value.slice(0, 500));
+    });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? 8000);
     try {
       const response = await fetchImpl(upstreamUrl, {
-        headers: { Accept: 'application/json', [config.tokenHeader ?? 'Authorization']: `Bearer ${config.apiToken}` },
+        headers: { Accept: 'application/json', 'X-Request-ID': request.headers.get('X-Request-ID') ?? '', [config.tokenHeader ?? 'Authorization']: `Bearer ${config.apiToken}` },
         signal: controller.signal,
       });
       if (!response.ok) {

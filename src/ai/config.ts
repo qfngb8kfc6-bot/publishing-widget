@@ -9,6 +9,7 @@ export interface AIEnvironment {
   AI_RERANK_LIMIT?: string;
   AI_EXPLANATIONS_ENABLED?: string;
   AI_TIMEOUT_MS?: string;
+  AI_MAX_TOKENS?: string;
   AI_DETERMINISTIC_WEIGHT?: string;
   AI_SEMANTIC_WEIGHT?: string;
 }
@@ -21,6 +22,7 @@ export const defaultAIConfig: AIConfig = {
   rerankLimit: 12,
   explanationsEnabled: true,
   timeoutMs: 4500,
+  maxTokens: 900,
   deterministicWeight: 0.7,
   semanticWeight: 0.3,
 };
@@ -45,6 +47,7 @@ export function createAIConfig(environment: AIEnvironment = {}): AIConfig {
     rerankLimit: numberOr(environment.AI_RERANK_LIMIT, defaultAIConfig.rerankLimit, 1),
     explanationsEnabled: environment.AI_EXPLANATIONS_ENABLED !== 'false',
     timeoutMs: numberOr(environment.AI_TIMEOUT_MS, defaultAIConfig.timeoutMs, 1),
+    maxTokens: numberOr(environment.AI_MAX_TOKENS, defaultAIConfig.maxTokens, 1),
     deterministicWeight: deterministicWeight / total,
     semanticWeight: semanticWeight / total,
   };

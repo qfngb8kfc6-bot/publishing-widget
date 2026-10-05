@@ -8,6 +8,7 @@ export interface OpenAICompatibleConfig {
   apiKey: string;
   model: string;
   timeoutMs: number;
+  maxTokens?: number;
 }
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -64,7 +65,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       const response = await this.fetchImpl(this.config.endpoint, {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ model: this.config.model, temperature: 0, max_tokens: 900, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: `BEGIN_REFERENCE_JSON\n${JSON.stringify({ operation, payload })}\nEND_REFERENCE_JSON` }] }),
+        body: JSON.stringify({ model: this.config.model, temperature: 0, max_tokens: Math.min(this.config.maxTokens ?? 900, 1200), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: `BEGIN_REFERENCE_JSON\n${JSON.stringify({ operation, payload })}\nEND_REFERENCE_JSON` }] }),
         signal: controller.signal,
       });
       if (response.status === 429) throw new AIProviderError('rate-limit');

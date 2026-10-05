@@ -317,14 +317,14 @@ export class ContentDiscoveryWidget extends HTMLElement {
     return `<div class="content view-transition"><div class="error" role="alert"><h2>${title}</h2><p>${escapeHtml(this.errorCode === 'invalid-publisher' ? this.errorMessage : 'Please try again in a moment.')}</p>${this.errorCode === 'invalid-publisher' ? '' : '<button class="button" data-action="retry">Try again</button>'}</div></div>`;
   }
 
-  async preview(mode: 'intro' | 'question-1' | 'question-2' | 'progress' | 'results' | 'empty' | 'error'): Promise<void> {
+  async preview(mode: 'intro' | 'question-1' | 'question-2' | 'progress' | 'results' | 'empty' | 'error', scenarioAnswers?: Record<string, AnswerValue>): Promise<void> {
     if (mode === 'intro') { this.state = 'intro'; this.render(); return; }
     if (mode === 'question-1') { this.state = 'questionnaire'; this.step = 0; this.answers = {}; this.render(); return; }
     if (mode === 'question-2') { this.state = 'questionnaire'; this.step = 1; this.answers = { [this.definition?.config.questions[0]?.id ?? 'interest']: 'sustainability' }; this.render(); return; }
     if (mode === 'progress') { this.state = 'analysis'; this.stage = 'searching'; this.render(); return; }
     if (mode === 'empty') { this.state = 'results'; this.results = []; this.render(); return; }
     if (mode === 'error') { this.state = 'error'; this.errorCode = 'api-unavailable'; this.errorMessage = 'preview'; this.render(); return; }
-    this.answers = { [this.definition?.config.questions[0]?.id ?? 'interest']: 'sustainability', [this.definition?.config.questions[1]?.id ?? 'role']: 'manufacturer' };
+    this.answers = scenarioAnswers ?? { [this.definition?.config.questions[0]?.id ?? 'interest']: 'sustainability', [this.definition?.config.questions[1]?.id ?? 'role']: 'manufacturer' };
     await this.runSearch();
   }
 

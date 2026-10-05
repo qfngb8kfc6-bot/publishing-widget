@@ -9,6 +9,7 @@ export interface AIConfig {
   rerankLimit: number;
   explanationsEnabled: boolean;
   timeoutMs: number;
+  maxTokens: number;
   deterministicWeight: number;
   semanticWeight: number;
 }

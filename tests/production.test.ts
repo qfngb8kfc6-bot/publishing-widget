@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest';
+import { createProductionApp } from '../src/server/production';
+import { SlidingWindowRateLimiter } from '../src/server/rate-limit';
+import { originAllowed } from '../src/server/cors';
+import { demoManifest } from '../src/demo/config';
+
+describe('production boundaries', () => {
+  it('serves safe health data and disables mock AI in production', async () => {
+    const app = createProductionApp({ environment: 'production', serverEnvironment: {} });
+    const health = await app.handle(new Request('https://product.example/health'));
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ status: 'ok', environment: 'production', version: '0.5.0' });
+    const ai = await app.handle(new Request('https://product.example/api/ai/intent', { method: 'POST', body: JSON.stringify({ intent: {} }) }));
+    expect(ai.status).toBe(503);
+    const readiness = await app.handle(new Request('https://product.example/ready'));
+    expect(readiness.status).toBe(503);
+    expect(await readiness.json()).toMatchObject({ status: 'not_ready', analyticsStore: 'memory' });
+  });
+
+  it('allows only configured production origins and rejects unapproved publisher requests', async () => {
+    const app = createProductionApp({ environment: 'production', serverEnvironment: { PUBLISHER_REAL_PUBLISHER_ALLOWED_ORIGINS: 'https://approved.example' } });
+    const rejected = await app.handle(new Request('https://product.example/api/publishers/real-publisher/search?q=test', { headers: { Origin: 'https://unapproved.example' } }));
+    expect(rejected.status).toBe(403);
+    const approved = await app.handle(new Request('https://product.example/api/publishers/real-publisher/search?q=test', { headers: { Origin: 'https://approved.example' } }));
+    expect(approved.status).toBe(503);
+    expect(approved.headers.get('Access-Control-Allow-Origin')).toBe('https://approved.example');
+  });
+
+  it('supports localhost in development and rate limits by route scope', () => {
+    expect(originAllowed(demoManifest, 'http://localhost:5173', 'development')).toBe(true);
+    expect(originAllowed(demoManifest, 'https://outside.example', 'production')).toBe(false);
+    const limiter = new SlidingWindowRateLimiter({ limit: 1, windowMs: 1000 });
+    expect(limiter.check('search:demo:client').allowed).toBe(true);
+    expect(limiter.check('search:demo:client').allowed).toBe(false);
+    expect(limiter.check('search:other:client').allowed).toBe(true);
+  });
+
+  it('does not trust forwarding headers unless a proxy is explicitly enabled', async () => {
+    const { requestRateLimitKey } = await import('../src/server/rate-limit');
+    const first = new Request('https://product.example/api', { headers: { 'x-forwarded-for': '198.51.100.1' } });
+    const second = new Request('https://product.example/api', { headers: { 'x-forwarded-for': '198.51.100.2' } });
+    expect(requestRateLimitKey(first, 'ai', 'global')).toBe(requestRateLimitKey(second, 'ai', 'global'));
+    expect(requestRateLimitKey(first, 'ai', 'global', true)).not.toBe(requestRateLimitKey(second, 'ai', 'global', true));
+  });
+});

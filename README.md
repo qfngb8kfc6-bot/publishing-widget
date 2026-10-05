@@ -124,6 +124,7 @@ The server-side configuration supports:
 - `AI_RERANK_LIMIT`
 - `AI_EXPLANATIONS_ENABLED`
 - `AI_TIMEOUT_MS`
+- `AI_MAX_TOKENS`
 - `AI_DETERMINISTIC_WEIGHT`
 - `AI_SEMANTIC_WEIGHT`
 
@@ -165,13 +166,17 @@ For new publishers, use the scalable `PUBLISHER_<PUBLISHER_ID>_<FIELD>` server c
 
 The proxy forwards only sanitized JSON responses and converts upstream failures to product-level status codes. It does not return upstream error bodies, tokens or stack traces.
 
+## Production deployment
+
+Phase 8 adds production activation checks, Postgres migrations and health checks, bounded database pooling, graceful shutdown, readiness, AI cost limits, release checks and a first-publisher launch runbook. Phase 9 adds a commercial demo page, real reader scenarios, sample publisher insights, a lightweight embed explanation and a practical [sales demo guide](/Users/lucadominguez/publishing%20widget/docs/SALES-DEMO.md). See [docs/DEPLOYMENT.md](/Users/lucadominguez/publishing%20widget/docs/DEPLOYMENT.md), [docs/PRODUCTION-CHECKLIST.md](/Users/lucadominguez/publishing%20widget/docs/PRODUCTION-CHECKLIST.md) and [docs/FIRST-PUBLISHER-LAUNCH.md](/Users/lucadominguez/publishing%20widget/docs/FIRST-PUBLISHER-LAUNCH.md).
+
 ## Publisher analytics
 
 Phase 6 adds a first-party analytics layer with versioned events, privacy-safe answer handling, asynchronous batching, tenant-scoped ingestion/storage, derived reports and a development dashboard. Start the seeded dashboard with:
 
 ```text
 /analytics?publisher=demo
-/analytics?publisher=real-publisher&admin=1
+/dashboard?publisher=real-publisher&admin=1
 ```
 
 The dashboard supports overview and funnel metrics, structured interests/personas, article and recommendation-position CTR, deterministic/hybrid measurements, potential content-gap opportunities, archive discovery, UTC date filters and publisher-scoped CSV exports. Raw free-text answers are never stored; only `freeTextUsed: true` is emitted. See [docs/ANALYTICS.md](/Users/lucadominguez/publishing%20widget/docs/ANALYTICS.md) for the event contract, ingestion route, storage boundary, retention extension point and privacy controls.

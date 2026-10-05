@@ -52,6 +52,18 @@ The health command performs a source/fixture/placeholder check without reading o
 
 Supported attributes are `data-publisher`, `data-position="bottom-right|bottom-left"` and development-only `data-debug="true"`. The loader mounts one instance per page and the element exposes `destroy()` for host-controlled teardown. The widget may be mounted programmatically more than once when the host explicitly owns those instances.
 
+## First-publisher checklist
+
+- [ ] Publisher ID, branding, launcher copy and questions approved.
+- [ ] API documentation and server credentials received and stored in the deployment secret manager.
+- [ ] Search pagination, candidate limit, URL/image/date/author/category mappings documented.
+- [ ] Approved production origins added to the manifest/server environment.
+- [ ] Fixture contract, normalization, result links and empty/error states verified.
+- [ ] Analytics enabled/disabled decision and AI mode approved.
+- [ ] Publisher dashboard and scoped exports reviewed.
+- [ ] Standalone embed page verified with the built `widget.js`.
+- [ ] Live `npm run publisher -- publisher-id` check passes in staging.
+
 ## Production readiness checklist
 
 - [ ] Manifest uses the intended publisher id, version and production environment.

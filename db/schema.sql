@@ -1,0 +1,2 @@
+-- Apply migrations in db/migrations/ in order.
+-- Production may use Postgres, Supabase/Postgres, or another SQL-compatible service.
