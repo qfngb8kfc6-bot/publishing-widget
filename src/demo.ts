@@ -3,6 +3,7 @@ import { mountWidget } from './widget/mount';
 import { createMockAIRecommendationLayer } from './ai/recommendation';
 import { renderAnalyticsDashboard } from './analytics-dashboard';
 import { PRODUCT_IDENTITY } from './product';
+import { wireLiveDemoButtons } from './demo/live-demo';
 
 const isDevelopment = import.meta.env.DEV;
 if (isDevelopment) {
@@ -29,12 +30,11 @@ if (window.location.pathname === '/analytics' || window.location.pathname === '/
   if (isDevelopment && params.get('sales') === '1') document.body.classList.add('sales-mode-active');
   if (!isDevelopment || params.get('sales') !== '1') document.querySelector('.sales-mode')?.remove();
   const widget = mountWidget(createPublisherRegistry(), params.get('publisher') ?? 'demo', undefined, document, debug, ai);
-  const openLiveDemo = () => { document.querySelector('#live-demo')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); void widget.preview('intro'); };
+  const openLiveDemo = () => { document.querySelector('#live-demo')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); widget.openWidget(); };
   const preview = isDevelopment ? params.get('preview') as Parameters<typeof widget.preview>[0] | null : null;
   const scenarios: Record<string, Record<string, import('./core').AnswerValue>> = { marine: { interest: 'sustainability', role: 'manufacturer' }, finance: { interest: 'business', role: 'executive' }, technology: { interest: 'technology', role: 'developer' }, science: { interest: 'science', role: 'student' } };
   if (preview) void widget.preview(preview, scenarios[params.get('scenario') ?? ''] as Record<string, import('./core').AnswerValue> | undefined);
   document.querySelectorAll<HTMLButtonElement>('[data-scenario]').forEach((button) => button.addEventListener('click', () => { void widget.preview('results', scenarios[button.dataset.scenario ?? '']); }));
-  document.querySelectorAll<HTMLElement>('[data-live-demo]').forEach((element) => element.addEventListener('click', (event) => { event.preventDefault(); openLiveDemo(); }));
-  document.querySelector<HTMLButtonElement>('[data-open-reader]')?.addEventListener('click', openLiveDemo);
-  document.querySelector<HTMLButtonElement>('[data-demo-reset]')?.addEventListener('click', () => { void widget.preview('intro'); document.querySelector('#experience')?.scrollIntoView({ behavior: 'smooth' }); });
+  wireLiveDemoButtons(document, openLiveDemo);
+  document.querySelector<HTMLButtonElement>('[data-demo-reset]')?.addEventListener('click', () => { widget.openWidget(); document.querySelector('#live-demo')?.scrollIntoView({ behavior: 'smooth' }); });
 }

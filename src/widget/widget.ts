@@ -68,6 +68,11 @@ export class ContentDiscoveryWidget extends HTMLElement {
     if (this.definition && !this.impressionTracked) { this.impressionTracked = true; this.track('widget_impression'); }
   }
 
+  /** Opens the real reader journey for hosts that provide a prominent CTA. */
+  openWidget(): void {
+    this.open();
+  }
+
   destroy(): void {
     this.state = 'closed';
     this.remove();
