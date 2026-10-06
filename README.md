@@ -1,6 +1,6 @@
 # Publisher Content Discovery Widget
 
-Phase 5 foundation for a reusable, multi-tenant content discovery widget. The repository contains the Phase 1 demo, the configurable `real-publisher` adapter, an optional provider-independent AI intelligence layer, typed publisher manifests and onboarding tooling. AI is an enhancement, never the source of publisher articles and never a requirement for serving results.
+Reusable, multi-tenant professional intelligence for publishers. The repository contains a compact company + role embed, hosted generation/report routes, the configurable `real-publisher` adapter, an optional provider-independent AI layer, typed publisher manifests and onboarding tooling. AI is an enhancement, never the source of publisher articles and never a requirement for serving a report.
 
 ## Run locally
 
@@ -30,23 +30,23 @@ The demo page can select a registered adapter without changing widget code:
 ```text
 http://localhost:5173/?publisher=demo
 http://localhost:5173/?publisher=real-publisher&debug=1
-http://localhost:5173/?publisher=demo&ai=mock&debug=1
+http://localhost:5173/?publisher=demo&debug=1
 ```
 
 ## Architecture
 
 The universal layers live under `src/core/`:
 
-- `PublisherConfig` describes branding, questions, content limits and result presentation. Question rendering supports `single-select`, `multi-select` and `free-text` without hard-coding publisher questions.
+- `PublisherConfig` describes publisher branding, content limits and result presentation. Its optional questionnaire schema is retained only for temporary compatibility with older service consumers and historical data.
 - `PublisherAdapter` is the boundary around publisher search APIs. It exposes `search`, optional `getArticle`, and `normalizeArticle`.
 - `NormalizedArticle` is the universal format used by ranking and the UI. The demo adapter converts its raw article shape into this format.
-- `RecommendationService` creates structured intent, retrieves candidates, ranks them, and asks an `ExplanationProvider` for the grounded “Why this matches you” copy.
+- `ProfessionalProfile` and `RetrievalConcepts` are the primary intent model. Hosted generation builds a deterministic foundation, optionally enriches it server-side with the configured AI provider, retrieves candidates, applies deterministic-first hybrid ranking and persists report recommendations with grounded explanations.
 - `rankArticles` is deterministic and provider-free. It scores title, description, category, tags, content snippet, audience/persona and interest matches. The interface can later be replaced or augmented by an embedding/LLM reranker.
 - `AnalyticsClient` receives non-sensitive events with publisher ID, session ID and timestamp. `MemoryAnalytics` is useful in tests; `ConsoleAnalytics` is the Phase 1 default.
 - `DebugSink` is an optional development-only callback. It reports structured intent, the generated publisher request, candidate count, normalized article summaries, scores/signals and final IDs. It is not connected to the production embed.
-- `RecommendationService` optionally receives an `AIRecommendationLayer`. When absent or disabled, its Phase 1 behavior is unchanged. When enabled, it enriches intent, retrieves publisher candidates, preserves deterministic scoring, optionally semantically reranks a shortlist, and generates batched grounded explanations.
+- `RecommendationService` remains a compatibility foundation for older provider consumers. The public embed never invokes it; the hosted report pipeline owns the professional journey and reuses the shared AI provider interfaces directly.
 
-The UI in `src/widget/` is framework-agnostic TypeScript. It handles the launcher, questionnaire, progress stages, result cards, empty/error states, responsive layout, keyboard focus, Escape-to-close and reduced-motion preferences.
+The UI in `src/widget/` is framework-agnostic TypeScript. It handles only the compact launcher, company/role form, validation/error state, responsive layout, keyboard focus, Escape-to-close and reduced-motion preferences. Hosted pages own generation progress and report rendering.
 
 ## Adding a publisher
 
@@ -60,10 +60,10 @@ npm run publisher:embed -- acme-media
 
 Onboarding another publisher requires a manifest/configuration and adapter rather than a widget fork:
 
-1. Create a `PublisherConfig` with its own questions, branding and content limits.
+1. Create a `PublisherManifest` with its own professional briefing branding and content limits.
 2. Implement `PublisherAdapter<RawArticle>` and keep credentials/server-only API calls outside the browser bundle.
 3. Register the pair with a `PublisherRegistry`, alongside an `ExplanationProvider`.
-4. Pass the registry and publisher ID to `mountWidget`.
+4. Pass the registry and publisher ID to `mountWidget`; the embed always collects company website and job role.
 
 `PublisherManifest` adds environment, version, feature, ranking, API and origin metadata. `PublisherRegistry.registerManifest()` validates it and refuses duplicate publisher ids. The `_template` directory is compile-safe but never registered.
 
@@ -71,36 +71,22 @@ For a private publisher API, the adapter should call a server-side proxy. Do not
 
 ## Demo content and behaviour
 
-`src/demo/articles.ts` contains 19 mocked articles with publisher URLs, images, dates, authors, categories, tags and snippets. One hybrid-propulsion story is intentionally a semantic-match fixture: it does not use the exact `sustainability` interest label, but the mock AI provider connects it to related propulsion/decarbonisation concepts. The two demo questions are configuration data in `src/demo/config.ts`.
+`src/demo/articles.ts` contains 19 mocked articles with publisher URLs, images, dates, authors, categories, tags and snippets. The demo scenarios use realistic company + role pairs and run through the same hosted generation/report flow as the public embed.
 
 The result URL is always copied from a normalized article returned by the adapter. The widget does not synthesize article titles or URLs.
 
-## Consumer experience preview
+## Professional briefing experience
 
-Phase 4 keeps the widget framework-agnostic and moves the product experience toward a premium editorial destination rather than a chatbot. The launcher, intro, questions, staged progress view, featured best match, supporting cards, grounded explanation treatment, empty/error states and actions all remain inside the Shadow DOM.
-
-The demo page includes development-only preview links for the major states:
-
-```text
-/?preview=intro
-/?preview=question-1
-/?preview=question-2
-/?preview=progress
-/?preview=results&ai=mock
-/?preview=empty
-/?preview=error
-```
-
-Publisher-controlled radius, background treatment, logo, colors, copy and article-tab behavior are optional configuration values with safe product defaults. The result UI is identical for deterministic and hybrid ranking; only the underlying ranking metadata changes. Mobile uses a viewport-edge results surface with safe-area padding, while desktop expands the results stage into a wider editorial panel.
+The public journey is `company website + job role → hosted generation → persisted report`. Publisher-controlled radius, background treatment, logo, colors and copy are optional configuration values with safe product defaults. Mobile uses a viewport-edge input surface with safe-area padding; desktop presents a compact floating panel.
 
 ## Optional AI intelligence
 
 AI modules live under `src/ai/` and are provider-independent:
 
-- `IntentEnhancer` enriches the deterministic intent with bounded primary themes, related concepts, search terms, entities and exclusions while retaining the original answers and answer-derived persona.
+- `ProfessionalAIProvider` optionally enriches the deterministic company/role profile and its retrieval concepts without changing the submitted company URL, job title or deterministic role function.
 - `RerankingProvider` receives only a shortlist of genuine normalized publisher candidates and returns structured article IDs, semantic scores and concise signals.
-- `AIExplanationProvider` generates explanations in one batch for the final results. `DeterministicExplanationProvider` remains the fallback.
-- `MockAIProvider` is used by `?ai=mock` for local demonstration and tests.
+- `AIExplanationProvider` and the professional report-content method generate grounded explanations and a report summary in one batched request for the final results. Deterministic explanations and summary remain the fallback.
+- `MockAIProvider` is test-only compatibility support and is not activated by the sales or production demo.
 - `HttpAIProvider` is browser-safe and talks only to our own `/api/ai` endpoint. It never receives a provider secret.
 - `OpenAICompatibleProvider` is server-only and can be mounted behind `src/server/ai-proxy.ts`. It is not imported by `widget.js`.
 
@@ -110,7 +96,7 @@ The default hybrid weights are intentionally deterministic-first:
 finalScore = deterministicScore * 0.70 + semanticScore * 0.30
 ```
 
-Scores are clamped to 0–100, rounded to two decimal places, and ties retain deterministic ordering. If intent enrichment, semantic reranking, or AI explanations fail validation, time out, rate-limit, or become unavailable, the service falls back to deterministic behavior. Unknown AI article IDs are discarded before ranking or rendering.
+Scores are clamped to 0–100, rounded to two decimal places, and ties retain deterministic ordering. If profile/retrieval enrichment, semantic reranking, or report content generation fail validation, time out, rate-limit, or become unavailable, the service falls back to deterministic behavior. Unknown AI article IDs are discarded before ranking or rendering.
 
 ### AI configuration
 
@@ -132,17 +118,17 @@ Use `createAIConfig(environment)` with server environment values. Never pass `AI
 
 ### AI request and cost model
 
-One normal hybrid journey makes at most three batched AI operations: one intent-enrichment request, one shortlist reranking request, and one final explanation request. Reranking receives at most `AI_RERANK_LIMIT` candidates and short metadata/snippets rather than full article bodies. Explanations are requested in one batch rather than one call per article. Intent enrichment and article metadata are ready for a future cache abstraction; user-specific explanations are not globally cached.
+One normal professional journey makes at most three batched AI operations: one profile/retrieval enrichment request, one shortlist reranking request, and one final report-content request containing the summary and explanations. Reranking receives at most `AI_RERANK_LIMIT` candidates and short metadata/snippets rather than full article bodies. Explanations are requested in one batch rather than one call per article. Profile enrichment and article metadata are ready for a future cache abstraction; user-specific explanations are not globally cached.
 
 Publisher content is explicitly delimited as untrusted reference data in the server prompt. Article text cannot change instructions, output schema, tools, authentication or article selection. Session IDs, analytics IDs, IP addresses and unnecessary personal data are not sent to AI providers.
 
-To add another provider, implement `AIProvider` (or its `IntentEnhancer`, `RerankingProvider` and `AIExplanationProvider` interfaces), validate its structured responses through `src/ai/validation.ts`, and inject it as an `AIRecommendationLayer`. No widget, publisher adapter, ranking UI or analytics rewrite is required.
+To add another provider, implement `ProfessionalAIProvider` alongside the compatibility `AIProvider` methods, validate its structured responses through `src/ai/validation.ts`, and inject it as an `AIRecommendationLayer`. No widget, publisher adapter, ranking UI or analytics rewrite is required.
 
 ## Real publisher adapter
 
 The first external integration lives under `src/publishers/real-publisher/`:
 
-- `config.ts` contains publisher-facing questions/branding and API transport configuration.
+- `config.ts` contains publisher-facing professional briefing branding and API transport configuration.
 - `adapter.ts` maps structured `Intent` to a GET request, applies a candidate limit and timeout, maps safe HTTP failures to `DiscoveryError`, extracts common response envelopes, and exposes the existing `PublisherAdapter` interface.
 - `normalizer.ts` is the only place that knows raw publisher field names. It accepts common variants such as `headline`/`title`, `standfirst`/`description`, `canonical_url`/`url`, object or string sections, and object or string tags. Articles without an ID, title or URL are skipped rather than invented.
 - `fixtures/search-response.ts` is a sanitized example response used by tests; tests never call the network.
@@ -168,7 +154,7 @@ The proxy forwards only sanitized JSON responses and converts upstream failures 
 
 ## Production deployment
 
-Phase 8 adds production activation checks, Postgres migrations and health checks, bounded database pooling, graceful shutdown, readiness, AI cost limits, release checks and a first-publisher launch runbook. Phase 9 adds a commercial demo page, real reader scenarios, sample publisher insights, a lightweight embed explanation and a practical [sales demo guide](/Users/lucadominguez/publishing%20widget/docs/SALES-DEMO.md). See [docs/DEPLOYMENT.md](/Users/lucadominguez/publishing%20widget/docs/DEPLOYMENT.md), [docs/PRODUCTION-CHECKLIST.md](/Users/lucadominguez/publishing%20widget/docs/PRODUCTION-CHECKLIST.md) and [docs/FIRST-PUBLISHER-LAUNCH.md](/Users/lucadominguez/publishing%20widget/docs/FIRST-PUBLISHER-LAUNCH.md).
+Production includes activation checks, Postgres migrations and health checks, bounded database pooling, graceful shutdown, readiness, AI cost limits, release checks, a professional-intelligence sales demo and a first-publisher launch runbook. See [docs/DEPLOYMENT.md](/Users/lucadominguez/publishing%20widget/docs/DEPLOYMENT.md), [docs/PRODUCTION-CHECKLIST.md](/Users/lucadominguez/publishing%20widget/docs/PRODUCTION-CHECKLIST.md), [docs/FIRST-PUBLISHER-LAUNCH.md](/Users/lucadominguez/publishing%20widget/docs/FIRST-PUBLISHER-LAUNCH.md) and [docs/SALES-DEMO.md](/Users/lucadominguez/publishing%20widget/docs/SALES-DEMO.md).
 
 ## Publisher analytics
 
@@ -179,7 +165,7 @@ Phase 6 adds a first-party analytics layer with versioned events, privacy-safe a
 /dashboard?publisher=real-publisher&admin=1
 ```
 
-The dashboard supports overview and funnel metrics, structured interests/personas, article and recommendation-position CTR, deterministic/hybrid measurements, potential content-gap opportunities, archive discovery, UTC date filters and publisher-scoped CSV exports. Raw free-text answers are never stored; only `freeTextUsed: true` is emitted. See [docs/ANALYTICS.md](/Users/lucadominguez/publishing%20widget/docs/ANALYTICS.md) for the event contract, ingestion route, storage boundary, retention extension point and privacy controls.
+The dashboard supports overview and professional-generation funnel metrics, article and recommendation-position CTR, deterministic/hybrid measurements, potential content-gap opportunities, archive discovery, UTC date filters and publisher-scoped CSV exports. Legacy interest/persona panels remain only for historical questionnaire records; new events never store raw company URLs or job titles. See [docs/ANALYTICS.md](/Users/lucadominguez/publishing%20widget/docs/ANALYTICS.md) for the event contract, ingestion route, storage boundary, retention extension point and privacy controls.
 
 ## Next production steps
 

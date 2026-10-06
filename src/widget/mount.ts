@@ -8,7 +8,7 @@ export type WidgetPosition = 'bottom-right' | 'bottom-left';
 export interface MountOptions {
   position?: WidgetPosition;
   debug?: DebugSink;
-  ai?: AIRecommendationLayer;
+  generationEndpoint?: string;
 }
 
 export function mountWidget(registry: PublisherRegistry, publisherId = 'demo', analytics?: AnalyticsClient, target: Element | Document = document, debug?: DebugSink, ai?: AIRecommendationLayer, options?: MountOptions): ContentDiscoveryWidget {
@@ -19,6 +19,7 @@ export function mountWidget(registry: PublisherRegistry, publisherId = 'demo', a
   }
   element.dataset.publisher = publisherId;
   element.dataset.position = options?.position ?? 'bottom-right';
+  if (options?.generationEndpoint) element.dataset.generationEndpoint = options.generationEndpoint;
   element.configure(registry, analytics, debug, ai);
   const container = target instanceof Document ? (target.body ?? target.documentElement) : target;
   container.appendChild(element);

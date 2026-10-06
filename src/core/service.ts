@@ -26,9 +26,8 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 export class RecommendationService {
   constructor(private readonly definition: PublisherDefinition, private readonly debug?: import('./types').DebugSink, private readonly ai?: AIRecommendationLayer) {}
 
-  async recommend(answers: Intent['answers'], onProgress?: (stage: ProgressStage) => void): Promise<RecommendationResponse> {
+  async recommendIntent(baseIntent: Intent, onProgress?: (stage: ProgressStage) => void): Promise<RecommendationResponse> {
     const { config, adapter, explanationProvider } = this.definition;
-    const baseIntent = buildIntent(config, answers);
     this.debug?.({ type: 'intent', publisherId: config.publisherId, intent: baseIntent });
     onProgress?.('understanding');
     let intent: Intent = baseIntent;
@@ -135,5 +134,10 @@ export class RecommendationService {
     this.debug?.({ type: 'explanation_provider', publisherId: config.publisherId, provider: explanationProviderName, used: aiExplanationUsed });
     this.debug?.({ type: 'ranked_results', publisherId: config.publisherId, results: results.map(({ article, score, relevanceSignals }) => ({ id: article.id, score, relevanceSignals })) });
     return { intent, baseIntent, enrichedIntent, results };
+  }
+
+  /** @deprecated Use recommendIntent() with a professional or adapter-specific intent. */
+  async recommend(answers: Intent['answers'], onProgress?: (stage: ProgressStage) => void): Promise<RecommendationResponse> {
+    return this.recommendIntent(buildIntent(this.definition.config, answers), onProgress);
   }
 }

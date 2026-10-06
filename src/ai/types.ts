@@ -1,4 +1,4 @@
-import type { ExplanationProvider, Intent, NormalizedArticle, RelevanceResult } from '../core';
+import type { CompanyContext, ExplanationProvider, Intent, NormalizedArticle, ProfessionalProfile, RelevanceResult, RoleContext } from '../core';
 
 export interface AIConfig {
   enabled: boolean;
@@ -14,6 +14,7 @@ export interface AIConfig {
   semanticWeight: number;
 }
 
+/** Compatibility retrieval shape for the optional AI reranker; not the persisted professional profile. */
 export interface EnrichedIntent extends Intent {
   baseIntent: Intent;
   primaryThemes: string[];
@@ -47,6 +48,57 @@ export interface AIExplanationResult {
   explanation: string;
 }
 
+export interface ProfessionalProfileEnhancementInput {
+  publisherId: string;
+  submittedCompanyUrl: string;
+  submittedJobTitle: string;
+  company: CompanyContext;
+  role: RoleContext;
+  profile: ProfessionalProfile;
+}
+
+export interface AIProfessionalProfileEnhancement {
+  company?: {
+    industry?: string;
+    description?: string;
+    activities?: string[];
+    productsServices?: string[];
+    technologies?: string[];
+    markets?: string[];
+    themes?: string[];
+  };
+  person?: {
+    function?: string;
+    seniority?: string;
+    responsibilities?: string[];
+    decisionAreas?: string[];
+    technologies?: string[];
+    themes?: string[];
+  };
+  professionalInterests?: string[];
+  likelyInformationNeeds?: string[];
+  relevantEntities?: string[];
+  searchTerms?: string[];
+  semanticQueries?: string[];
+  excludedConcepts?: string[];
+}
+
+export interface ReportContentRequest {
+  publisherId: string;
+  profile: ProfessionalProfile;
+  recommendations: Array<{
+    article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'>;
+    deterministicExplanation: string;
+    relevanceSignals: string[];
+    semanticSignals: string[];
+  }>;
+}
+
+export interface AIReportContent {
+  summary?: string;
+  explanations?: AIExplanationResult[];
+}
+
 export interface IntentEnhancer {
   enhanceIntent(intent: Intent): Promise<unknown>;
 }
@@ -61,6 +113,11 @@ export interface AIExplanationProvider extends ExplanationProvider {
 
 export interface AIProvider extends IntentEnhancer, RerankingProvider, AIExplanationProvider {
   readonly providerName: string;
+}
+
+export interface ProfessionalAIProvider extends AIProvider {
+  enhanceProfessionalProfile(input: ProfessionalProfileEnhancementInput): Promise<unknown>;
+  generateReportContent(input: ReportContentRequest): Promise<unknown>;
 }
 
 export interface AIRecommendationLayer {

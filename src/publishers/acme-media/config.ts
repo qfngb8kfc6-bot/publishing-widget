@@ -6,9 +6,8 @@ export const acmemediaManifest: PublisherManifest = {
   enabled: true,
   environment: 'development',
   publisherConfigVersion: '1',
-  branding: { primaryAccent: '#244d3b', secondaryColor: '#e8efe6', launcherText: 'Find stories for you', widgetTitle: 'Your reading guide', introductoryCopy: 'Answer a few quick questions and we will find relevant stories.' },
-  questions: [{ id: 'interest', question: 'What are you interested in?', type: 'free-text', required: true }],
-  content: { adapterId: 'acme-media-api', resultLimit: 8, candidateRetrievalLimit: 30, searchBehavior: 'intent' },
-  results: { heading: 'Stories selected for you', maximumRecommendations: 8, openArticleInNewTab: true },
+  branding: { primaryAccent: '#244d3b', secondaryColor: '#e8efe6', launcherText: 'Open professional briefing', widgetTitle: 'Build your publisher briefing', introductoryCopy: 'Tell us where you work and what you do. We will build a briefing from the publisher archive.' },
+  content: { adapterId: 'acme-media-api', resultLimit: 8, candidateRetrievalLimit: 30, searchBehavior: 'keywords' },
+  results: { heading: 'Your professional briefing', maximumRecommendations: 8, openArticleInNewTab: true },
   features: { analyticsEnabled: true, explanationsEnabled: true, aiEnabled: false },
 };

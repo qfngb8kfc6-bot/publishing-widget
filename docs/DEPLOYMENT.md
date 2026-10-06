@@ -50,12 +50,16 @@ Never pass API keys through Vite, `PublisherManifest`, browser configuration, an
 - `POST /api/ai/intent`, `/api/ai/rerank`, `/api/ai/explain` proxy enabled AI operations.
 - `POST /api/analytics/events` validates and stores safe events.
 - `GET /api/analytics/:publisherId/overview` returns a publisher-scoped report.
+- `POST /api/reports/generate` creates a tenant-scoped professional briefing.
+- `GET /api/generations/:id/status` provides the async-compatible generation boundary.
+- `GET /api/reports/:id` reloads a persisted report without regeneration.
+- Hosted routes `/p/:publisherId/generate/:generationId` and `/p/:publisherId/:reportId` render the branded generation/report experience.
 
 All public API requests receive request IDs, security headers and route-class rate limits. Production CORS requires an exact configured publisher origin; unrestricted `*` access is not used. Localhost origins are accepted only in development/test modes.
 
 ## Database and retention
 
-Apply migrations in order before enabling production analytics. The event table is indexed by publisher/time, publisher/event and publisher/article. Raw events and derived daily/article/topic aggregates should receive separate retention policies later; no automated deletion job is included in this phase.
+Apply migrations in order before enabling production analytics and reports. Migration `002_reports.sql` adds tenant-scoped reports and recommendations with JSONB versioned profile/retrieval data. The event table is indexed by publisher/time, publisher/event and publisher/article. Raw events and derived daily/article/topic aggregates should receive separate retention policies later; no automated deletion job is included in this phase.
 
 ## Static caching and rollback
 

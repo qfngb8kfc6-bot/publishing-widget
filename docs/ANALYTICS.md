@@ -4,13 +4,13 @@ Phase 6 adds first-party, multi-tenant product analytics without cookies or cros
 
 ## Event contract
 
-Events have `eventId`, `schemaVersion`, `name`, `timestamp`, `publisherId`, `sessionId`, `widgetVersion`, `publisherConfigVersion` and an allowlisted primitive metadata object. Supported events include widget impressions/open/close, intro views, answers, search start/completion/failure, result impressions, article clicks, answer changes and restarts.
+Events have `eventId`, `schemaVersion`, `name`, `timestamp`, `publisherId`, `sessionId`, `widgetVersion`, `publisherConfigVersion` and an allowlisted primitive metadata object. The primary funnel is widget impression/open → company and role entered → report requested/generation started → profile and retrieval milestones → report generated/viewed → story impression/click. `question_answered`, `search_*`, `result_impression`, `change_answers` and `restart_clicked` remain accepted only for historical questionnaire records.
 
-The widget sends events to `POST /api/analytics/events` through `BatchingAnalyticsClient`. Events are queued, flushed periodically, and flushed immediately for article clicks, completed/failed searches and page visibility changes. Delivery is best effort; a failed request never blocks recommendations or article navigation.
+The embed sends events to `POST /api/analytics/events` through `BatchingAnalyticsClient`. Events are queued, flushed periodically, and flushed immediately for story clicks, generated reports, failures and page visibility changes. Delivery is best effort; a failed request never blocks generation or hosted report navigation.
 
 ## Privacy
 
-Selectable answers are represented by configured option IDs and question kind. Free-text questions emit only `freeTextUsed: true` and never store the answer, label, prompt, or a derived raw phrase. The ingestion validator rejects unknown metadata keys and rejects answer values on free-text events. Session IDs are product-session identifiers; the system does not fingerprint users, set third-party cookies, or combine unrelated browsing data.
+Company and role events emit only bounded classification metadata; raw company URLs and job titles are not analytics metadata. Historical selectable answers are represented by configured option IDs and question kind. Free-text questionnaire events emit only `freeTextUsed: true` and never store the answer, label, prompt, or a derived raw phrase. Session IDs are product-session identifiers; the system does not fingerprint users, set third-party cookies, or combine unrelated browsing data.
 
 Publishers can disable analytics with `manifest.features.analyticsEnabled: false`. The existing abstraction also supports a future consent-gated client or an essential-only event policy without changing widget behavior.
 
@@ -24,11 +24,11 @@ Every storage query requires `publisherId`, and the ingestion route can enforce 
 
 ## Dashboard
 
-Open the development dashboard at `/analytics?publisher=demo`. It includes today/7-day/30-day/custom UTC date ranges, overview metrics, funnel, daily usage, structured interests, personas, article and position CTR, deterministic/hybrid segmentation, potential content gaps, archive discovery, session metrics and CSV exports. Add `&admin=1` for the development-only internal aggregate view.
+Open the development dashboard at `/analytics?publisher=demo`. It includes today/7-day/30-day/custom UTC date ranges, overview metrics, professional generation funnel, daily usage, article and position CTR, deterministic/hybrid segmentation, potential content gaps, archive discovery, session metrics and CSV exports. Add `&admin=1` for the development-only internal aggregate view. Legacy interest/persona panels are retained only while historical questionnaire events are still in the store.
 
-The dashboard states measurements factually. Small samples are not labelled as statistically better or worse ranking systems. Potential content gaps are heuristic opportunities based on interest share, result availability and click rate, not definitive editorial instructions.
+The dashboard states measurements factually. Small samples are not labelled as statistically better or worse ranking systems. Potential content gaps are heuristic opportunities based on professional demand, result availability and click rate, not definitive editorial instructions.
 
-CSV exports are publisher-scoped and include daily metrics, interests, top recommended articles and top clicked articles. The browser export is generated from the already scoped report.
+CSV exports are publisher-scoped and include daily metrics, a legacy interest export for historical data, top recommended articles and top clicked articles. The browser export is generated from the already scoped report.
 
 ## Production work remaining
 

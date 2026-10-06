@@ -9,7 +9,7 @@ describe('analytics dashboard', () => {
     document.body.append(root);
     await renderAnalyticsDashboard(root, await createSeedAnalyticsStore());
     expect(root.textContent).toContain('Discovery, measured.');
-    expect(root.textContent).toContain('Top interests');
+    expect(root.textContent).toContain('Professional funnel');
     expect(root.querySelectorAll('[data-export]').length).toBe(4);
     expect(root.querySelector('table')).not.toBeNull();
   });

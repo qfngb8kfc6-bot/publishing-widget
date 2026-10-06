@@ -15,12 +15,6 @@ function stringValue(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function nested(recordValue: UnknownRecord, key: string): unknown {
-  const value = recordValue[key];
-  const nestedRecord = record(value);
-  return nestedRecord?.name ?? nestedRecord?.label ?? nestedRecord?.value ?? value;
-}
-
 function stringList(value: unknown): string[] {
   const objectValue = record(value);
   if (objectValue) {
@@ -57,10 +51,14 @@ export function normalizeRealPublisherArticle(raw: unknown, publisherId = 'real-
     url,
     imageUrl: imageValue(article.imageUrl ?? article.image_url ?? article.image ?? article.thumbnail),
     publishedAt: stringValue(article.publishedAt, article.published_at, article.publishDate, article.date),
+    updatedAt: stringValue(article.updatedAt, article.updated_at, article.modifiedAt, article.modified_at),
     author: stringValue(article.author, article.byline, article.authorName, author?.name),
     categories: stringList(article.categories ?? article.category ?? article.section ?? article.sections),
     tags: stringList(article.tags ?? article.keywords ?? article.topics),
     contentSnippet: stringValue(article.contentSnippet, article.content_snippet, article.snippet, article.body, article.content),
+    body: stringValue(article.body, article.content),
+    summary: stringValue(article.summary, article.description, article.dek, article.excerpt),
+    contentType: stringValue(article.contentType, article.content_type, article.type),
     publisherId,
     audiences: stringList(article.audiences ?? article.audience ?? article.personas),
     provenance: { publisherId, sourceArticleId: id, sourceUrl, retrievalSource },

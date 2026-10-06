@@ -33,7 +33,8 @@ export interface PublisherConfig {
   publisherId: string;
   publisherName: string;
   branding: BrandingConfig;
-  questions: QuestionConfig[];
+  /** Legacy questionnaire schema retained only for existing adapter/config consumers. */
+  questions?: QuestionConfig[];
   content: {
     adapterType: string;
     resultLimit: number;
@@ -58,6 +59,11 @@ export interface NormalizedArticle {
   categories: string[];
   tags: string[];
   contentSnippet?: string;
+  body?: string;
+  summary?: string;
+  updatedAt?: string;
+  contentType?: string;
+  metadata?: Record<string, string | number | boolean>;
   publisherId: string;
   audiences?: string[];
   provenance?: ArticleProvenance;
@@ -141,7 +147,26 @@ export type AnalyticsEventName =
   | 'change_answers'
   | 'restart_clicked'
   | 'widget_closed'
-  | 'search_failed';
+  | 'search_failed'
+  | 'company_entered'
+  | 'role_entered'
+  | 'report_requested'
+  | 'generation_started'
+  | 'company_analysis_started'
+  | 'company_analysis_completed'
+  | 'role_analysis_completed'
+  | 'profile_generated'
+  | 'retrieval_started'
+  | 'retrieval_completed'
+  | 'ranking_completed'
+  | 'report_generated'
+  | 'report_viewed'
+  | 'story_impression'
+  | 'story_clicked'
+  | 'profile_edit_clicked'
+  | 'report_shared'
+  | 'report_saved'
+  | 'cta_clicked';
 
 export type AnalyticsMetadataValue = string | number | boolean;
 export type AnalyticsMetadata = Record<string, AnalyticsMetadataValue>;

@@ -5,6 +5,18 @@ export interface PublisherManifestBranding extends Partial<BrandingConfig> {
   surfaceTreatment?: BrandingConfig['backgroundTreatment'];
   borderRadius?: BrandingConfig['radiusPreference'];
   articleLinkBehavior?: 'same-tab' | 'new-tab';
+  loading?: PublisherExperienceBranding;
+  report?: PublisherExperienceBranding;
+}
+
+export interface PublisherExperienceBranding {
+  desktopBackgroundImage?: string;
+  mobileBackgroundImage?: string;
+  backgroundFallback?: string;
+  overlay?: string;
+  overlayOpacity?: number;
+  textColor?: string;
+  logo?: string;
 }
 
 export interface PublisherManifest {
@@ -14,7 +26,8 @@ export interface PublisherManifest {
   environment: 'development' | 'staging' | 'production';
   publisherConfigVersion: string;
   branding: PublisherManifestBranding;
-  questions: QuestionConfig[];
+  /** Legacy questionnaire schema. New publisher experiences use company + role. */
+  questions?: QuestionConfig[];
   content: {
     adapterId: string;
     resultLimit: number;
@@ -42,6 +55,11 @@ export interface PublisherManifest {
     candidateLimit?: number;
   };
   allowedOrigins?: string[];
+  reportSections?: string[];
+  primaryCTA?: string;
+  termsUrl?: string;
+  privacyUrl?: string;
+  poweredBy?: boolean;
 }
 
 export function manifestToPublisherConfig(manifest: PublisherManifest): PublisherConfig {
@@ -53,9 +71,9 @@ export function manifestToPublisherConfig(manifest: PublisherManifest): Publishe
       primaryColor: branding.primaryAccent ?? branding.primaryColor ?? '#244d3b',
       secondaryColor: branding.secondaryColor ?? '#e8efe6',
       fontFamily: branding.fontFamily,
-      launcherText: branding.launcherText ?? 'Find stories for you',
-      widgetTitle: branding.widgetTitle ?? `Your ${manifest.name} guide`,
-      introductoryCopy: branding.introductoryCopy ?? 'Answer two quick questions and we will find relevant stories from this publisher.',
+      launcherText: branding.launcherText ?? 'Open professional briefing',
+      widgetTitle: branding.widgetTitle ?? `Build your ${manifest.name} briefing`,
+      introductoryCopy: branding.introductoryCopy ?? 'Tell us where you work and what you do. We will build a briefing from this publisher’s coverage.',
       radiusPreference: branding.borderRadius ?? branding.radiusPreference,
       backgroundTreatment: branding.surfaceTreatment ?? branding.backgroundTreatment,
       logo: branding.logo,

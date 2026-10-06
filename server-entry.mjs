@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import { createProductionApp, PostgresAnalyticsStore } from './dist/server.mjs';
+import { createProductionApp, PostgresAnalyticsStore, PostgresReportStore } from './dist/server.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'dist');
 const port = Number(process.env.PORT || 8787);
@@ -17,7 +17,7 @@ function numberEnv(name, fallback) {
 }
 
 async function createAnalyticsStore() {
-  if (!process.env.DATABASE_URL) return { store: undefined, mode: 'memory' };
+  if (!process.env.DATABASE_URL) return { store: undefined, reportStore: undefined, mode: 'memory' };
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     max: numberEnv('DB_POOL_MAX', 10),
@@ -27,7 +27,7 @@ async function createAnalyticsStore() {
   });
   try {
     await pool.query('SELECT 1');
-    return { store: new PostgresAnalyticsStore(pool), mode: 'postgres' };
+    return { store: new PostgresAnalyticsStore(pool), reportStore: new PostgresReportStore(pool), mode: 'postgres' };
   } catch (error) {
     await pool.end();
     throw error;
@@ -45,7 +45,7 @@ function contentType(filePath) {
 async function staticResponse(request) {
   const url = new URL(request.url, 'http://localhost');
   if (request.method !== 'GET' && request.method !== 'HEAD') return null;
-  const pathname = url.pathname === '/' || url.pathname === '/analytics' || url.pathname === '/dashboard' ? '/index.html' : url.pathname;
+  const pathname = url.pathname === '/' || url.pathname === '/analytics' || url.pathname === '/dashboard' || /^\/p\/[^/]+(?:\/.*)?$/.test(url.pathname) ? '/index.html' : url.pathname;
   const candidate = path.resolve(root, `.${pathname}`);
   if (!candidate.startsWith(`${root}${path.sep}`)) return new Response('Not found', { status: 404 });
   try {
@@ -59,14 +59,15 @@ async function staticResponse(request) {
 async function start() {
   let analyticsStore;
   let analyticsStoreMode;
+  let reportStore;
   try {
-    ({ store: analyticsStore, mode: analyticsStoreMode } = await createAnalyticsStore());
+    ({ store: analyticsStore, reportStore, mode: analyticsStoreMode } = await createAnalyticsStore());
   } catch (error) {
     console.error(`[publisher-widget] database startup failed: ${error instanceof Error ? error.name : 'unknown'}`);
     process.exitCode = 1;
     return;
   }
-  const app = createProductionApp({ environment, serverEnvironment: process.env, analyticsStore, analyticsStoreMode, trustedProxy: process.env.TRUSTED_PROXY === 'true', commitSha });
+  const app = createProductionApp({ environment, serverEnvironment: process.env, analyticsStore, reportStore, analyticsStoreMode, trustedProxy: process.env.TRUSTED_PROXY === 'true', commitSha });
   const server = createServer(async (incoming, outgoing) => {
   const protocol = incoming.headers['x-forwarded-proto'] || 'http';
   const host = incoming.headers.host || `localhost:${port}`;

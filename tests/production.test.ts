@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createProductionApp } from '../src/server/production';
+import { createProductionApp, runConfiguredAIHealthCheck } from '../src/server/production';
 import { SlidingWindowRateLimiter } from '../src/server/rate-limit';
 import { originAllowed } from '../src/server/cors';
 import { demoManifest } from '../src/demo/config';
@@ -26,6 +26,15 @@ describe('production boundaries', () => {
     expect(approved.headers.get('Access-Control-Allow-Origin')).toBe('https://approved.example');
   });
 
+  it('applies tenant origin checks to hosted report reads', async () => {
+    const app = createProductionApp({ environment: 'production', serverEnvironment: { PUBLISHER_DEMO_ALLOWED_ORIGINS: 'https://approved.example' } });
+    const rejected = await app.handle(new Request('https://product.example/api/reports/missing-report?publisherId=demo', { headers: { Origin: 'https://unapproved.example' } }));
+    expect(rejected.status).toBe(403);
+    const approved = await app.handle(new Request('https://product.example/api/reports/missing-report?publisherId=demo', { headers: { Origin: 'https://approved.example' } }));
+    expect(approved.status).toBe(404);
+    expect(approved.headers.get('Access-Control-Allow-Origin')).toBe('https://approved.example');
+  });
+
   it('supports localhost in development and rate limits by route scope', () => {
     expect(originAllowed(demoManifest, 'http://localhost:5173', 'development')).toBe(true);
     expect(originAllowed(demoManifest, 'https://outside.example', 'production')).toBe(false);
@@ -41,5 +50,15 @@ describe('production boundaries', () => {
     const second = new Request('https://product.example/api', { headers: { 'x-forwarded-for': '198.51.100.2' } });
     expect(requestRateLimitKey(first, 'ai', 'global')).toBe(requestRateLimitKey(second, 'ai', 'global'));
     expect(requestRateLimitKey(first, 'ai', 'global', true)).not.toBe(requestRateLimitKey(second, 'ai', 'global', true));
+  });
+
+  it('checks the professional profile AI contract without exposing the server key', async () => {
+    let requestBody = '';
+    const result = await runConfiguredAIHealthCheck({ AI_ENABLED: 'true', AI_PROVIDER: 'openai-compatible', AI_API_KEY: 'server-only-health-key', AI_MODEL: 'test-model', AI_ENDPOINT: 'https://ai.example.test/chat/completions' }, async (_input, init) => {
+      requestBody = String(init?.body ?? '');
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ company: { themes: ['technology'] }, person: { seniority: 'professional' }, professionalInterests: ['technology'], likelyInformationNeeds: ['technology developments'], relevantEntities: [], searchTerms: ['technology'], semanticQueries: ['technology developments'], excludedConcepts: [] }) } }] }), { status: 200 });
+    });
+    expect(result).toEqual({ status: 'ok', provider: 'openai-compatible' });
+    expect(requestBody).not.toContain('server-only-health-key');
   });
 });

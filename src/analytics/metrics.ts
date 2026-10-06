@@ -31,6 +31,13 @@ function metadata(event: StoredAnalyticsEvent, key: string): string { const valu
 function numberMetadata(event: StoredAnalyticsEvent, key: string): number { const value = event.metadata?.[key]; return typeof value === 'number' ? value : Number(value) || 0; }
 function uniqueSessions(events: StoredAnalyticsEvent[], name: StoredAnalyticsEvent['name']): Set<string> { return new Set(events.filter((event) => event.name === name).map((event) => event.sessionId)); }
 function rank<T extends { count: number }>(items: T[], limit = 8): T[] { return items.sort((a, b) => b.count - a.count).slice(0, limit); }
+const clickEvents = new Set<StoredAnalyticsEvent['name']>(['article_clicked', 'story_clicked']);
+const impressionEvents = new Set<StoredAnalyticsEvent['name']>(['result_impression', 'story_impression']);
+function isClick(event: StoredAnalyticsEvent): boolean { return clickEvents.has(event.name); }
+function isImpression(event: StoredAnalyticsEvent): boolean { return impressionEvents.has(event.name); }
+function completionEvents(events: StoredAnalyticsEvent[]): StoredAnalyticsEvent[] {
+  return [...new Map(events.filter((event) => event.name === 'search_completed' || event.name === 'report_generated').map((event) => [event.sessionId, event])).values()];
+}
 
 function dimension(events: StoredAnalyticsEvent[], questionKind: string): CountMetric[] {
   const counts = new Map<string, number>();
@@ -44,11 +51,11 @@ function dimension(events: StoredAnalyticsEvent[], questionKind: string): CountM
 
 function articleMetrics(events: StoredAnalyticsEvent[]): ArticleMetric[] {
   const byArticle = new Map<string, ArticleMetric>();
-  events.filter((event) => event.name === 'result_impression' || event.name === 'article_clicked').forEach((event) => {
+  events.filter((event) => isImpression(event) || isClick(event)).forEach((event) => {
     const articleId = metadata(event, 'articleId');
     if (!articleId) return;
     const current = byArticle.get(articleId) ?? { articleId, title: metadata(event, 'articleTitle') || articleId, category: metadata(event, 'articleCategory') || 'Story', publishedAt: metadata(event, 'articlePublishedAt') || undefined, impressions: 0, clicks: 0, ctr: 0 };
-    if (event.name === 'result_impression') current.impressions += 1;
+    if (isImpression(event)) current.impressions += 1;
     else current.clicks += 1;
     current.title = current.title === articleId ? metadata(event, 'articleTitle') || current.title : current.title;
     current.category = current.category === 'Story' ? metadata(event, 'articleCategory') || current.category : current.category;
@@ -63,28 +70,28 @@ export function buildAnalyticsReport(events: StoredAnalyticsEvent[], publisherId
   const scoped = events.filter((event) => event.publisherId === publisherId && (!range || (Date.parse(event.timestamp) >= Date.parse(range.from) && Date.parse(event.timestamp) <= Date.parse(range.to))));
   const impressions = uniqueSessions(scoped, 'widget_impression').size;
   const opens = uniqueSessions(scoped, 'widget_opened').size;
-  const searches = uniqueSessions(scoped, 'search_completed').size;
-  const clicks = scoped.filter((event) => event.name === 'article_clicked').length;
-  const searchEvents = scoped.filter((event) => event.name === 'search_completed');
+  const searchEvents = completionEvents(scoped);
+  const searches = searchEvents.length;
+  const clicks = scoped.filter(isClick).length;
   const averageRecommendationsShown = searchEvents.length ? Math.round((searchEvents.reduce((sum, event) => sum + numberMetadata(event, 'resultCount'), 0) / searchEvents.length) * 10) / 10 : 0;
-  const funnelCounts = [impressions, opens, searches, new Set(scoped.filter((event) => event.name === 'article_clicked').map((event) => event.sessionId)).size];
-  const funnelNames = ['Widget seen', 'Widget opened', 'Results shown', 'Article clicked'];
+  const funnelCounts = [impressions, opens, searches, new Set(scoped.filter(isClick).map((event) => event.sessionId)).size];
+  const funnelNames = ['Widget seen', 'Widget opened', 'Briefing generated', 'Story clicked'];
   const articles = articleMetrics(scoped);
   const positions = new Map<number, PositionMetric>();
-  scoped.filter((event) => event.name === 'result_impression' || event.name === 'article_clicked').forEach((event) => {
+  scoped.filter((event) => isImpression(event) || isClick(event)).forEach((event) => {
     const position = numberMetadata(event, 'articlePosition');
     if (!position) return;
     const metric = positions.get(position) ?? { position, impressions: 0, clicks: 0, ctr: 0 };
-    if (event.name === 'result_impression') metric.impressions += 1; else metric.clicks += 1;
+    if (isImpression(event)) metric.impressions += 1; else metric.clicks += 1;
     metric.ctr = percent(metric.clicks, metric.impressions);
     positions.set(position, metric);
   });
   const ranking = new Map<string, RankingMetric>();
-  scoped.filter((event) => event.name === 'search_completed').forEach((event) => {
+  searchEvents.forEach((event) => {
     const mode = metadata(event, 'rankingMode') || 'deterministic';
     const metric = ranking.get(mode) ?? { mode, searches: 0, clicks: 0, ctr: 0 };
     metric.searches += 1;
-    const sessionClicks = scoped.filter((candidate) => candidate.name === 'article_clicked' && candidate.sessionId === event.sessionId).length;
+    const sessionClicks = scoped.filter((candidate) => candidate.sessionId === event.sessionId && isClick(candidate)).length;
     metric.clicks += sessionClicks;
     metric.ctr = percent(metric.clicks, metric.searches);
     ranking.set(mode, metric);
@@ -95,8 +102,8 @@ export function buildAnalyticsReport(events: StoredAnalyticsEvent[], publisherId
     const day = dailyMap.get(date) ?? { date, impressions: 0, opens: 0, searches: 0, clicks: 0 };
     if (event.name === 'widget_impression') day.impressions += 1;
     if (event.name === 'widget_opened') day.opens += 1;
-    if (event.name === 'search_completed') day.searches += 1;
-    if (event.name === 'article_clicked') day.clicks += 1;
+    if (event.name === 'search_completed' || event.name === 'report_generated') day.searches += 1;
+    if (isClick(event)) day.clicks += 1;
     dailyMap.set(date, day);
   });
   const interestSearches = new Map<string, { sessions: Set<string>; results: number; clicks: number }>();
@@ -105,12 +112,12 @@ export function buildAnalyticsReport(events: StoredAnalyticsEvent[], publisherId
     const interest = metadata(event, 'answerOptionId') || metadata(event, 'answerOptionIds');
     if (interest) sessionInterest.set(event.sessionId, interest.split(',')[0]);
   });
-  scoped.filter((event) => event.name === 'search_completed').forEach((event) => {
+  searchEvents.forEach((event) => {
     const interest = sessionInterest.get(event.sessionId);
     if (!interest) return;
     const current = interestSearches.get(interest) ?? { sessions: new Set<string>(), results: 0, clicks: 0 };
     current.sessions.add(event.sessionId); current.results += numberMetadata(event, 'resultCount');
-    current.clicks += scoped.filter((candidate) => candidate.name === 'article_clicked' && candidate.sessionId === event.sessionId).length;
+    current.clicks += scoped.filter((candidate) => candidate.sessionId === event.sessionId && isClick(candidate)).length;
     interestSearches.set(interest, current);
   });
   const totalInterestSearches = [...interestSearches.values()].reduce((sum, item) => sum + item.sessions.size, 0);
@@ -136,7 +143,7 @@ export function buildAnalyticsReport(events: StoredAnalyticsEvent[], publisherId
     daily: [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
     contentGaps,
     archiveInsights,
-    sessions: { total: sessionIds.size, resultsViewed: new Set(scoped.filter((event) => event.name === 'result_impression').map((event) => event.sessionId)).size, articlesClicked: new Set(scoped.filter((event) => event.name === 'article_clicked').map((event) => event.sessionId)).size, answersChanged: new Set(scoped.filter((event) => event.name === 'change_answers').map((event) => event.sessionId)).size, restarted: new Set(scoped.filter((event) => event.name === 'restart_clicked').map((event) => event.sessionId)).size },
+    sessions: { total: sessionIds.size, resultsViewed: new Set(scoped.filter(isImpression).map((event) => event.sessionId)).size, articlesClicked: new Set(scoped.filter(isClick).map((event) => event.sessionId)).size, answersChanged: new Set(scoped.filter((event) => event.name === 'change_answers').map((event) => event.sessionId)).size, restarted: new Set(scoped.filter((event) => event.name === 'restart_clicked').map((event) => event.sessionId)).size },
   };
 }
 

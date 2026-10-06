@@ -53,6 +53,22 @@ describe('publisher analytics', () => {
     expect(report.positionPerformance[0]).toMatchObject({ position: 1, impressions: 1, clicks: 1, ctr: 100 });
   });
 
+  it('measures the professional generation and hosted story funnel', () => {
+    const report = buildAnalyticsReport([
+      event('widget_impression', 'demo', 'professional-1', '2026-09-20T10:00:00.000Z'),
+      event('widget_opened', 'demo', 'professional-1', '2026-09-20T10:01:00.000Z'),
+      event('company_entered', 'demo', 'professional-1', '2026-09-20T10:02:00.000Z', { industry: 'marine' }),
+      event('role_entered', 'demo', 'professional-1', '2026-09-20T10:03:00.000Z', { roleFunction: 'operations' }),
+      event('report_generated', 'demo', 'professional-1', '2026-09-20T10:04:00.000Z', { reportId: 'report-1', resultCount: 2, rankingMode: 'deterministic' }),
+      event('story_impression', 'demo', 'professional-1', '2026-09-20T10:05:00.000Z', { articleId: 'story-1', articleTitle: 'Story', articleCategory: 'Marine', articlePosition: 1 }),
+      event('story_clicked', 'demo', 'professional-1', '2026-09-20T10:06:00.000Z', { articleId: 'story-1', articleTitle: 'Story', articleCategory: 'Marine', articlePosition: 1 }),
+    ], 'demo');
+    expect(report.overview.searchesCompleted).toBe(1);
+    expect(report.overview.articleClicks).toBe(1);
+    expect(report.funnel.map((stage) => stage.count)).toEqual([1, 1, 1, 1]);
+    expect(report.topRecommendedArticles[0]).toMatchObject({ articleId: 'story-1', impressions: 1, clicks: 1 });
+  });
+
   it('supports date presets, CSV exports, and non-blocking failed delivery', async () => {
     const range = dateRangeForPreset('7d', new Date('2026-09-28T12:00:00.000Z'));
     expect(range.from).toContain('2026-09-22');

@@ -8,7 +8,7 @@ export interface BatchingAnalyticsOptions {
   sendBeacon?: (url: string, data: BodyInit | null) => boolean;
 }
 
-const IMPORTANT_EVENTS = new Set<AnalyticsEvent['name']>(['article_clicked', 'search_completed', 'search_failed', 'widget_closed']);
+const IMPORTANT_EVENTS = new Set<AnalyticsEvent['name']>(['article_clicked', 'story_clicked', 'report_generated', 'search_completed', 'search_failed', 'widget_closed']);
 
 /** Browser-safe, non-blocking delivery to the first-party analytics endpoint. */
 export class BatchingAnalyticsClient implements AnalyticsClient {

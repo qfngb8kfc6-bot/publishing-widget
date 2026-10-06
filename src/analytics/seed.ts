@@ -30,24 +30,31 @@ export async function createSeedAnalyticsStore(): Promise<MemoryAnalyticsStore> 
         const session = `${publisher.id}-seed-${day}-${index}`;
         const date = new Date(Date.UTC(2026, 8, 1 + day, 9 + index, 15));
         const timestamp = (offset: number) => new Date(date.getTime() + offset * 1000).toISOString();
-        const interest = index % 3 === 0 ? 'sustainability' : index % 3 === 1 ? 'technology' : 'business';
-        const persona = index % 2 === 0 ? 'manufacturer' : 'executive';
+        const industry = index % 3 === 0 ? 'marine' : index % 3 === 1 ? 'technology' : 'finance';
+        const roleFunction = index % 2 === 0 ? 'operations' : 'leadership';
         const mode = index % 3 === 0 ? 'hybrid' : 'deterministic';
         const article = publisher.articles[(day + index) % publisher.articles.length];
         events.push(seededEvent('widget_impression', publisher.id, session, timestamp(0)));
         if (index !== 3 || day % 4 !== 0) events.push(seededEvent('widget_opened', publisher.id, session, timestamp(4)));
         events.push(seededEvent('intro_viewed', publisher.id, session, timestamp(5)));
-        events.push(seededEvent('question_answered', publisher.id, session, timestamp(9), { questionId: 'interest', questionKind: 'interest', answerType: 'single-select', answerOptionId: interest, answerCount: 1 }));
-        events.push(seededEvent('question_answered', publisher.id, session, timestamp(13), { questionId: 'role', questionKind: 'persona', answerType: 'single-select', answerOptionId: persona, answerCount: 1 }));
-        const resultCount = interest === 'business' && publisher.id === 'real-publisher' ? 3 : 7;
-        events.push(seededEvent('search_completed', publisher.id, session, timestamp(18), { resultCount, rankingMode: mode, aiExplanationUsed: mode === 'hybrid' }));
+        events.push(seededEvent('company_entered', publisher.id, session, timestamp(9), { industry }));
+        events.push(seededEvent('role_entered', publisher.id, session, timestamp(13), { roleFunction }));
+        events.push(seededEvent('report_requested', publisher.id, session, timestamp(14)));
+        events.push(seededEvent('generation_started', publisher.id, session, timestamp(15)));
+        events.push(seededEvent('company_analysis_started', publisher.id, session, timestamp(16)));
+        events.push(seededEvent('company_analysis_completed', publisher.id, session, timestamp(17), { industry }));
+        events.push(seededEvent('profile_generated', publisher.id, session, timestamp(18), { industry, roleFunction }));
+        events.push(seededEvent('retrieval_started', publisher.id, session, timestamp(19)));
+        events.push(seededEvent('retrieval_completed', publisher.id, session, timestamp(20), { resultCount: 7 }));
+        events.push(seededEvent('ranking_completed', publisher.id, session, timestamp(21), { resultCount: 7, rankingMode: mode }));
+        const resultCount = industry === 'finance' && publisher.id === 'real-publisher' ? 3 : 7;
+        events.push(seededEvent('report_generated', publisher.id, session, timestamp(22), { resultCount, rankingMode: mode }));
         for (let position = 1; position <= Math.min(resultCount, 4); position += 1) {
           const candidate = publisher.articles[(day + index + position - 1) % publisher.articles.length];
-          events.push(seededEvent('result_impression', publisher.id, session, timestamp(19 + position), { articleId: candidate[0], articleTitle: candidate[1], articleCategory: candidate[2], articlePublishedAt: candidate[3], articlePosition: position, rankingMode: mode }));
+          events.push(seededEvent('story_impression', publisher.id, session, timestamp(22 + position), { articleId: candidate[0], articleTitle: candidate[1], articleCategory: candidate[2], articlePublishedAt: candidate[3], articlePosition: position, rankingMode: mode }));
         }
-        if ((day + index) % 3 !== 0) events.push(seededEvent('article_clicked', publisher.id, session, timestamp(30), { articleId: article[0], articleTitle: article[1], articleCategory: article[2], articlePublishedAt: article[3], articlePosition: (day + index) % 4 + 1, rankingMode: mode }));
-        if (index === 2 && day % 5 === 0) events.push(seededEvent('change_answers', publisher.id, session, timestamp(40), { answersChanged: true }));
-        if (index === 3 && day % 6 === 0) events.push(seededEvent('restart_clicked', publisher.id, session, timestamp(42), { userRestarted: true }));
+        if ((day + index) % 3 !== 0) events.push(seededEvent('story_clicked', publisher.id, session, timestamp(30), { articleId: article[0], articleTitle: article[1], articleCategory: article[2], articlePublishedAt: article[3], articlePosition: (day + index) % 4 + 1, rankingMode: mode }));
+        events.push(seededEvent('report_viewed', publisher.id, session, timestamp(34), { reportId: `${publisher.id}-${session}` }));
       }
     }
   }

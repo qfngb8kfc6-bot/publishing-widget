@@ -1,10 +1,10 @@
 import { ANALYTICS_SCHEMA_VERSION } from '../core';
-import type { AnalyticsEvent, AnalyticsEventName, AnalyticsMetadata, AnalyticsMetadataValue } from '../core';
+import type { AnalyticsEventName, AnalyticsMetadata, AnalyticsMetadataValue } from '../core';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 
 export const MAX_ANALYTICS_PAYLOAD_BYTES = 32_000;
-const EVENT_NAMES = new Set<AnalyticsEventName>(['widget_impression', 'widget_opened', 'intro_viewed', 'question_answered', 'search_started', 'search_completed', 'result_impression', 'article_clicked', 'change_answers', 'restart_clicked', 'widget_closed', 'search_failed']);
-const ALLOWED_METADATA_KEYS = new Set(['answerType', 'answerCount', 'questionId', 'questionKind', 'answerOptionId', 'answerOptionIds', 'freeTextUsed', 'articleId', 'articlePosition', 'articleCategory', 'articleTitle', 'articlePublishedAt', 'rankingMode', 'resultCount', 'aiExplanationUsed', 'errorCode', 'answersChanged', 'userRestarted']);
+const EVENT_NAMES = new Set<AnalyticsEventName>(['widget_impression', 'widget_opened', 'intro_viewed', 'question_answered', 'search_started', 'search_completed', 'result_impression', 'article_clicked', 'change_answers', 'restart_clicked', 'widget_closed', 'search_failed', 'company_entered', 'role_entered', 'report_requested', 'generation_started', 'company_analysis_started', 'company_analysis_completed', 'role_analysis_completed', 'profile_generated', 'retrieval_started', 'retrieval_completed', 'ranking_completed', 'report_generated', 'report_viewed', 'story_impression', 'story_clicked', 'profile_edit_clicked', 'report_shared', 'report_saved', 'cta_clicked']);
+const ALLOWED_METADATA_KEYS = new Set(['answerType', 'answerCount', 'questionId', 'questionKind', 'answerOptionId', 'answerOptionIds', 'freeTextUsed', 'articleId', 'articlePosition', 'articleCategory', 'articleTitle', 'articlePublishedAt', 'rankingMode', 'resultCount', 'aiProfileUsed', 'aiRerankUsed', 'aiExplanationUsed', 'errorCode', 'answersChanged', 'userRestarted', 'reportId', 'roleFunction', 'industry', 'generationStage', 'companyDomain', 'section', 'shareMethod']);
 
 function isValue(value: unknown): value is AnalyticsMetadataValue {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';

@@ -12,13 +12,13 @@ The command validates a unique kebab-case id and refuses to overwrite an existin
 
 ## 2. Complete the manifest
 
-Set the publisher name, branding, questions, result/candidate limits, adapter id, environment, feature flags, version and optional allowed origins. Keep the candidate limit higher than the displayed result limit. Use `environment: 'production'` only after the server route and credentials are ready.
+Set the publisher name, professional briefing branding, result/candidate limits, adapter id, environment, feature flags, version and optional allowed origins. Keep the candidate limit higher than the displayed result limit. Use `environment: 'production'` only after the server route and credentials are ready.
 
 Branding assets should be HTTPS URLs controlled by the publisher or host asset pipeline. The widget accepts only HTTP(S) image URLs and the host should enforce its normal CSP/image allowlist; avoid inline data or arbitrary script-like URLs.
 
 ## 3. Implement the adapter and normalizer
 
-`search()` translates the existing structured intent into publisher-specific query parameters and retrieves 30–100 candidates. `normalizeArticle()` must return the shared `NormalizedArticle` shape or `null` for malformed records. Raw API fields must not escape the adapter/normalizer directory.
+`search()` translates the professional profile intent into publisher-specific query parameters and retrieves 30–100 candidates. `normalizeArticle()` must return the shared `NormalizedArticle` shape or `null` for malformed records. Raw API fields must not escape the adapter/normalizer directory.
 
 Use `src/publishers/real-publisher/` as the working example and add sanitized response fixtures under `<publisher>/fixtures/`. A fixture must never contain credentials or private article data.
 
@@ -50,11 +50,11 @@ The health command performs a source/fixture/placeholder check without reading o
 <script src="https://YOUR-WIDGET-HOST.example/widget.js" data-publisher="acme-media" data-position="bottom-right"></script>
 ```
 
-Supported attributes are `data-publisher`, `data-position="bottom-right|bottom-left"` and development-only `data-debug="true"`. The loader mounts one instance per page and the element exposes `destroy()` for host-controlled teardown. The widget may be mounted programmatically more than once when the host explicitly owns those instances.
+Supported attributes are `data-publisher`, `data-position="bottom-right|bottom-left"`, `data-generation-endpoint` and development-only `data-debug="true"`. The embed owns only company website + job role → hosted generation → persisted report navigation. The loader mounts one instance per page and the element exposes `destroy()` for host-controlled teardown. The widget may be mounted programmatically more than once when the host explicitly owns those instances.
 
 ## First-publisher checklist
 
-- [ ] Publisher ID, branding, launcher copy and questions approved.
+- [ ] Publisher ID, professional briefing branding and launcher copy approved.
 - [ ] API documentation and server credentials received and stored in the deployment secret manager.
 - [ ] Search pagination, candidate limit, URL/image/date/author/category mappings documented.
 - [ ] Approved production origins added to the manifest/server environment.

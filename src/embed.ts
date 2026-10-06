@@ -18,7 +18,7 @@ if (typeof document !== 'undefined') {
   const debug = script?.getAttribute('data-debug') === 'true' && isDevelopmentHost() && import.meta.env.DEV;
   const existing = document.querySelector('content-discovery-widget[data-content-discovery-mounted="true"]');
   if (!existing) {
-    const widget = mountWidget(publisherRegistry, publisherId, analyticsClient, document, debug ? (event) => console.debug('[content-discovery]', event) : undefined, undefined, { position: position === 'bottom-left' ? 'bottom-left' : 'bottom-right' });
+    const widget = mountWidget(publisherRegistry, publisherId, analyticsClient, document, debug ? (event) => console.debug('[content-discovery]', event) : undefined, undefined, { position: position === 'bottom-left' ? 'bottom-left' : 'bottom-right', generationEndpoint: script?.getAttribute('data-generation-endpoint') ?? '/api/reports/generate' });
     widget.dataset.contentDiscoveryMounted = 'true';
   }
 }

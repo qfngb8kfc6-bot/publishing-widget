@@ -1,5 +1,5 @@
 import { AIProviderError } from '../provider';
-import type { AIProvider, EnrichedIntent, ExplanationRequest, SemanticCandidate } from '../types';
+import type { AIProvider, EnrichedIntent, ExplanationRequest, ProfessionalAIProvider, ProfessionalProfileEnhancementInput, ReportContentRequest, SemanticCandidate } from '../types';
 
 export interface AIProxyClientConfig {
   baseUrl: string;
@@ -8,7 +8,7 @@ export interface AIProxyClientConfig {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export class HttpAIProvider implements AIProvider {
+export class HttpAIProvider implements AIProvider, ProfessionalAIProvider {
   readonly providerName = 'server-ai-proxy';
   private readonly fetchImpl: FetchLike;
 
@@ -19,8 +19,10 @@ export class HttpAIProvider implements AIProvider {
   }
 
   enhanceIntent(intent: Parameters<AIProvider['enhanceIntent']>[0]): Promise<unknown> { return this.call('enrich', { intent }); }
+  enhanceProfessionalProfile(input: ProfessionalProfileEnhancementInput): Promise<unknown> { return this.call('profile', { input }); }
   rerank(intent: EnrichedIntent, candidates: SemanticCandidate[]): Promise<unknown> { return this.call('rerank', { intent, candidates }); }
   explainMany(requests: ExplanationRequest[]): Promise<unknown> { return this.call('explain', { requests }); }
+  generateReportContent(input: ReportContentRequest): Promise<unknown> { return this.call('content', { input }); }
   async explain(article: ExplanationRequest['article'], intent: EnrichedIntent, relevance: ExplanationRequest['relevance']): Promise<string> {
     const result = await this.explainMany([{ article, intent, relevance, semanticSignals: [] }]);
     const first = Array.isArray(result) ? result[0] : null;

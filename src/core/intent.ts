@@ -15,13 +15,14 @@ export function tokenize(value: string): string[] {
     .filter((token) => token.length > 2);
 }
 
+/** @deprecated Compatibility adapter for older RecommendationService consumers. Hosted reports use ProfessionalProfile retrieval concepts. */
 export function buildIntent(config: PublisherConfig, answers: Record<string, AnswerValue>): Intent {
   const keywords = new Set<string>();
   const interests: string[] = [];
   const personas: string[] = [];
   const queryParts: string[] = [];
 
-  for (const question of config.questions) {
+  for (const question of config.questions ?? []) {
     const answer = answers[question.id];
     if (!answer || (Array.isArray(answer) && answer.length === 0)) continue;
     const values = Array.isArray(answer) ? answer : [answer];

@@ -5,11 +5,11 @@ import { defaultRealPublisherApiConfig, realPublisherManifest } from './real-pub
 import { RealPublisherAdapter } from './real-publisher/adapter';
 import type { RealPublisherApiConfig } from './real-publisher/types';
 
-export function createPublisherRegistry(realPublisherApiConfig?: RealPublisherApiConfig): PublisherRegistry {
+export function createPublisherRegistry(realPublisherApiConfig?: RealPublisherApiConfig, fetchImpl?: typeof fetch): PublisherRegistry {
   const registry = new PublisherRegistry();
   const definitions = [
     { manifest: demoManifest, adapter: new DemoPublisherAdapter() },
-    { manifest: realPublisherManifest, adapter: new RealPublisherAdapter(realPublisherApiConfig ?? defaultRealPublisherApiConfig) },
+    { manifest: realPublisherManifest, adapter: new RealPublisherAdapter(realPublisherApiConfig ?? defaultRealPublisherApiConfig, fetchImpl) },
   ];
   for (const definition of definitions) registry.registerManifest(definition.manifest, definition.adapter, new DeterministicExplanationProvider());
   return registry;

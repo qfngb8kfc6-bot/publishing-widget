@@ -9,7 +9,7 @@ export type AnalyticsExportKind = 'daily' | 'interests' | 'recommended' | 'click
 
 export function reportToCsv(report: AnalyticsReport, kind: AnalyticsExportKind): string {
   if (kind === 'daily') return [['date', 'impressions', 'opens', 'searches', 'clicks'], ...report.daily.map((row) => [row.date, row.impressions, row.opens, row.searches, row.clicks])].map((row) => row.map(csv).join(',')).join('\n');
-  if (kind === 'interests') return [['interest', 'count', 'percentage'], ...report.topInterests.map((row) => [row.label, row.count, row.percentage])].map((row) => row.map(csv).join(',')).join('\n');
+  if (kind === 'interests') return [['legacy_interest', 'count', 'percentage'], ...report.topInterests.map((row) => [row.label, row.count, row.percentage])].map((row) => row.map(csv).join(',')).join('\n');
   const rows = kind === 'recommended' ? report.topRecommendedArticles : report.topClickedArticles;
   return [['article_id', 'title', 'category', 'impressions', 'clicks', 'ctr'], ...rows.map((row) => [row.articleId, row.title, row.category, row.impressions, row.clicks, row.ctr])].map((row) => row.map(csv).join(',')).join('\n');
 }

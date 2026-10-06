@@ -12,7 +12,7 @@ export function createReadinessResponse(environment: 'development' | 'test' | 'p
   return Response.json({ status: ready ? 'ready' : 'not_ready', version: WIDGET_VERSION, environment, analyticsStore, ...(commitSha ? { commitSha } : {}) }, { status: ready ? 200 : 503 });
 }
 
-export function createPublisherHealthResponse(registry: PublisherRegistry, publisherId: string, environment: 'development' | 'test' | 'production', serverEnvironment: ServerEnvironment): Response {
+export function createPublisherHealthResponse(registry: PublisherRegistry, publisherId: string, _environment: 'development' | 'test' | 'production', serverEnvironment: ServerEnvironment): Response {
   const definition = registry.get(publisherId);
   if (!definition) return Response.json({ status: 'not_found' }, { status: 404 });
   try {

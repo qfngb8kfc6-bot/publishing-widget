@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildIntent, DeterministicExplanationProvider, MemoryAnalytics, PublisherRegistry, rankArticles, RecommendationService, validatePublisherConfig } from '../src/core';
+import { DeterministicExplanationProvider, MemoryAnalytics, PublisherRegistry, rankArticles, RecommendationService, validatePublisherConfig, type Intent } from '../src/core';
 import { demoArticles } from '../src/demo/articles';
 import { DemoPublisherAdapter } from '../src/demo/adapter';
 import { demoConfig } from '../src/demo/config';
@@ -10,17 +10,25 @@ import { normalizeRealPublisherArticle } from '../src/publishers/real-publisher/
 import { realPublisherSearchFixture } from '../src/publishers/real-publisher/fixtures';
 
 const adapter = new DemoPublisherAdapter();
+const professionalIntent: Intent = {
+  publisherId: 'demo',
+  answers: { companyUrl: 'sunseeker.com', jobTitle: 'Head of Procurement' },
+  queryText: 'sustainability manufacturing procurement',
+  keywords: ['sustainability', 'manufacturing', 'procurement'],
+  interests: ['sustainability'],
+  personas: ['manufacturing', 'procurement'],
+};
 
 describe('publisher configuration and registry', () => {
   it('registers a publisher without coupling the widget to its questions', () => {
     const registry = new PublisherRegistry();
     registry.register({ config: demoConfig, adapter, explanationProvider: new DeterministicExplanationProvider() });
     expect(registry.has('demo')).toBe(true);
-    expect(registry.get('demo')?.config.questions[0].id).toBe('interest');
+    expect(registry.get('demo')?.config.questions).toBeUndefined();
   });
 
   it('rejects duplicate question ids and mismatched adapters', () => {
-    expect(() => validatePublisherConfig({ ...demoConfig, questions: [demoConfig.questions[0], { ...demoConfig.questions[0] }] })).toThrow('unique');
+    expect(() => validatePublisherConfig({ ...demoConfig, questions: [{ id: 'interest', question: 'Interest', type: 'free-text' }, { id: 'interest', question: 'Role', type: 'free-text' }] })).toThrow('unique');
     const registry = new PublisherRegistry();
     const mismatchedAdapter = { publisherId: 'other', search: adapter.search.bind(adapter), normalizeArticle: adapter.normalizeArticle.bind(adapter) };
     expect(() => registry.register({ config: demoConfig, adapter: mismatchedAdapter, explanationProvider: new DeterministicExplanationProvider() })).toThrow('ids must match');
@@ -29,11 +37,8 @@ describe('publisher configuration and registry', () => {
 
 describe('intent, normalization and relevance', () => {
   it('builds structured intent from configured answers', () => {
-    const intent = buildIntent(demoConfig, { interest: 'sustainability', role: 'manufacturer' });
-    expect(intent.queryText).toBe('Sustainability I make or build things');
-    expect(intent.keywords).toContain('sustainability');
-    expect(intent.interests).toEqual(['Sustainability']);
-    expect(intent.personas).toEqual(['I make or build things']);
+    expect(professionalIntent.queryText).toContain('sustainability');
+    expect(professionalIntent.keywords).toContain('procurement');
   });
 
   it('normalizes the demo adapter format', () => {
@@ -43,8 +48,8 @@ describe('intent, normalization and relevance', () => {
   });
 
   it('changes ranking for meaningfully different answer combinations', () => {
-    const sustainability = buildIntent(demoConfig, { interest: 'sustainability', role: 'manufacturer' });
-    const technology = buildIntent(demoConfig, { interest: 'technology', role: 'developer' });
+    const sustainability = professionalIntent;
+    const technology: Intent = { ...professionalIntent, queryText: 'technology software development', keywords: ['technology', 'software', 'development'], interests: ['technology'], personas: ['developer'] };
     const articles = demoArticles.map((article) => adapter.normalizeArticle(article));
     const sustainabilityTop = rankArticles(articles, sustainability, 3)[0].article.id;
     const technologyTop = rankArticles(articles, technology, 3)[0].article.id;
@@ -58,7 +63,7 @@ describe('intent, normalization and relevance', () => {
 describe('explanations and analytics', () => {
   it('turns grounded relevance signals into a concise explanation', () => {
     const provider = new DeterministicExplanationProvider();
-    const explanation = provider.explain(adapter.normalizeArticle(demoArticles[0]), buildIntent(demoConfig, { interest: 'sustainability', role: 'manufacturer' }), { score: 82, relevanceSignals: ['matches your interest in sustainability', 'relevant to your perspective as manufacturing'] });
+    const explanation = provider.explain(adapter.normalizeArticle(demoArticles[0]), professionalIntent, { score: 82, relevanceSignals: ['matches your interest in sustainability', 'relevant to your perspective as manufacturing'] });
     expect(explanation.toLowerCase()).toContain('matches your interest in sustainability');
     expect(explanation).toContain('relevant to your perspective as manufacturing');
   });
@@ -72,7 +77,7 @@ describe('explanations and analytics', () => {
 });
 
 describe('real publisher adapter', () => {
-  const intent = buildIntent(demoConfig, { interest: 'sustainability', role: 'manufacturer' });
+  const intent = professionalIntent;
 
   it('registers alongside demo without changing the universal registry', () => {
     const registry = createPublisherRegistry();
@@ -84,7 +89,7 @@ describe('real publisher adapter', () => {
   it('constructs a publisher-specific search request from structured intent', () => {
     const request = buildRealSearchRequest(intent, { ...defaultRealPublisherApiConfig, baseUrl: 'https://api.example.test', queryParameters: { locale: 'en-GB' } });
     expect(request.method).toBe('GET');
-    expect(request.url).toContain('q=Sustainability+I+make+or+build+things');
+    expect(request.url).toContain('q=sustainability+manufacturing+procurement');
     expect(request.query).toMatchObject({ locale: 'en-GB', page: 1, limit: 30 });
   });
 
@@ -109,7 +114,7 @@ describe('real publisher adapter', () => {
 
     const debugEvents: string[] = [];
     const service = new RecommendationService({ config: { ...demoConfig, publisherId: 'real-publisher' }, adapter, explanationProvider: new DeterministicExplanationProvider() }, (event) => debugEvents.push(event.type));
-    const response = await service.recommend({ interest: 'sustainability', role: 'manufacturer' });
+    const response = await service.recommendIntent({ ...intent, publisherId: 'real-publisher' });
     expect(response.results[0].article.provenance?.retrievalSource).toBe('real-publisher-api');
     expect(debugEvents).toEqual(expect.arrayContaining(['intent', 'publisher_search_request', 'candidate_retrieval', 'normalized_articles', 'ranked_results']));
   });

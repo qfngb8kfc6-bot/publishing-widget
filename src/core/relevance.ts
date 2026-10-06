@@ -1,5 +1,6 @@
 import { normalizeToken, tokenize } from './intent';
 import type { Intent, NormalizedArticle, RelevanceResult } from './types';
+import type { ProfessionalProfile } from './professional';
 
 const STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'from', 'your', 'you', 'that', 'what', 'best', 'describes']);
 
@@ -72,4 +73,30 @@ export function rankArticles(articles: NormalizedArticle[], intent: Intent, limi
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .slice(0, limit)
     .map(({ index: _index, ...result }) => result);
+}
+
+/** Version-independent deterministic professional score used by persisted reports. */
+export function scoreProfessionalArticle(article: NormalizedArticle, profile: ProfessionalProfile): RelevanceResult {
+  const intent: Intent = {
+    publisherId: article.publisherId,
+    answers: { companyUrl: profile.companyUrl, jobTitle: profile.jobTitle },
+    queryText: profile.semanticQueries.join(' '),
+    keywords: profile.searchTerms,
+    interests: profile.professionalInterests,
+    personas: [profile.role.function, ...profile.role.professionalThemes],
+  };
+  const base = scoreArticle(article, intent);
+  const searchable = normalizeToken([article.title, article.description ?? '', article.categories.join(' '), article.tags.join(' '), article.contentSnippet ?? ''].join(' '));
+  const companyTerms = tokenize(`${profile.companyName ?? ''} ${profile.companyDomain}`);
+  const roleTerms = profile.retrieval.roleTerms.flatMap(tokenize);
+  const companyMatches = companyTerms.filter((term) => searchable.includes(term));
+  const roleMatches = roleTerms.filter((term) => searchable.includes(term));
+  const ageDays = article.publishedAt ? Math.max(0, (Date.now() - Date.parse(article.publishedAt)) / 86_400_000) : 365;
+  const freshness = Number.isFinite(ageDays) ? Math.max(0, 10 - Math.min(ageDays / 30, 10)) : 0;
+  const score = Math.min(100, Math.round(base.score * 0.65 + Math.min(companyMatches.length * 8, 16) + Math.min(roleMatches.length * 3, 12) + freshness));
+  const signals = [...base.relevanceSignals];
+  if (companyMatches.length) signals.push(`connects to ${profile.companyName ?? profile.companyDomain}`);
+  if (roleMatches.length) signals.push(`relates to your work in ${profile.role.function.toLowerCase()}`);
+  if (freshness >= 7) signals.push('is recent coverage');
+  return { score, relevanceSignals: [...new Set(signals)] };
 }

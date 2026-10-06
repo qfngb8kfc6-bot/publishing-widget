@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildIntent, DeterministicExplanationProvider } from '../src/core';
+import { DeterministicExplanationProvider, type Intent } from '../src/core';
 import { demoConfig } from '../src/demo/config';
 import { DemoPublisherAdapter } from '../src/demo/adapter';
 import { checkPublisherContract } from '../src/publishers/contract';
@@ -8,7 +8,7 @@ import { defaultRealPublisherApiConfig } from '../src/publishers/real-publisher/
 import { createRealPublisherDefinition } from '../src/publishers/real-publisher/definition';
 
 describe('shared publisher adapter contract', () => {
-  const intent = buildIntent(demoConfig, { interest: 'sustainability', role: 'manufacturer' });
+  const intent: Intent = { publisherId: 'demo', answers: { companyUrl: 'sunseeker.com', jobTitle: 'Head of Procurement' }, queryText: 'sustainability manufacturing procurement', keywords: ['sustainability', 'manufacturing', 'procurement'], interests: ['sustainability'], personas: ['manufacturing', 'procurement'] };
 
   it('covers the demo adapter', async () => {
     const report = await checkPublisherContract({ config: demoConfig, adapter: new DemoPublisherAdapter(), explanationProvider: new DeterministicExplanationProvider() }, intent);

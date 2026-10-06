@@ -4,9 +4,9 @@ import type { PublisherManifest } from '../publishers/manifest';
 export function validatePublisherConfig(config: PublisherConfig): void {
   if (!config.publisherId.trim()) throw new Error('Publisher configuration requires publisherId.');
   if (!config.publisherName.trim()) throw new Error('Publisher configuration requires publisherName.');
-  if (config.questions.length === 0) throw new Error('Publisher configuration requires at least one question.');
+  const questions = config.questions ?? [];
   const questionIds = new Set<string>();
-  for (const question of config.questions) {
+  for (const question of questions) {
     if (!question.id.trim() || questionIds.has(question.id)) throw new Error(`Question id must be unique: ${question.id}`);
     questionIds.add(question.id);
     if (!question.question.trim()) throw new Error(`Question ${question.id} requires question text.`);
@@ -38,9 +38,9 @@ export function validatePublisherManifest(manifest: PublisherManifest): void {
     branding: {
       primaryColor: manifest.branding.primaryAccent ?? manifest.branding.primaryColor ?? '#244d3b',
       secondaryColor: manifest.branding.secondaryColor ?? '#e8efe6',
-      launcherText: manifest.branding.launcherText ?? 'Find stories for you',
-      widgetTitle: manifest.branding.widgetTitle ?? `Your ${manifest.name} guide`,
-      introductoryCopy: manifest.branding.introductoryCopy ?? 'Answer a few questions and we will find relevant stories.',
+      launcherText: manifest.branding.launcherText ?? 'Open professional briefing',
+      widgetTitle: manifest.branding.widgetTitle ?? `Build your ${manifest.name} briefing`,
+      introductoryCopy: manifest.branding.introductoryCopy ?? 'Tell us where you work and what you do. We will build a briefing from this publisher’s coverage.',
     },
     questions: manifest.questions,
     content: { adapterType: manifest.content.adapterId, resultLimit: manifest.content.resultLimit, candidateRetrievalLimit: manifest.content.candidateRetrievalLimit },
