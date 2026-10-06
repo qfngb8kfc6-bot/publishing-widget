@@ -13,6 +13,34 @@ export interface OpenAICompatibleConfig {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+function redactDiagnostic(value: string, apiKey: string): string {
+  return (apiKey ? value.replaceAll(apiKey, '[redacted]') : value)
+    .replace(/Bearer\s+[^\s"']+/gi, 'Bearer [redacted]')
+    .replace(/(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[^\s,"'}]+/gi, '$1=[redacted]')
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+}
+
+async function responseDiagnostic(response: Response, apiKey: string): Promise<string> {
+  let detail = '';
+  try {
+    const raw = await response.text();
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const nested = parsed.error && typeof parsed.error === 'object' ? parsed.error as Record<string, unknown> : undefined;
+      detail = [nested?.message, nested?.type, nested?.code, parsed.message].filter((value): value is string => typeof value === 'string').join(' · ');
+    } catch {
+      detail = raw;
+    }
+  } catch {
+    detail = '';
+  }
+  const safeDetail = redactDiagnostic(detail, apiKey);
+  return `HTTP ${response.status}${safeDetail ? `: ${safeDetail}` : ''}`;
+}
+
 /** Server-only provider. Do not import this module from the widget entry. */
 export class OpenAICompatibleProvider implements AIProvider {
   readonly providerName = 'openai-compatible';
@@ -65,11 +93,11 @@ export class OpenAICompatibleProvider implements AIProvider {
       const response = await this.fetchImpl(this.config.endpoint, {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ model: this.config.model, temperature: 0, max_tokens: Math.min(this.config.maxTokens ?? 900, 1200), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: `BEGIN_REFERENCE_JSON\n${JSON.stringify({ operation, payload })}\nEND_REFERENCE_JSON` }] }),
+        body: JSON.stringify({ model: this.config.model, temperature: 0, max_completion_tokens: Math.min(this.config.maxTokens ?? 900, 1200), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: `BEGIN_REFERENCE_JSON\n${JSON.stringify({ operation, payload })}\nEND_REFERENCE_JSON` }] }),
         signal: controller.signal,
       });
       if (response.status === 429) throw new AIProviderError('rate-limit');
-      if (!response.ok) throw new AIProviderError('unavailable');
+      if (!response.ok) throw new AIProviderError('unavailable', await responseDiagnostic(response, this.config.apiKey));
       const body = await response.json() as Record<string, unknown>;
       const choices = Array.isArray(body.choices) ? body.choices : [];
       const message = choices[0] && typeof choices[0] === 'object' ? (choices[0] as Record<string, unknown>).message : undefined;
