@@ -372,5 +372,3 @@ export class ContentDiscoveryWidget extends HTMLElement {
     }
   }
 }
-
-if (!customElements.get('content-discovery-widget')) customElements.define('content-discovery-widget', ContentDiscoveryWidget);
