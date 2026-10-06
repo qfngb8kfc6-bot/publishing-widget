@@ -25,14 +25,16 @@ if (window.location.pathname === '/analytics' || window.location.pathname === '/
   const params = new URLSearchParams(window.location.search);
   if (!isDevelopment) document.querySelector('.demo-preview')?.remove();
   const debug = isDevelopment && params.get('debug') === '1' ? (event: unknown) => console.debug('[publisher-widget-debug]', event) : undefined;
-  const ai = isDevelopment && params.get('ai') === 'mock' ? createMockAIRecommendationLayer() : undefined;
+  const ai = params.get('publisher') === 'real-publisher' ? undefined : (isDevelopment || params.get('publisher') === 'demo' || !params.get('publisher')) ? createMockAIRecommendationLayer() : undefined;
   if (isDevelopment && params.get('sales') === '1') document.body.classList.add('sales-mode-active');
   if (!isDevelopment || params.get('sales') !== '1') document.querySelector('.sales-mode')?.remove();
   const widget = mountWidget(createPublisherRegistry(), params.get('publisher') ?? 'demo', undefined, document, debug, ai);
+  const openLiveDemo = () => { document.querySelector('#live-demo')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); void widget.preview('intro'); };
   const preview = isDevelopment ? params.get('preview') as Parameters<typeof widget.preview>[0] | null : null;
   const scenarios: Record<string, Record<string, import('./core').AnswerValue>> = { marine: { interest: 'sustainability', role: 'manufacturer' }, finance: { interest: 'business', role: 'executive' }, technology: { interest: 'technology', role: 'developer' }, science: { interest: 'science', role: 'student' } };
   if (preview) void widget.preview(preview, scenarios[params.get('scenario') ?? ''] as Record<string, import('./core').AnswerValue> | undefined);
   document.querySelectorAll<HTMLButtonElement>('[data-scenario]').forEach((button) => button.addEventListener('click', () => { void widget.preview('results', scenarios[button.dataset.scenario ?? '']); }));
-  document.querySelector<HTMLButtonElement>('[data-open-reader]')?.addEventListener('click', () => { void widget.preview('intro'); });
+  document.querySelectorAll<HTMLElement>('[data-live-demo]').forEach((element) => element.addEventListener('click', (event) => { event.preventDefault(); openLiveDemo(); }));
+  document.querySelector<HTMLButtonElement>('[data-open-reader]')?.addEventListener('click', openLiveDemo);
   document.querySelector<HTMLButtonElement>('[data-demo-reset]')?.addEventListener('click', () => { void widget.preview('intro'); document.querySelector('#experience')?.scrollIntoView({ behavior: 'smooth' }); });
 }

@@ -71,7 +71,7 @@ npm run analytics:check
 npm run ai:check
 npm run publisher -- demo
 npm run publisher:check -- real-publisher
-curl https://product-domain.example/health
+curl https://discovery.ldsystems.uk/health
 ```
 
 For a configured live publisher, run `npm run publisher -- publisher-id`. It performs one bounded search, validates that a supported result array is present and prints no response body or secret. Verify success, 401/403, 404, 429, 5xx, timeout and malformed JSON with staging fixtures before changing the manifest to production.
