@@ -4,6 +4,7 @@ import { createMockAIRecommendationLayer } from './ai/recommendation';
 import { renderAnalyticsDashboard } from './analytics-dashboard';
 import { PRODUCT_IDENTITY } from './product';
 import { wireLiveDemoButtons } from './demo/live-demo';
+import { renderHostedRoute } from './hosted';
 
 const isDevelopment = import.meta.env.DEV;
 if (isDevelopment) {
@@ -20,7 +21,9 @@ if (isDevelopment) {
   document.body.appendChild(salesControls);
 }
 document.querySelectorAll<HTMLElement>('[data-product-name]').forEach((element) => { element.textContent = PRODUCT_IDENTITY.name; });
-if (window.location.pathname === '/analytics' || window.location.pathname === '/dashboard') {
+if (window.location.pathname.startsWith('/p/')) {
+  void renderHostedRoute(document, createPublisherRegistry());
+} else if (window.location.pathname === '/analytics' || window.location.pathname === '/dashboard') {
   void renderAnalyticsDashboard(document.body);
 } else {
   const params = new URLSearchParams(window.location.search);
@@ -29,12 +32,13 @@ if (window.location.pathname === '/analytics' || window.location.pathname === '/
   const ai = params.get('publisher') === 'real-publisher' ? undefined : (isDevelopment || params.get('publisher') === 'demo' || !params.get('publisher')) ? createMockAIRecommendationLayer() : undefined;
   if (isDevelopment && params.get('sales') === '1') document.body.classList.add('sales-mode-active');
   if (!isDevelopment || params.get('sales') !== '1') document.querySelector('.sales-mode')?.remove();
-  const widget = mountWidget(createPublisherRegistry(), params.get('publisher') ?? 'demo', undefined, document, debug, ai);
+  const widget = mountWidget(createPublisherRegistry(), params.get('publisher') ?? 'demo', undefined, document, debug, ai, { experience: 'professional', generationEndpoint: '/api/reports/generate' });
   const openLiveDemo = () => { document.querySelector('#live-demo')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); widget.openWidget(); };
   const preview = isDevelopment ? params.get('preview') as Parameters<typeof widget.preview>[0] | null : null;
   const scenarios: Record<string, Record<string, import('./core').AnswerValue>> = { marine: { interest: 'sustainability', role: 'manufacturer' }, finance: { interest: 'business', role: 'executive' }, technology: { interest: 'technology', role: 'developer' }, science: { interest: 'science', role: 'student' } };
   if (preview) void widget.preview(preview, scenarios[params.get('scenario') ?? ''] as Record<string, import('./core').AnswerValue> | undefined);
-  document.querySelectorAll<HTMLButtonElement>('[data-scenario]').forEach((button) => button.addEventListener('click', () => { void widget.preview('results', scenarios[button.dataset.scenario ?? '']); }));
+  const scenarioProfiles: Record<string, [string, string]> = { marine: ['sunseeker.com', 'Head of Procurement'], finance: ['jpmorgan.com', 'Investment Analyst'], technology: ['microsoft.com', 'Chief Technology Officer'], science: ['ldsystems.uk', 'Research professional'] };
+  document.querySelectorAll<HTMLButtonElement>('[data-scenario]').forEach((button) => button.addEventListener('click', () => { const profile = scenarioProfiles[button.dataset.scenario ?? '']; if (profile) { widget.prefillProfile(profile[0], profile[1]); widget.openWidget(); } }));
   wireLiveDemoButtons(document, openLiveDemo);
   document.querySelector<HTMLButtonElement>('[data-demo-reset]')?.addEventListener('click', () => { widget.openWidget(); document.querySelector('#live-demo')?.scrollIntoView({ behavior: 'smooth' }); });
 }

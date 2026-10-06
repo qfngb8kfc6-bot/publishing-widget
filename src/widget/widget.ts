@@ -41,6 +41,8 @@ export class ContentDiscoveryWidget extends HTMLElement {
   private ai?: AIRecommendationLayer;
   private listenersAttached = false;
   private impressionTracked = false;
+  private companyUrl = '';
+  private jobTitle = '';
 
   configure(registry: PublisherRegistry, analytics?: AnalyticsClient, debug?: DebugSink, ai?: AIRecommendationLayer): void {
     this.registry = registry;
@@ -71,6 +73,13 @@ export class ContentDiscoveryWidget extends HTMLElement {
   /** Opens the real reader journey for hosts that provide a prominent CTA. */
   openWidget(): void {
     this.open();
+  }
+
+  /** Prefills the professional embed without exposing the hosted report in the embed. */
+  prefillProfile(companyUrl: string, jobTitle: string): void {
+    this.companyUrl = companyUrl.trim();
+    this.jobTitle = jobTitle.trim();
+    if (this.state !== 'closed') this.render();
   }
 
   destroy(): void {
@@ -141,9 +150,40 @@ export class ContentDiscoveryWidget extends HTMLElement {
     if (action === 'restart') this.restart();
     if (action === 'change') this.changeAnswers();
     if (action === 'retry') this.open();
+    if (action === 'generate') void this.submitProfessionalProfile();
     if (action === 'article') {
       const articleId = actionElement.dataset.articleId;
       if (articleId) this.track('article_clicked', { articleId, articlePosition: Number(actionElement.dataset.articlePosition) || 0, articleCategory: actionElement.dataset.articleCategory ?? 'Story', articleTitle: actionElement.dataset.articleTitle ?? '', articlePublishedAt: actionElement.dataset.articlePublishedAt ?? '', rankingMode: actionElement.dataset.rankingMode ?? 'deterministic' });
+    }
+  }
+
+  private async submitProfessionalProfile(): Promise<void> {
+    if (this.dataset.experience !== 'professional') return;
+    const company = this.root.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]')?.value.trim() ?? this.companyUrl;
+    const role = this.root.querySelector<HTMLInputElement>('[data-profile-field="jobTitle"]')?.value.trim() ?? this.jobTitle;
+    this.companyUrl = company;
+    this.jobTitle = role;
+    if (!company || !role) {
+      this.root.querySelector<HTMLElement>('[data-profile-error]')?.replaceChildren(document.createTextNode('Enter your company website and job role to continue.'));
+      return;
+    }
+    this.track('company_entered');
+    this.track('role_entered', { roleFunction: role.toLowerCase().includes('engineer') ? 'engineering' : 'professional' });
+    this.track('report_requested');
+    const endpoint = this.dataset.generationEndpoint ?? '/api/reports/generate';
+    const button = this.root.querySelector<HTMLButtonElement>('[data-action="generate"]');
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: this.dataset.publisher ?? 'demo', companyUrl: company, jobTitle: role, sessionId: this.sessionId }) });
+      const payload = await response.json() as { generationUrl?: string; reportUrl?: string; statusUrl?: string };
+      if (!response.ok || (!payload.generationUrl && !payload.reportUrl && !payload.statusUrl)) throw new Error('generation_unavailable');
+      this.track('generation_started');
+      window.location.assign(payload.generationUrl ?? payload.reportUrl ?? payload.statusUrl as string);
+    } catch {
+      this.errorCode = 'api-unavailable';
+      this.errorMessage = 'We could not start your briefing right now. Please try again.';
+      this.state = 'error';
+      this.render();
     }
   }
 
@@ -260,6 +300,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
 
   private renderIntro(): string {
     const branding = this.definition?.config.branding;
+    if (this.dataset.experience === 'professional') return `<div class="content view-transition"><div class="intro"><p class="intro-kicker">Personalised professional intelligence</p><h2 class="intro-heading">Find the coverage that matters to your work</h2><p class="intro-copy">Tell us where you work and what you do. We’ll build a publisher-branded briefing from the real archive.</p><form class="profile-form" data-profile-form><label>Company website<input type="url" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="ldsystems.uk" autocomplete="url" required></label><label>Job role<input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" required></label><p class="profile-error" data-profile-error role="alert"></p><button class="button button-wide" type="button" data-action="generate" data-focus-start>Build my briefing <span aria-hidden="true">→</span></button></form></div></div>`;
     return `<div class="content view-transition"><div class="intro"><div class="intro-visual" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M16 4v24M4 16h24M7.5 7.5l17 17M24.5 7.5l-17 17" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="16" cy="16" r="4.5" stroke="currentColor" stroke-width="1.3"/></svg></div><p class="intro-kicker">Personalised reading</p><h2 class="intro-heading">Find the stories that matter to you</h2><p class="intro-copy">${escapeHtml(branding?.introductoryCopy ?? 'Answer two quick questions and we’ll find relevant stories from the publisher’s coverage.')}</p><div class="intro-points"><span class="intro-point">Two quick questions</span><span class="intro-point">Thoughtful recommendations</span></div><button class="button button-wide" data-action="begin" data-focus-start>Start exploring <span aria-hidden="true">→</span></button></div></div>`;
   }
 
