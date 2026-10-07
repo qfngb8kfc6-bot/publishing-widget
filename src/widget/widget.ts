@@ -13,7 +13,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
   private definition?: PublisherDefinition;
   private analytics: AnalyticsClient = new ConsoleAnalytics();
   private state: WidgetState = 'intro';
-  private isVisible = true;
+  private closedByUser = false;
   private sessionId = createSessionId();
   private companyUrl = '';
   private jobTitle = '';
@@ -34,8 +34,8 @@ export class ContentDiscoveryWidget extends HTMLElement {
       this.root.addEventListener('click', (event) => this.handleClick(event));
       this.root.addEventListener('keydown', (event) => {
         const keyboardEvent = event as KeyboardEvent;
-        if (keyboardEvent.key === 'Escape' && this.isVisible) this.close();
-        if (keyboardEvent.key === 'Tab' && this.isVisible) this.trapFocus(keyboardEvent);
+        if (keyboardEvent.key === 'Escape' && !this.closedByUser) this.close();
+        if (keyboardEvent.key === 'Tab' && !this.closedByUser) this.trapFocus(keyboardEvent);
       });
       this.root.addEventListener('submit', (event) => {
         const form = event.target as HTMLFormElement;
@@ -51,7 +51,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
 
   /** Opens the public widget experience. The hosted application owns generation and reports. */
   openWidget(): void {
-    this.isVisible = true;
+    this.closedByUser = false;
     if (!this.definition) {
       this.state = 'error';
       this.errorMessage = this.dataset.publisher ? 'This publisher guide is not available yet.' : 'This guide is not configured yet.';
@@ -67,11 +67,11 @@ export class ContentDiscoveryWidget extends HTMLElement {
   prefillProfile(companyUrl: string, jobTitle: string): void {
     this.companyUrl = companyUrl.trim();
     this.jobTitle = jobTitle.trim();
-    if (this.isVisible) this.render();
+    if (!this.closedByUser) this.render();
   }
 
   destroy(): void {
-    this.isVisible = false;
+    this.closedByUser = true;
     this.remove();
   }
 
@@ -89,8 +89,8 @@ export class ContentDiscoveryWidget extends HTMLElement {
   }
 
   private close(): void {
-    if (this.isVisible) this.track('widget_closed');
-    this.isVisible = false;
+    if (!this.closedByUser) this.track('widget_closed');
+    this.closedByUser = true;
     this.render();
   }
 
@@ -127,7 +127,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
       this.track('generation_started');
       window.location.assign(payload.generationUrl ?? payload.reportUrl ?? payload.statusUrl as string);
     } catch {
-      this.isVisible = true;
+      this.closedByUser = false;
       this.state = 'error';
       this.render();
     }
@@ -142,10 +142,10 @@ export class ContentDiscoveryWidget extends HTMLElement {
       .replace(`--ss-primary: ${DEFAULT_THEME.indigo};`, `--ss-primary: ${branding?.primaryColor ?? DEFAULT_THEME.indigo};`)
       .replace('--ss-radius-panel: 38px;', `--ss-radius-panel: ${radius.panel};`)
       .replace('--ss-radius-control: 23px;', `--ss-radius-control: ${radius.control};`);
-    const content = this.isVisible ? this.renderPanel() : '';
-    this.hidden = !this.isVisible;
+    const content = this.closedByUser ? '' : this.renderPanel();
+    this.hidden = this.closedByUser;
     this.root.innerHTML = `<style>${css}</style>${content}`;
-    if (this.isVisible) this.root.querySelector<HTMLElement>('[data-focus-start], [data-action="close"], [data-action="retry"]')?.focus();
+    if (!this.closedByUser) this.root.querySelector<HTMLElement>('[data-focus-start], [data-action="close"], [data-action="retry"]')?.focus();
   }
 
   private renderPanel(): string {

@@ -51,6 +51,8 @@ describe('sales live-demo CTA wiring', () => {
   it('renders the full briefing capsule immediately without idle launcher styles', () => {
     const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
     const styles = widget.shadowRoot?.querySelector('style')?.textContent ?? '';
+    expect(widget.hidden).toBe(false);
+    expect(widget.hasAttribute('hidden')).toBe(false);
     expect(widget.shadowRoot?.querySelector('form.briefing-bar')).not.toBeNull();
     expect(widget.shadowRoot?.querySelector('[data-profile-field="companyUrl"]')).not.toBeNull();
     expect(widget.shadowRoot?.querySelector('[data-profile-field="jobTitle"]')).not.toBeNull();
