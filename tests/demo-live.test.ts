@@ -50,6 +50,6 @@ describe('sales live-demo CTA wiring', () => {
     expect(widget.shadowRoot?.querySelector('.launcher-copy strong')?.textContent).toContain('Find stories relevant to your business');
     expect(styles).toContain('right: 50%');
     expect(styles).toContain('border-radius: 999px');
-    expect(styles).toContain('backdrop-filter: blur(22px)');
+    expect(styles).toContain('backdrop-filter: blur(16px)');
   });
 });

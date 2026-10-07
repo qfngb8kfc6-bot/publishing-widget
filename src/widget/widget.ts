@@ -135,13 +135,13 @@ export class ContentDiscoveryWidget extends HTMLElement {
   private render(): void {
     const config = this.definition?.config;
     const branding = config?.branding;
-    const radius = branding?.radiusPreference === 'sharp' ? { panel: '14px', control: '9px' } : branding?.radiusPreference === 'soft' ? { panel: '19px', control: '11px' } : { panel: '25px', control: '14px' };
+    const radius = branding?.radiusPreference === 'sharp' ? { panel: '24px', control: '16px' } : branding?.radiusPreference === 'soft' ? { panel: '30px', control: '19px' } : { panel: '38px', control: '23px' };
     const css = widgetStyles
       .replace('--ss-font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;', `--ss-font: ${branding?.fontFamily ?? 'Inter, ui-sans-serif, system-ui, sans-serif'};`)
       .replace('--ss-primary: #244d3b;', `--ss-primary: ${branding?.primaryColor ?? '#244d3b'};`)
       .replace('--ss-secondary: #e8efe6;', `--ss-secondary: ${branding?.secondaryColor ?? '#e8efe6'};`)
-      .replace('--ss-radius-panel: 25px;', `--ss-radius-panel: ${radius.panel};`)
-      .replace('--ss-radius-control: 14px;', `--ss-radius-control: ${radius.control};`);
+      .replace('--ss-radius-panel: 38px;', `--ss-radius-panel: ${radius.panel};`)
+      .replace('--ss-radius-control: 23px;', `--ss-radius-control: ${radius.control};`);
     const launcherText = branding?.launcherText ?? 'Open professional briefing';
     const content = this.state === 'closed' ? this.renderLauncher(launcherText) : this.renderPanel();
     this.root.innerHTML = `<style>${css}</style>${content}`;
@@ -155,14 +155,8 @@ export class ContentDiscoveryWidget extends HTMLElement {
   }
 
   private renderPanel(): string {
-    const config = this.definition?.config;
-    const branding = config?.branding;
-    const logo = branding?.logo && this.safeHttpUrl(branding.logo);
-    const title = branding?.widgetTitle ?? 'Build your professional briefing';
-    const introCopy = branding?.introductoryCopy ?? 'Start with the context behind your work. We’ll take you to a publisher-branded briefing built from real coverage.';
-    const brand = logo ? `<img class="publisher-logo" src="${escapeHtml(logo)}" alt="${escapeHtml(config?.publisherName ?? '')}">` : `<span class="publisher-mark" aria-hidden="true">${escapeHtml((config?.publisherName ?? 'C').slice(0, 1))}</span>`;
-    const body = this.state === 'error' ? `<div class="error-state" role="alert"><p class="intro-kicker">Briefing unavailable</p><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="button" data-action="retry">Try again</button></div>` : `<form class="profile-form" data-profile-form aria-describedby="widget-supporting-copy"><div class="capsule-brand"><div class="capsule-brand-mark">${brand}</div><div class="capsule-brand-copy"><span>${escapeHtml(config?.publisherName ?? 'Professional intelligence')}</span><h1 id="widget-title">${escapeHtml(title)}</h1></div></div><label class="profile-field"><span>I work at</span><span class="input-shell"><span class="field-icon" aria-hidden="true">⌂</span><input type="url" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="company.com" autocomplete="url" data-focus-start required></span></label><span class="field-flow" aria-hidden="true">as a</span><label class="profile-field"><span class="mobile-role-label">as a</span><span class="input-shell"><span class="field-icon" aria-hidden="true">◌</span><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role" required></span></label><span class="field-arrow" aria-hidden="true">→</span><button class="button button-wide" type="submit" data-action="generate">Build my briefing <span class="button-spark" aria-hidden="true">✦</span></button><p class="profile-error" data-profile-error role="alert"></p><p class="content-note" id="widget-supporting-copy">${escapeHtml(introCopy)}</p></form>`;
-    return `<section class="panel" role="dialog" aria-modal="true" aria-labelledby="widget-title"><div class="panel-inner"><button class="icon-button" data-action="close" aria-label="Close briefing">×</button>${body}</div></section>`;
+    const body = this.state === 'error' ? `<div class="error-state" role="alert"><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="button" data-action="retry">Try again</button></div>` : `<form class="profile-form" data-profile-form><label class="profile-field company-field"><span>I work at</span><span class="input-shell"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5.5h9V20M14 9h5v11M8 8.5h2M8 12h2M8 15.5h2M16.5 12h1M16.5 15.5h1M3 20h18" /></svg><input type="url" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="company.com" autocomplete="url" data-focus-start required></span></label><span class="field-flow" aria-hidden="true">as a</span><label class="profile-field role-field"><span>as a</span><span class="input-shell"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16v11H4zM8 8.5V6h8v2.5M8 13h8M12 13v2" /></svg><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role" required></span></label><span class="field-arrow" aria-hidden="true">→</span><button class="button button-wide" type="submit" data-action="generate">Build my briefing <span class="button-spark" aria-hidden="true">✦</span></button><p class="profile-error" data-profile-error role="alert"></p></form>`;
+    return `<section class="panel" role="dialog" aria-modal="true" aria-label="Build your professional briefing"><div class="panel-inner"><button class="icon-button" data-action="close" aria-label="Close briefing">×</button>${body}</div></section>`;
   }
 
   private trapFocus(event: KeyboardEvent): void {

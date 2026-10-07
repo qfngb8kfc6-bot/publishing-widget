@@ -27,12 +27,16 @@ describe('professional embed mode', () => {
     const widget = mountWidget(createDemoRegistry(), 'demo', analytics, document);
     widget.openWidget();
     const styles = widget.shadowRoot?.querySelector('style')?.textContent ?? '';
-    expect(styles).toContain('grid-template-columns: minmax(150px, .85fr)');
-    expect(styles).toContain('linear-gradient(110deg, #4d70ff');
-    expect(styles).toContain('backdrop-filter: blur(25px) saturate(1.15)');
+    expect(styles).toContain('grid-template-columns: auto minmax(170px, 1fr)');
+    expect(styles).toContain('linear-gradient(105deg, #18156f');
+    expect(styles).toContain('backdrop-filter: blur(18px)');
+    expect(styles).toContain('min-height: 72px');
+    expect(styles).toContain('min-width: 194px');
     expect(styles).toContain('@media (max-width: 620px)');
     expect(styles).toContain('grid-template-columns: 1fr;');
     expect(widget.shadowRoot?.querySelector('.field-flow')?.textContent).toBe('as a');
+    expect(widget.shadowRoot?.querySelector('.capsule-brand')).toBeNull();
+    expect(widget.shadowRoot?.querySelector('.publisher-mark')).toBeNull();
 
     const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({}), { status: 201, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', request);
