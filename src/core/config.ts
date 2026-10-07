@@ -1,5 +1,6 @@
 import type { PublisherConfig } from './types';
 import type { PublisherManifest } from '../publishers/manifest';
+import { DEFAULT_THEME } from './theme';
 
 export function validatePublisherConfig(config: PublisherConfig): void {
   if (!config.publisherId.trim()) throw new Error('Publisher configuration requires publisherId.');
@@ -36,9 +37,8 @@ export function validatePublisherManifest(manifest: PublisherManifest): void {
     publisherId: manifest.publisherId,
     publisherName: manifest.name,
     branding: {
-      primaryColor: manifest.branding.primaryAccent ?? manifest.branding.primaryColor ?? '#244d3b',
-      secondaryColor: manifest.branding.secondaryColor ?? '#e8efe6',
-      launcherText: manifest.branding.launcherText ?? 'Open professional briefing',
+      primaryColor: manifest.branding.primaryAccent ?? manifest.branding.primaryColor ?? DEFAULT_THEME.indigo,
+      secondaryColor: manifest.branding.secondaryColor ?? DEFAULT_THEME.surfaceMuted,
       widgetTitle: manifest.branding.widgetTitle ?? `Build your ${manifest.name} briefing`,
       introductoryCopy: manifest.branding.introductoryCopy ?? 'Tell us where you work and what you do. We will build a briefing from this publisher’s coverage.',
     },

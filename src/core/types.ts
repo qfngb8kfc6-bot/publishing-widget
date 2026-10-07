@@ -22,7 +22,6 @@ export interface BrandingConfig {
   primaryColor: string;
   secondaryColor: string;
   fontFamily?: string;
-  launcherText: string;
   widgetTitle: string;
   introductoryCopy: string;
   radiusPreference?: 'soft' | 'round' | 'sharp';

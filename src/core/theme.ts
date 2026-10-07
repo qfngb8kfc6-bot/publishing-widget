@@ -1,0 +1,16 @@
+export const DEFAULT_THEME = {
+  pageBackground: '#F7F8FA',
+  surface: '#FFFFFF',
+  surfaceMuted: '#F2F4F7',
+  text: '#111318',
+  textStrong: '#1B1D22',
+  navy: '#151A3A',
+  indigo: '#2A2C8F',
+  blue: '#3578FF',
+  cyan: '#12A8B4',
+  lilac: '#D7CEFF',
+  border: 'rgba(20,30,60,.10)',
+  muted: '#69707D',
+  loadingBackground: '#151A3A',
+  reportBackground: '#2A2C8F',
+} as const;

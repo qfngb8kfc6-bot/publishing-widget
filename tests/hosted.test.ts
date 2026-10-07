@@ -22,8 +22,9 @@ describe('hosted professional experience', () => {
     expect(document.querySelector('.hosted-card')?.textContent).toContain('Software Engineer at LD Systems');
     expect(document.querySelector('.progress')).not.toBeNull();
     const styles = document.querySelector('style')?.textContent ?? '';
-    expect(styles).toContain('--loading-fallback:#dfe9dc');
-    expect(styles).toContain('--report-fallback:#28583f');
+    expect(styles).toContain('--loading-fallback:#151A3A');
+    expect(styles).toContain('--report-fallback:#2A2C8F');
+    expect(styles).toContain('--palette-cyan:#12A8B4');
     expect(styles).toContain('@media(max-width:780px)');
     expect(styles).toContain('.hosted-shell.report{background-image:');
     expect(document.querySelector('.generation-progress')?.textContent).toContain('Reviewing relevant coverage');

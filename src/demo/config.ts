@@ -1,14 +1,13 @@
-import type { PublisherConfig } from '../core';
+import { DEFAULT_THEME, type PublisherConfig } from '../core';
 import type { PublisherManifest } from '../publishers/manifest';
 
 export const demoConfig: PublisherConfig = {
   publisherId: 'demo',
   publisherName: 'Northstar Journal',
   branding: {
-    primaryColor: '#244d3b',
-    secondaryColor: '#e8efe6',
+    primaryColor: DEFAULT_THEME.indigo,
+    secondaryColor: DEFAULT_THEME.surfaceMuted,
     fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
-    launcherText: 'Open professional briefing',
     widgetTitle: 'Build your Northstar briefing',
     introductoryCopy: 'Tell us where you work and what you do. We’ll build a considered briefing from our latest coverage.',
     radiusPreference: 'round',
@@ -29,7 +28,7 @@ export const demoManifest: PublisherManifest = {
   enabled: true,
   environment: 'development',
   publisherConfigVersion: '1',
-  branding: { ...demoConfig.branding, loading: { backgroundFallback: '#dfe9dc', overlay: 'rgba(24,58,41,.38)', textColor: '#ffffff' }, report: { backgroundFallback: '#28583f', overlay: 'rgba(24,58,41,.48)', textColor: '#ffffff' } },
+  branding: { ...demoConfig.branding, loading: { backgroundFallback: DEFAULT_THEME.loadingBackground, overlay: 'rgba(21,26,58,.52)', textColor: '#ffffff' }, report: { backgroundFallback: DEFAULT_THEME.reportBackground, overlay: 'rgba(21,26,58,.55)', textColor: '#ffffff' } },
   content: { adapterId: demoConfig.content.adapterType, resultLimit: demoConfig.content.resultLimit, candidateRetrievalLimit: demoConfig.content.candidateRetrievalLimit, searchBehavior: 'keywords' },
   results: demoConfig.results,
   ranking: { mode: 'deterministic', deterministicWeight: 0.7, semanticWeight: 0.3 },

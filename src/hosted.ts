@@ -1,5 +1,5 @@
 import { BatchingAnalyticsClient } from './analytics/client';
-import { createEvent, type PublisherRegistry } from './core';
+import { createEvent, DEFAULT_THEME, type PublisherRegistry } from './core';
 import type { PublisherExperienceBranding, PublisherManifest } from './publishers/manifest';
 import type { ReportRecord, ReportRecommendation } from './reports';
 
@@ -58,15 +58,15 @@ function brandMarkup(manifest: PublisherManifest, variant = ''): string {
 function routeStyle(manifest: PublisherManifest): string {
   const loading = manifest.branding.loading;
   const report = manifest.branding.report;
-  const brand = cssColor(manifest.branding.primaryAccent ?? manifest.branding.primaryColor, '#244d3b');
-  const secondary = cssColor(manifest.branding.secondaryColor, '#e8efe6');
+  const brand = cssColor(manifest.branding.primaryAccent ?? manifest.branding.primaryColor, DEFAULT_THEME.indigo);
+  const secondary = cssColor(manifest.branding.secondaryColor, DEFAULT_THEME.surfaceMuted);
   const accent = cssColor(manifest.branding.primaryColor, brand);
-  const loadingFallback = cssColor(loading?.backgroundFallback, '#dfe9dc');
+  const loadingFallback = cssColor(loading?.backgroundFallback, DEFAULT_THEME.loadingBackground);
   const reportFallback = cssColor(report?.backgroundFallback, loadingFallback);
-  const loadingInk = cssColor(loading?.textColor, '#f7fff6');
-  const reportInk = cssColor(report?.textColor, '#203329');
-  const loadingOverlay = overlayValue(loading, 'rgba(20,46,30,.46)');
-  const reportOverlay = overlayValue(report, 'rgba(20,46,30,.55)');
+  const loadingInk = cssColor(loading?.textColor, DEFAULT_THEME.pageBackground);
+  const reportInk = cssColor(report?.textColor, DEFAULT_THEME.text);
+  const loadingOverlay = overlayValue(loading, 'rgba(21,26,58,.46)');
+  const reportOverlay = overlayValue(report, 'rgba(21,26,58,.55)');
   const radius = manifest.branding.borderRadius === 'sharp' ? '12px' : manifest.branding.borderRadius === 'soft' ? '20px' : '28px';
   const font = cssFont(manifest.branding.fontFamily);
   const loadingDesktop = cssUrl(loading?.desktopBackgroundImage);
@@ -83,6 +83,13 @@ function routeStyle(manifest: PublisherManifest): string {
 @media(max-width:780px){.hosted-shell{background-image:linear-gradient(var(--loading-overlay),var(--loading-overlay)),${loadingMobile};background-attachment:scroll}.hosted-shell.report{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${reportMobile};background-attachment:scroll}.generation-card{margin:0;padding:clamp(24px,7vw,40px);border-radius:22px}.generation-card .hosted-brand{margin-bottom:58px}.report-page{padding:10px 0 56px}.report-cover{min-height:590px;border-radius:22px;padding:25px 21px}.report-cover .hosted-brand{margin-bottom:90px}.cover-content h1{font-size:clamp(3rem,14vw,5.6rem)}.cover-footer{align-items:start;flex-direction:column;margin-top:50px}.featured-story{grid-template-columns:1fr}.featured-story .story-image{min-height:250px}.story-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.report-intro{grid-template-columns:1fr;margin-bottom:56px}.report-content{padding-inline:0}.context-bar{margin-inline:0;border-radius:0 0 14px 14px}.context-label{font-size:.76rem}.bar-actions .text-button{padding-inline:11px}}
 @media(max-width:520px){.hosted-shell{padding:12px}.hosted-shell.report{padding:0}.generation-card{min-height:calc(100vh - 24px);display:flex;flex-direction:column;justify-content:center;padding:24px 20px}.generation-card h1{font-size:clamp(2.7rem,13vw,4.4rem)}.identity-pill{font-size:.87rem}.generation-stage{font-size:.84rem}.report-cover{min-height:650px;border-radius:0;padding:22px 18px}.report-cover .hosted-brand{margin-bottom:84px}.report-role{font-size:1.02rem}.match-meter{width:68px;height:68px}.report-content{padding:38px 17px 0}.report-intro h2,.section-heading{font-size:2.35rem}.story-grid{grid-template-columns:1fr}.story-card .story-image{min-height:190px}.section-heading-row{display:block}.section-heading-row .section-kicker{margin-bottom:8px}.action-button,.text-button{min-height:46px}.report-actions{margin-top:54px}.edit-sheet{width:100%;padding:22px 19px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.generation-stage,.context-bar,.story-card,.edit-sheet{transition:none;animation:none}.generation-line span{animation:none;transform:translateX(40%)}.story-card:hover{transform:none}}
+:root{--palette-navy:${DEFAULT_THEME.navy};--palette-indigo:${DEFAULT_THEME.indigo};--palette-blue:${DEFAULT_THEME.blue};--palette-cyan:${DEFAULT_THEME.cyan};--palette-lilac:${DEFAULT_THEME.lilac};--palette-surface:${DEFAULT_THEME.surface};--palette-muted:${DEFAULT_THEME.muted};--palette-border:${DEFAULT_THEME.border}}
+.generation-card{background:linear-gradient(135deg,color-mix(in srgb,var(--palette-navy) 84%,var(--palette-indigo)),color-mix(in srgb,var(--palette-indigo) 68%,var(--palette-cyan) 32%));box-shadow:0 30px 100px rgba(21,26,58,.24)}
+.report-cover::after{background:linear-gradient(90deg,rgba(21,26,58,.68),rgba(42,44,143,.16) 70%,rgba(18,168,180,.28))}
+.context-bar{background:rgba(247,248,250,.88);box-shadow:0 12px 30px rgba(21,26,58,.08)}.context-bar.is-visible{border-color:var(--palette-border)}.context-label{color:var(--palette-navy)}.text-button{border-color:var(--palette-lilac);color:var(--brand)}
+.report-intro h2,.section-heading{color:var(--palette-navy)}.report-intro p,.story-summary{color:var(--palette-muted)}.profile-facts{border-color:var(--palette-lilac);box-shadow:0 12px 35px rgba(21,26,58,.06)}.profile-facts dt{color:var(--palette-muted)}.profile-facts dd{color:var(--palette-navy)}
+.featured-story{border-color:var(--palette-lilac);box-shadow:0 20px 55px rgba(21,26,58,.08)}.story-image{background:linear-gradient(135deg,var(--secondary),var(--palette-lilac))}.story-placeholder{color:var(--palette-muted);background:linear-gradient(135deg,var(--secondary),#eef1f6)}.story-meta{color:var(--palette-muted)}.story h3{color:var(--palette-navy)}.why{color:var(--palette-muted);background:color-mix(in srgb,var(--secondary) 60%,white)}.why strong{color:var(--palette-navy)}.story-card{border-color:var(--palette-border);box-shadow:0 12px 34px rgba(21,26,58,.05)}.story-card:hover{box-shadow:0 20px 42px rgba(21,26,58,.12)}.report-actions{border-color:var(--palette-border)}.share-note{color:var(--palette-muted)}
+.edit-backdrop{background:rgba(21,26,58,.42)}.edit-sheet{color:var(--palette-navy);background:var(--palette-surface);box-shadow:-20px 0 60px rgba(21,26,58,.2)}.edit-sheet h2{color:var(--palette-navy)}.edit-sheet p{color:var(--palette-muted)}.sheet-close{border-color:var(--palette-lilac);color:var(--brand)}.edit-form label{color:var(--palette-navy)}.edit-form input{border-color:var(--palette-border);color:var(--palette-navy)}.form-status{color:var(--palette-muted)}
 </style>`;
 }
 

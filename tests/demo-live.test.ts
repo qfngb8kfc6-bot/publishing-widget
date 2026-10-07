@@ -16,17 +16,22 @@ describe('sales live-demo CTA wiring', () => {
     wireLiveDemoButtons(document, () => widget.openWidget());
     const buttons = document.querySelectorAll<HTMLElement>('[data-open-reader]');
 
+    expect(widget.shadowRoot?.querySelector('form.briefing-bar')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('.launcher')).toBeNull();
     buttons[1].click();
     expect(widget.shadowRoot?.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(widget.shadowRoot?.querySelector('.profile-form')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('form.briefing-bar')).not.toBeNull();
     expect(widget.shadowRoot?.querySelector('[data-profile-field="companyUrl"]')).not.toBeNull();
     expect(widget.shadowRoot?.querySelector('[data-profile-field="jobTitle"]')).not.toBeNull();
     expect(analytics.events.map((event) => event.name)).toEqual(expect.arrayContaining(['widget_opened', 'intro_viewed']));
 
     (widget.shadowRoot?.querySelector('[data-action="close"]') as HTMLButtonElement).click();
     expect(widget.shadowRoot?.querySelector('[role="dialog"]')).toBeNull();
+    expect(widget.hidden).toBe(true);
     buttons[0].click();
-    expect(widget.shadowRoot?.querySelector('.profile-form')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('form.briefing-bar')).not.toBeNull();
+    expect(widget.hidden).toBe(false);
+    expect(analytics.events.map((event) => event.name)).toContain('widget_closed');
     expect(analytics.events.filter((event) => event.name === 'widget_opened')).toHaveLength(2);
   });
 
@@ -35,21 +40,25 @@ describe('sales live-demo CTA wiring', () => {
     const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
     widget.openWidget();
     const styles = widget.shadowRoot?.querySelector('style')?.textContent ?? '';
-    expect(widget.shadowRoot?.querySelector('.panel')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('form.briefing-bar')).not.toBeNull();
     expect(styles).toContain('position: fixed');
     expect(styles).toContain('z-index: 2147483000');
-    expect(styles).toContain('width: 100%;');
-    expect(styles).toContain('grid-template-columns: 1fr;');
+    expect(styles).toContain('width:100%;');
+    expect(styles).toContain('grid-template-columns:1fr;');
     expect(styles).toContain('prefers-reduced-motion');
   });
 
-  it('renders the idle experience as a bottom-centred contextual capsule', () => {
+  it('renders the full briefing capsule immediately without idle launcher styles', () => {
     const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
     const styles = widget.shadowRoot?.querySelector('style')?.textContent ?? '';
-    expect(widget.shadowRoot?.querySelector('.launcher')).not.toBeNull();
-    expect(widget.shadowRoot?.querySelector('.launcher-copy strong')?.textContent).toContain('Find stories relevant to your business');
+    expect(widget.shadowRoot?.querySelector('form.briefing-bar')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('[data-profile-field="companyUrl"]')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('[data-profile-field="jobTitle"]')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('[data-action="generate"]')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('.launcher')).toBeNull();
+    expect(styles).not.toContain('.launcher');
     expect(styles).toContain('right: 50%');
-    expect(styles).toContain('border-radius: 999px');
-    expect(styles).toContain('backdrop-filter: blur(16px)');
+    expect(styles).toContain('min-height:72px');
+    expect(styles).toContain('--ss-primary: #2A2C8F');
   });
 });

@@ -9,7 +9,6 @@ export const realPublisherConfig: PublisherConfig = {
     primaryColor: '#36566c',
     secondaryColor: '#e8eff3',
     fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
-    launcherText: 'Open professional briefing',
     widgetTitle: 'Build your publisher briefing',
     introductoryCopy: 'Tell us where you work and what you do. We’ll find relevant developments from the publisher’s coverage.',
     radiusPreference: 'soft',

@@ -1,4 +1,5 @@
 import type { BrandingConfig, PublisherConfig, QuestionConfig } from '../core';
+import { DEFAULT_THEME } from '../core/theme';
 
 export interface PublisherManifestBranding extends Partial<BrandingConfig> {
   primaryAccent?: string;
@@ -68,10 +69,9 @@ export function manifestToPublisherConfig(manifest: PublisherManifest): Publishe
     publisherId: manifest.publisherId,
     publisherName: manifest.name,
     branding: {
-      primaryColor: branding.primaryAccent ?? branding.primaryColor ?? '#244d3b',
-      secondaryColor: branding.secondaryColor ?? '#e8efe6',
+      primaryColor: branding.primaryAccent ?? branding.primaryColor ?? DEFAULT_THEME.indigo,
+      secondaryColor: branding.secondaryColor ?? DEFAULT_THEME.surfaceMuted,
       fontFamily: branding.fontFamily,
-      launcherText: branding.launcherText ?? 'Open professional briefing',
       widgetTitle: branding.widgetTitle ?? `Build your ${manifest.name} briefing`,
       introductoryCopy: branding.introductoryCopy ?? 'Tell us where you work and what you do. We will build a briefing from this publisher’s coverage.',
       radiusPreference: branding.borderRadius ?? branding.radiusPreference,
