@@ -36,6 +36,18 @@ describe('sales live-demo CTA wiring', () => {
     expect(widget.shadowRoot?.querySelector('.panel')).not.toBeNull();
     expect(styles).toContain('position: fixed');
     expect(styles).toContain('z-index: 2147483000');
-    expect(styles).toContain('width: 100vw');
+    expect(styles).toContain('width: 100%;');
+    expect(styles).toContain('grid-template-columns: 1fr;');
+    expect(styles).toContain('prefers-reduced-motion');
+  });
+
+  it('renders the idle experience as a bottom-centred contextual capsule', () => {
+    const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
+    const styles = widget.shadowRoot?.querySelector('style')?.textContent ?? '';
+    expect(widget.shadowRoot?.querySelector('.launcher')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('.launcher-copy strong')?.textContent).toContain('Find stories relevant to your business');
+    expect(styles).toContain('right: 50%');
+    expect(styles).toContain('border-radius: 999px');
+    expect(styles).toContain('backdrop-filter: blur(24px)');
   });
 });

@@ -36,6 +36,12 @@ export class ContentDiscoveryWidget extends HTMLElement {
         if (keyboardEvent.key === 'Escape' && this.state !== 'closed') this.close();
         if (keyboardEvent.key === 'Tab' && this.state !== 'closed') this.trapFocus(keyboardEvent);
       });
+      this.root.addEventListener('submit', (event) => {
+        const form = event.target as HTMLFormElement;
+        if (!form.matches('[data-profile-form]')) return;
+        event.preventDefault();
+        void this.submitProfessionalProfile();
+      });
       this.listenersAttached = true;
     }
     this.render();
@@ -93,7 +99,6 @@ export class ContentDiscoveryWidget extends HTMLElement {
     if (action === 'open') this.openWidget();
     if (action === 'close') this.close();
     if (action === 'retry') this.openWidget();
-    if (action === 'generate') void this.submitProfessionalProfile();
   }
 
   private async submitProfessionalProfile(): Promise<void> {
@@ -144,7 +149,9 @@ export class ContentDiscoveryWidget extends HTMLElement {
   }
 
   private renderLauncher(label: string): string {
-    return `<button class="launcher" data-action="open" aria-label="${escapeHtml(label)}"><span class="launcher-mark" aria-hidden="true">✦</span><span>${escapeHtml(label)}</span></button>`;
+    const publisherName = this.definition?.config.publisherName ?? 'Publisher briefing';
+    const visibleLabel = label === 'Open professional briefing' ? 'Find stories relevant to your business' : label;
+    return `<button class="launcher" data-action="open" aria-label="${escapeHtml(label)}"><span class="launcher-mark" aria-hidden="true">↗</span><span class="launcher-copy"><small>${escapeHtml(publisherName)}</small><strong>${escapeHtml(visibleLabel)}</strong></span><span class="launcher-arrow" aria-hidden="true">→</span></button>`;
   }
 
   private renderPanel(): string {
@@ -152,8 +159,9 @@ export class ContentDiscoveryWidget extends HTMLElement {
     const branding = config?.branding;
     const logo = branding?.logo && this.safeHttpUrl(branding.logo);
     const title = branding?.widgetTitle ?? 'Build your professional briefing';
-    const body = this.state === 'error' ? `<div class="content"><div class="error" role="alert"><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="button" data-action="retry">Try again</button></div></div>` : `<div class="content"><div class="intro"><p class="intro-kicker">Professional intelligence</p><h2 class="intro-heading">${escapeHtml(title)}</h2><p class="intro-copy">Tell us where you work and what you do. The publisher’s hosted experience will build a briefing from its real coverage.</p><form class="profile-form" data-profile-form><label>Company website<input type="url" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="company.com" autocomplete="url" required></label><label>Job role<input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" required></label><p class="profile-error" data-profile-error role="alert"></p><button class="button button-wide" type="button" data-action="generate" data-focus-start>Build my briefing <span aria-hidden="true">→</span></button></form></div></div>`;
-    return `<section class="panel" role="dialog" aria-modal="true" aria-labelledby="widget-title"><header class="panel-head"><div class="panel-branding">${logo ? `<img class="publisher-logo" src="${escapeHtml(logo)}" alt="${escapeHtml(config?.publisherName ?? '')}">` : `<p class="eyebrow">${escapeHtml(config?.publisherName ?? 'Content discovery')}</p>`}<h1 id="widget-title" class="panel-title">${escapeHtml(title)}</h1></div><button class="icon-button" data-action="close" aria-label="Close briefing">×</button></header>${body}</section>`;
+    const introCopy = branding?.introductoryCopy ?? 'Start with the context behind your work. We’ll take you to a publisher-branded briefing built from real coverage.';
+    const body = this.state === 'error' ? `<div class="content error-state" role="alert"><p class="intro-kicker">Briefing unavailable</p><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="button" data-action="retry">Try again</button></div>` : `<div class="content"><div class="intro"><p class="intro-kicker">Professional intelligence</p><h2 class="intro-heading">${escapeHtml(title)}</h2><p class="intro-copy">${escapeHtml(introCopy)}</p></div><form class="profile-form" data-profile-form><label class="profile-field"><span>I work at</span><input type="url" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="company.com" autocomplete="url" required></label><label class="profile-field"><span>as a</span><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" required></label><button class="button button-wide" type="submit" data-action="generate" data-focus-start>Build my briefing <span aria-hidden="true">→</span></button><p class="profile-error" data-profile-error role="alert"></p></form><p class="content-note">Two inputs. A more useful way into the archive.</p></div>`;
+    return `<section class="panel" role="dialog" aria-modal="true" aria-labelledby="widget-title"><header class="panel-head"><div class="panel-branding">${logo ? `<img class="publisher-logo" src="${escapeHtml(logo)}" alt="${escapeHtml(config?.publisherName ?? '')}">` : `<span class="publisher-mark" aria-hidden="true">${escapeHtml((config?.publisherName ?? 'C').slice(0, 1))}</span>`}<div><p class="eyebrow">${escapeHtml(config?.publisherName ?? 'Content discovery')}</p><h1 id="widget-title" class="panel-title">${escapeHtml(title)}</h1></div></div><button class="icon-button" data-action="close" aria-label="Close briefing">×</button></header>${body}</section>`;
   }
 
   private trapFocus(event: KeyboardEvent): void {
