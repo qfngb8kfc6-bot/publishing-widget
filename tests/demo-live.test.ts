@@ -18,13 +18,15 @@ describe('sales live-demo CTA wiring', () => {
 
     buttons[1].click();
     expect(widget.shadowRoot?.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(widget.shadowRoot?.querySelector('.intro-heading')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('.profile-form')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('[data-profile-field="companyUrl"]')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('[data-profile-field="jobTitle"]')).not.toBeNull();
     expect(analytics.events.map((event) => event.name)).toEqual(expect.arrayContaining(['widget_opened', 'intro_viewed']));
 
     (widget.shadowRoot?.querySelector('[data-action="close"]') as HTMLButtonElement).click();
     expect(widget.shadowRoot?.querySelector('[role="dialog"]')).toBeNull();
     buttons[0].click();
-    expect(widget.shadowRoot?.querySelector('.intro-heading')).not.toBeNull();
+    expect(widget.shadowRoot?.querySelector('.profile-form')).not.toBeNull();
     expect(analytics.events.filter((event) => event.name === 'widget_opened')).toHaveLength(2);
   });
 
@@ -48,6 +50,6 @@ describe('sales live-demo CTA wiring', () => {
     expect(widget.shadowRoot?.querySelector('.launcher-copy strong')?.textContent).toContain('Find stories relevant to your business');
     expect(styles).toContain('right: 50%');
     expect(styles).toContain('border-radius: 999px');
-    expect(styles).toContain('backdrop-filter: blur(24px)');
+    expect(styles).toContain('backdrop-filter: blur(22px)');
   });
 });
