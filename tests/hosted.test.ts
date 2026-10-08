@@ -75,8 +75,11 @@ describe('hosted professional experience', () => {
     expect(document.querySelector('.context-bar')).not.toBeNull();
     expect(document.querySelector('.edit-sheet')).not.toBeNull();
     const styles = document.querySelector('style')?.textContent ?? '';
-    expect(styles).toContain('.report-hero{min-height:clamp(560px,68vh,740px)');
-    expect(styles).toContain('.match-summary-card{margin-top:-56px}');
+    expect(styles).toContain('.report-hero{min-height:clamp(560px,68vh,740px);padding:clamp(24px,3.5vw,48px)}');
+    expect(styles).toContain('.report-hero-content{min-height:clamp(460px,55vh,560px)');
+    expect(styles).toContain('.report-hero h1{font-size:clamp(4.75rem,7vw,6.25rem)}');
+    expect(styles).toContain('.report-title{margin-top:18px;font-size:clamp(2.25rem,3vw,2.875rem)}');
+    expect(styles).toContain('.match-summary-card{margin-top:-48px;padding:clamp(22px,3vw,36px)}');
     expect(styles).toContain('.context-bar{top:18px;background:#fff');
     expect(styles).toContain('.context-bar .hosted-brand.compact{color:#151a3a}');
 
