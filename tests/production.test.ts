@@ -44,6 +44,26 @@ describe('production boundaries', () => {
     expect(limiter.check('search:other:client').allowed).toBe(true);
   });
 
+  it('accepts the local Vite origin for demo generation while production remains allowlisted', async () => {
+    const developmentApp = createProductionApp({ environment: 'development' });
+    const localResponse = await developmentApp.handle(new Request('http://localhost:8787/api/reports/generate', {
+      method: 'POST',
+      headers: { Origin: 'http://localhost:5173', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer' }),
+    }));
+    expect(localResponse.status).toBe(201);
+    expect(localResponse.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173');
+
+    const productionApp = createProductionApp({ environment: 'production', serverEnvironment: { PUBLISHER_DEMO_ALLOWED_ORIGINS: 'https://discovery.ldsystems.uk' } });
+    const productionResponse = await productionApp.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', {
+      method: 'POST',
+      headers: { Origin: 'https://discovery.ldsystems.uk', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer' }),
+    }));
+    expect(productionResponse.status).toBe(201);
+    expect(productionResponse.headers.get('Access-Control-Allow-Origin')).toBe('https://discovery.ldsystems.uk');
+  });
+
   it('does not trust forwarding headers unless a proxy is explicitly enabled', async () => {
     const { requestRateLimitKey } = await import('../src/server/rate-limit');
     const first = new Request('https://product.example/api', { headers: { 'x-forwarded-for': '198.51.100.1' } });

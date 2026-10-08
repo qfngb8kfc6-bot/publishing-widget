@@ -6,10 +6,10 @@ Reusable, multi-tenant professional intelligence for publishers. The repository 
 
 ```bash
 npm install
-npm run dev
+npm run dev:full
 ```
 
-Open the Vite URL shown in the terminal. The demo host page is intentionally plain so the widget can be checked against a non-React, non-Next host.
+`npm run dev:full` builds the local API server, starts it on port 8787, starts Vite, and proxies `/api/*` from the Vite URL to that server. Open the Vite URL shown in the terminal. The demo host page is intentionally plain so the widget can be checked against a non-React, non-Next host. `npm run dev` remains available when only the frontend is needed; `npm run dev:api` starts the API separately for a two-terminal workflow.
 
 ```bash
 npm test

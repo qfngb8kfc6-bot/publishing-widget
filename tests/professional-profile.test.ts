@@ -4,8 +4,15 @@ import { normalizeCompanyUrl, SafeCompanyContextProvider } from '../src/server/c
 
 describe('professional context', () => {
   it('canonicalizes accepted company URL forms and blocks unsafe hosts', () => {
+    for (const input of ['ldsystems.uk', 'www.ldsystems.uk', 'https://ldsystems.uk', 'https://www.ldsystems.uk/', 'bbc.co.uk']) {
+      expect(normalizeCompanyUrl(input).canonicalUrl).toMatch(/^https:\/\//);
+    }
     expect(normalizeCompanyUrl('https://www.LDSystems.uk/about')).toEqual({ domain: 'ldsystems.uk', canonicalUrl: 'https://ldsystems.uk/' });
+    expect(normalizeCompanyUrl('www.ldsystems.uk', { preserveWww: true }).canonicalUrl).toBe('https://www.ldsystems.uk/');
     expect(normalizeCompanyUrl('ldsystems.uk').domain).toBe('ldsystems.uk');
+    for (const input of ['hello', 'not a url', 'javascript:alert(1)', 'ftp://example.com']) {
+      expect(() => normalizeCompanyUrl(input)).toThrow();
+    }
     expect(() => normalizeCompanyUrl('http://127.0.0.1:8080')).toThrow('unsafe_company_url');
     expect(() => normalizeCompanyUrl('file:///etc/passwd')).toThrow('unsafe_company_url');
   });

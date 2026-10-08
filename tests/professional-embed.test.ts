@@ -61,7 +61,54 @@ describe('professional embed mode', () => {
     expect(widget.shadowRoot?.querySelectorAll('.briefing-label')[1]?.textContent).toBe('as a');
     expect(widget.shadowRoot?.querySelector('.capsule-brand')).toBeNull();
     expect(widget.shadowRoot?.querySelector('.publisher-mark')).toBeNull();
+    const companyInput = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]');
+    expect(companyInput?.type).toBe('text');
+    expect(companyInput?.inputMode).toBe('url');
+    expect(companyInput?.getAttribute('autocomplete')).toBe('url');
+    expect(companyInput?.getAttribute('spellcheck')).toBe('false');
+    expect(companyInput?.required).toBe(false);
 
+    const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({}), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', request);
+    const form = widget.shadowRoot?.querySelector<HTMLFormElement>('form.briefing-bar');
+    const company = companyInput;
+    const role = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="jobTitle"]');
+    if (!form || !company || !role) throw new Error('professional form not rendered');
+    company.value = 'ldsystems.uk';
+    role.value = 'Software Engineer';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(request).toHaveBeenCalledOnce();
+    expect(request.mock.calls[0]?.[0]).toBe('/api/reports/generate');
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({ companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer', publisherId: 'demo' });
+    expect(analytics.events.map((event) => event.name)).toEqual(expect.arrayContaining(['company_entered', 'role_entered', 'report_requested']));
+    vi.unstubAllGlobals();
+  });
+
+  it('uses widget validation for invalid company websites and leaves the request untouched', async () => {
+    const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
+    widget.openWidget();
+    const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({}), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', request);
+    const form = widget.shadowRoot?.querySelector<HTMLFormElement>('form.briefing-bar');
+    const company = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]');
+    const role = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="jobTitle"]');
+    if (!form || !company || !role) throw new Error('professional form not rendered');
+    role.value = 'Software Engineer';
+
+    for (const input of ['hello', 'not a url', 'javascript:alert(1)', 'ftp://example.com']) {
+      company.value = input;
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      expect(widget.shadowRoot?.querySelector('[data-profile-error]')?.textContent).toBe('Enter a valid company website');
+    }
+    expect(request).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('accepts keyboard-style form submission for a bare domain', async () => {
+    const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
+    widget.openWidget();
     const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({}), { status: 201, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', request);
     const form = widget.shadowRoot?.querySelector<HTMLFormElement>('form.briefing-bar');
@@ -70,11 +117,31 @@ describe('professional embed mode', () => {
     if (!form || !company || !role) throw new Error('professional form not rendered');
     company.value = 'ldsystems.uk';
     role.value = 'Software Engineer';
-    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    form.requestSubmit();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(request).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({ companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer', publisherId: 'demo' });
-    expect(analytics.events.map((event) => event.name)).toEqual(expect.arrayContaining(['company_entered', 'role_entered', 'report_requested']));
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body)).companyUrl).toBe('https://ldsystems.uk/');
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the user-facing error generic while logging safe local diagnostics', async () => {
+    const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
+    widget.openWidget();
+    const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ error: 'generation_unavailable', requestId: 'req_local_123' }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', request);
+    const form = widget.shadowRoot?.querySelector<HTMLFormElement>('form.briefing-bar');
+    const company = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]');
+    const role = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="jobTitle"]');
+    if (!form || !company || !role) throw new Error('professional form not rendered');
+    company.value = 'ldsystems.uk';
+    role.value = 'Software Engineer';
+    form.requestSubmit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(widget.shadowRoot?.querySelector('[role="alert"]')?.textContent).toContain('We could not start your briefing');
+    expect(warning).toHaveBeenCalledWith('[content-discovery] generation request failed', expect.objectContaining({ endpoint: '/api/reports/generate', status: 503, error: 'generation_unavailable', requestId: 'req_local_123' }));
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('ldsystems.uk');
+    warning.mockRestore();
     vi.unstubAllGlobals();
   });
 });

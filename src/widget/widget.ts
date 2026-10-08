@@ -1,4 +1,4 @@
-import { ConsoleAnalytics, createEvent, createSessionId, DEFAULT_THEME, type AnalyticsClient, type DebugSink, type PublisherDefinition, type PublisherRegistry } from '../core';
+import { ConsoleAnalytics, createEvent, createSessionId, DEFAULT_THEME, normalizeCompanyUrl, type AnalyticsClient, type DebugSink, type PublisherDefinition, type PublisherRegistry } from '../core';
 import type { AIRecommendationLayer } from '../ai/types';
 import { widgetStyles } from './styles';
 
@@ -104,10 +104,18 @@ export class ContentDiscoveryWidget extends HTMLElement {
   private async submitProfessionalProfile(): Promise<void> {
     const company = this.root.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]')?.value.trim() ?? this.companyUrl;
     const role = this.root.querySelector<HTMLInputElement>('[data-profile-field="jobTitle"]')?.value.trim() ?? this.jobTitle;
+    const error = this.root.querySelector<HTMLElement>('[data-profile-error]');
     this.companyUrl = company;
     this.jobTitle = role;
     if (!company || !role) {
-      this.root.querySelector<HTMLElement>('[data-profile-error]')?.replaceChildren(document.createTextNode('Enter your company website and job role to continue.'));
+      error?.replaceChildren(document.createTextNode('Enter your company website and job role to continue.'));
+      return;
+    }
+    let normalizedCompanyUrl: string;
+    try {
+      normalizedCompanyUrl = normalizeCompanyUrl(company, { preserveWww: true }).canonicalUrl;
+    } catch {
+      error?.replaceChildren(document.createTextNode('Enter a valid company website'));
       return;
     }
     this.track('company_entered');
@@ -116,17 +124,27 @@ export class ContentDiscoveryWidget extends HTMLElement {
     const endpoint = this.dataset.generationEndpoint ?? '/api/reports/generate';
     const button = this.root.querySelector<HTMLButtonElement>('[data-action="generate"]');
     if (button) button.disabled = true;
+    let responseStatus: number | undefined;
+    let responseError: string | undefined;
+    let requestId: string | undefined;
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ publisherId: this.dataset.publisher ?? 'demo', companyUrl: company, jobTitle: role, sessionId: this.sessionId }),
+        body: JSON.stringify({ publisherId: this.dataset.publisher ?? 'demo', companyUrl: normalizedCompanyUrl, jobTitle: role, sessionId: this.sessionId }),
       });
-      const payload = await response.json() as { generationUrl?: string; reportUrl?: string; statusUrl?: string };
+      responseStatus = response.status;
+      let payload: { generationUrl?: string; reportUrl?: string; statusUrl?: string; error?: unknown; requestId?: unknown } = {};
+      try { payload = await response.json() as typeof payload; } catch { /* The development diagnostic below retains the HTTP status. */ }
+      responseError = typeof payload.error === 'string' && /^[a-z0-9_-]{1,80}$/i.test(payload.error) ? payload.error : undefined;
+      requestId = typeof payload.requestId === 'string' && /^[a-z0-9_-]{1,120}$/i.test(payload.requestId) ? payload.requestId : undefined;
       if (!response.ok || (!payload.generationUrl && !payload.reportUrl && !payload.statusUrl)) throw new Error('generation_unavailable');
       this.track('generation_started');
       window.location.assign(payload.generationUrl ?? payload.reportUrl ?? payload.statusUrl as string);
-    } catch {
+    } catch (error) {
+      if (this.isDevelopmentEnvironment()) {
+        console.warn('[content-discovery] generation request failed', { endpoint, status: responseStatus, error: responseError ?? (error instanceof Error ? error.name : 'unknown'), requestId });
+      }
       this.closedByUser = false;
       this.state = 'error';
       this.render();
@@ -150,7 +168,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
 
   private renderPanel(): string {
     if (this.state === 'error') return `<button class="close-control" data-action="close" aria-label="Close briefing">×</button><div class="error-state" role="alert"><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="briefing-submit" data-action="retry">Try again</button></div>`;
-    return `<button class="close-control" data-action="close" aria-label="Close briefing">×</button><form class="briefing-bar" data-profile-form role="dialog" aria-modal="true" aria-label="Build your professional briefing"><span class="briefing-label">I work at</span><label class="briefing-field briefing-field--company"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5.5h9V20M14 9h5v11M8 8.5h2M8 12h2M8 15.5h2M16.5 12h1M16.5 15.5h1M3 20h18" /></svg><input type="url" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="company.com" autocomplete="url" data-focus-start required></label><span class="briefing-label">as a</span><label class="briefing-field briefing-field--role"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16v11H4zM8 8.5V6h8v2.5M8 13h8M12 13v2" /></svg><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role" required></label><span class="briefing-arrow" aria-hidden="true">→</span><button class="briefing-submit" type="submit" data-action="generate"><span class="briefing-spark" aria-hidden="true">✦</span>Build my briefing</button><p class="profile-error" data-profile-error role="alert"></p></form>`;
+    return `<button class="close-control" data-action="close" aria-label="Close briefing">×</button><form class="briefing-bar" data-profile-form role="dialog" aria-modal="true" aria-label="Build your professional briefing"><span class="briefing-label">I work at</span><label class="briefing-field briefing-field--company"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5.5h9V20M14 9h5v11M8 8.5h2M8 12h2M8 15.5h2M16.5 12h1M16.5 15.5h1M3 20h18" /></svg><input type="text" inputmode="url" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="company.com" autocomplete="url" spellcheck="false" data-focus-start aria-label="Company website"></label><span class="briefing-label">as a</span><label class="briefing-field briefing-field--role"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16v11H4zM8 8.5V6h8v2.5M8 13h8M12 13v2" /></svg><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role"></label><span class="briefing-arrow" aria-hidden="true">→</span><button class="briefing-submit" type="submit" data-action="generate"><span class="briefing-spark" aria-hidden="true">✦</span>Build my briefing</button><p class="profile-error" data-profile-error role="alert"></p></form>`;
   }
 
   private trapFocus(event: KeyboardEvent): void {
@@ -164,12 +182,8 @@ export class ContentDiscoveryWidget extends HTMLElement {
     else if (!event.shiftKey && this.root.activeElement === last) { event.preventDefault(); first.focus(); }
   }
 
-  private safeHttpUrl(value: string): string {
-    try {
-      const url = new URL(value, window.location.href);
-      return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : '';
-    } catch {
-      return '';
-    }
+  private isDevelopmentEnvironment(): boolean {
+    return import.meta.env.DEV && typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1|::1)$/i.test(window.location.hostname);
   }
+
 }

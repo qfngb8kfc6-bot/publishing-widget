@@ -19,15 +19,21 @@ describe('hosted professional experience', () => {
 
     expect(document.querySelector('.hosted-shell')).not.toBeNull();
     expect(document.querySelector('.hosted-card')?.textContent).toContain('Northstar Journal');
-    expect(document.querySelector('.hosted-card')?.textContent).toContain('Software Engineer at LD Systems');
-    expect(document.querySelector('.progress')).not.toBeNull();
+    expect(document.querySelector('.generation-frame')).not.toBeNull();
+    expect(document.querySelector('.generation-logo [data-publisher-brand]')).not.toBeNull();
+    expect(document.querySelector('[data-generation-identity]')?.hasAttribute('hidden')).toBe(false);
+    expect(document.querySelector('[data-generation-company]')?.textContent).toBe('LD Systems');
+    expect(document.querySelector('[data-generation-role]')?.textContent).toBe('Software Engineer');
+    expect(document.querySelector('.generation-progress')).not.toBeNull();
+    expect(document.querySelector('[data-generation-stage]')).not.toBeNull();
+    expect(document.querySelector('.generation-stage')).toBeNull();
+    expect(document.querySelector('.generation-line')).toBeNull();
     const styles = document.querySelector('style')?.textContent ?? '';
     expect(styles).toContain('--loading-fallback:#151A3A');
     expect(styles).toContain('--report-fallback:#2A2C8F');
     expect(styles).toContain('--palette-cyan:#12A8B4');
     expect(styles).toContain('@media(max-width:780px)');
-    expect(styles).toContain('.hosted-shell.report{background-image:');
-    expect(document.querySelector('.generation-progress')?.textContent).toContain('Reviewing relevant coverage');
+    expect(styles).toContain('.generation-frame{');
     expect(styles).toContain('prefers-reduced-motion');
   });
 
@@ -53,12 +59,26 @@ describe('hosted professional experience', () => {
     expect(document.querySelector('content-discovery-widget')).toBeNull();
     expect(document.querySelector('[data-share]')).not.toBeNull();
     expect(document.querySelector('[data-edit]')).not.toBeNull();
-    expect(document.querySelector('.report-cover')).not.toBeNull();
+    expect(document.querySelector('.report-hero')).not.toBeNull();
+    expect(document.querySelector('.match-summary-card')).not.toBeNull();
+    expect(document.querySelector('.relevance-ring')).not.toBeNull();
+    expect(document.querySelector('.highlights-section')).not.toBeNull();
+    expect(document.querySelector('.also-relevant')).not.toBeNull();
     expect(document.querySelector('.featured-story')).not.toBeNull();
     expect(document.querySelectorAll('.story-card').length).toBeGreaterThan(0);
-    expect(document.querySelector('#why-heading')?.textContent).toBe('Why this briefing matters to you');
+    expect(document.querySelector('#highlights-heading')?.textContent).toBe('Top themes in your briefing');
+    expect(document.querySelector('.why strong')?.textContent).toBe('Why this matters to you');
+    expect(document.querySelector('.report-cover')).toBeNull();
+    expect(document.querySelector('.cover-content')).toBeNull();
+    expect(document.querySelector('.report-intro')).toBeNull();
+    expect(document.querySelector('#why-heading')).toBeNull();
     expect(document.querySelector('.context-bar')).not.toBeNull();
     expect(document.querySelector('.edit-sheet')).not.toBeNull();
+    const styles = document.querySelector('style')?.textContent ?? '';
+    expect(styles).toContain('.report-hero{min-height:clamp(560px,68vh,740px)');
+    expect(styles).toContain('.match-summary-card{margin-top:-56px}');
+    expect(styles).toContain('.context-bar{top:18px;background:#fff');
+    expect(styles).toContain('.context-bar .hosted-brand.compact{color:#151a3a}');
 
     document.querySelector<HTMLButtonElement>('[data-edit]')?.click();
     expect(document.querySelector<HTMLElement>('[data-edit-sheet]')?.hasAttribute('hidden')).toBe(false);

@@ -9,5 +9,6 @@ export * from './service';
 export * from './session';
 export * from './types';
 export * from './professional';
+export * from './company-url';
 export * from './theme';
 export { WIDGET_VERSION, PUBLISHER_CONFIG_VERSION } from '../version';

@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:api": "npm run build:server && node server-entry.mjs",
+    "dev:full": "node scripts/dev-full.mjs",
     "build": "tsc --noEmit && vite build && vite build --config vite.widget.config.ts && vite build --config vite.server.config.ts",
     "build:server": "tsc --noEmit && vite build --config vite.server.config.ts",
     "start": "npm run build && node server-entry.mjs",
