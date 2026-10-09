@@ -43,12 +43,12 @@ export async function createSeedAnalyticsStore(): Promise<MemoryAnalyticsStore> 
         events.push(seededEvent('generation_started', publisher.id, session, timestamp(15)));
         events.push(seededEvent('company_analysis_started', publisher.id, session, timestamp(16)));
         events.push(seededEvent('company_analysis_completed', publisher.id, session, timestamp(17), { industry }));
-        events.push(seededEvent('profile_generated', publisher.id, session, timestamp(18), { industry, roleFunction }));
+        events.push(seededEvent('profile_generated', publisher.id, session, timestamp(18), { industry, roleFunction, aiProfileUsed: false }));
         events.push(seededEvent('retrieval_started', publisher.id, session, timestamp(19)));
         events.push(seededEvent('retrieval_completed', publisher.id, session, timestamp(20), { resultCount: 7 }));
-        events.push(seededEvent('ranking_completed', publisher.id, session, timestamp(21), { resultCount: 7, rankingMode: mode }));
+        events.push(seededEvent('ranking_completed', publisher.id, session, timestamp(21), { resultCount: 7, rankingMode: mode, aiRerankUsed: mode === 'hybrid' }));
         const resultCount = industry === 'finance' && publisher.id === 'real-publisher' ? 3 : 7;
-        events.push(seededEvent('report_generated', publisher.id, session, timestamp(22), { resultCount, rankingMode: mode }));
+        events.push(seededEvent('report_generated', publisher.id, session, timestamp(22), { resultCount, rankingMode: mode, aiProfileUsed: false, aiRerankUsed: mode === 'hybrid', aiExplanationUsed: false }));
         for (let position = 1; position <= Math.min(resultCount, 4); position += 1) {
           const candidate = publisher.articles[(day + index + position - 1) % publisher.articles.length];
           events.push(seededEvent('story_impression', publisher.id, session, timestamp(22 + position), { articleId: candidate[0], articleTitle: candidate[1], articleCategory: candidate[2], articlePublishedAt: candidate[3], articlePosition: position, rankingMode: mode }));

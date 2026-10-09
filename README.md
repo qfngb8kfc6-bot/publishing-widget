@@ -161,8 +161,8 @@ Production includes activation checks, Postgres migrations and health checks, bo
 Phase 6 adds a first-party analytics layer with versioned events, privacy-safe answer handling, asynchronous batching, tenant-scoped ingestion/storage, derived reports and a development dashboard. Start the seeded dashboard with:
 
 ```text
-/analytics?publisher=demo
-/dashboard?publisher=real-publisher&admin=1
+/analytics?publisher=demo&sample=1
+/dashboard?publisher=real-publisher&admin=1&sample=1
 ```
 
 The dashboard supports overview and professional-generation funnel metrics, article and recommendation-position CTR, deterministic/hybrid measurements, potential content-gap opportunities, archive discovery, UTC date filters and publisher-scoped CSV exports. Legacy interest/persona panels remain only for historical questionnaire records; new events never store raw company URLs or job titles. See [docs/ANALYTICS.md](/Users/lucadominguez/publishing%20widget/docs/ANALYTICS.md) for the event contract, ingestion route, storage boundary, retention extension point and privacy controls.

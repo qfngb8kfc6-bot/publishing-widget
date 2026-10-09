@@ -150,7 +150,8 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
         if (!manifest || !originAllowed(manifest, request.headers.get('Origin'), environment)) return jsonError('origin_not_allowed', 403, requestId);
         const from = url.searchParams.get('from'); const to = url.searchParams.get('to');
         const range = from && to ? { from, to } : undefined;
-        return withHeaders(Response.json(buildAnalyticsReport(await analyticsStore.query({ publisherId, range }), publisherId, range)), request, manifest, environment, requestId);
+        const report = buildAnalyticsReport(await analyticsStore.query({ publisherId, range }), publisherId, range);
+        return withHeaders(Response.json({ ...report, publisherName: manifest.name }), request, manifest, environment, requestId);
       }
       if (url.pathname.startsWith('/api/ai/')) {
         const decision = aiLimiter.check(requestRateLimitKey(request, 'ai', 'global', trustedProxy));

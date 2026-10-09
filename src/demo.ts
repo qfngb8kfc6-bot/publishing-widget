@@ -12,7 +12,7 @@ if (isDevelopment) {
   const salesControls = document.createElement('aside');
   salesControls.className = 'sales-mode';
   salesControls.setAttribute('aria-label', 'Sales demonstration controls');
-  salesControls.innerHTML = '<strong>Demo controls</strong><button type="button" data-demo-scenario="marine">Marine industry</button><button type="button" data-demo-scenario="finance">Finance</button><button type="button" data-demo-scenario="technology">Technology</button><button type="button" data-demo-scenario="science">Science</button><a href="/analytics?publisher=demo&admin=1">Open publisher insights</a><a href="/embed-test.html">Open embed test</a><button type="button" data-demo-reset>Restart demo</button>';
+  salesControls.innerHTML = '<strong>Demo controls</strong><button type="button" data-demo-scenario="marine">Marine industry</button><button type="button" data-demo-scenario="finance">Finance</button><button type="button" data-demo-scenario="technology">Technology</button><button type="button" data-demo-scenario="science">Science</button><a href="/analytics?publisher=demo&admin=1&sample=1">Open publisher insights</a><a href="/embed-test.html">Open embed test</a><button type="button" data-demo-reset>Restart demo</button>';
   document.body.appendChild(salesControls);
 }
 

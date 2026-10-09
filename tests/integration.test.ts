@@ -32,6 +32,6 @@ describe('production-style route integration', () => {
     expect(ingest.status).toBe(202);
     const overview = await app.handle(new Request('https://product.example/api/analytics/demo/overview', { headers: { Origin: 'https://approved.example' } }));
     expect(overview.status).toBe(200);
-    expect((await overview.json()).overview.articleClicks).toBe(1);
+    expect(await overview.json()).toMatchObject({ publisherId: 'demo', publisherName: 'Northstar Journal', overview: { articleClicks: 1, storyClicks: 1 } });
   });
 });

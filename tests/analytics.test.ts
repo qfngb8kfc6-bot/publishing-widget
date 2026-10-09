@@ -59,14 +59,19 @@ describe('publisher analytics', () => {
       event('widget_opened', 'demo', 'professional-1', '2026-09-20T10:01:00.000Z'),
       event('company_entered', 'demo', 'professional-1', '2026-09-20T10:02:00.000Z', { industry: 'marine' }),
       event('role_entered', 'demo', 'professional-1', '2026-09-20T10:03:00.000Z', { roleFunction: 'operations' }),
+      event('report_requested', 'demo', 'professional-1', '2026-09-20T10:03:30.000Z'),
+      event('generation_started', 'demo', 'professional-1', '2026-09-20T10:03:40.000Z'),
       event('report_generated', 'demo', 'professional-1', '2026-09-20T10:04:00.000Z', { reportId: 'report-1', resultCount: 2, rankingMode: 'deterministic' }),
       event('story_impression', 'demo', 'professional-1', '2026-09-20T10:05:00.000Z', { articleId: 'story-1', articleTitle: 'Story', articleCategory: 'Marine', articlePosition: 1 }),
       event('story_clicked', 'demo', 'professional-1', '2026-09-20T10:06:00.000Z', { articleId: 'story-1', articleTitle: 'Story', articleCategory: 'Marine', articlePosition: 1 }),
+      event('report_viewed', 'demo', 'professional-1', '2026-09-20T10:07:00.000Z', { reportId: 'report-1' }),
     ], 'demo');
     expect(report.overview.searchesCompleted).toBe(1);
     expect(report.overview.articleClicks).toBe(1);
-    expect(report.funnel.map((stage) => stage.count)).toEqual([1, 1, 1, 1]);
+    expect(report.funnel.map((stage) => stage.count)).toEqual([1, 1, 1, 1, 1, 1]);
+    expect(report.funnel[5]).toMatchObject({ percentage: 100, conversionFromPrevious: 100, conversionFromFirst: 100 });
     expect(report.topRecommendedArticles[0]).toMatchObject({ articleId: 'story-1', impressions: 1, clicks: 1 });
+    expect(report.reportPerformance).toMatchObject({ generated: 1, viewed: 1, viewRate: 100, averageStoryClicksPerViewedReport: 1, averageStoryImpressionsPerViewedReport: 1 });
   });
 
   it('supports date presets, CSV exports, and non-blocking failed delivery', async () => {
@@ -77,5 +82,20 @@ describe('publisher analytics', () => {
     const client = new BatchingAnalyticsClient({ flushIntervalMs: 0, fetchImpl: async () => { throw new Error('offline'); } });
     expect(() => client.track(event('article_clicked', 'demo', 'd-1', '2026-09-27T10:00:00.000Z'))).not.toThrow();
     await client.flush();
+  });
+
+  it('derives safe audience and AI health metrics only from explicit categorical flags', () => {
+    const report = buildAnalyticsReport([
+      event('company_analysis_completed', 'demo', 's-1', '2026-09-20T10:00:00.000Z', { industry: 'marine' }),
+      event('role_analysis_completed', 'demo', 's-1', '2026-09-20T10:01:00.000Z', { roleFunction: 'operations' }),
+      event('profile_generated', 'demo', 's-1', '2026-09-20T10:02:00.000Z', { industry: 'marine', roleFunction: 'operations', aiProfileUsed: false }),
+      event('generation_started', 'demo', 's-1', '2026-09-20T10:03:00.000Z'),
+      event('ranking_completed', 'demo', 's-1', '2026-09-20T10:04:00.000Z', { aiRerankUsed: true }),
+      event('report_generated', 'demo', 's-1', '2026-09-20T10:05:00.000Z', { reportId: 'r-1', aiExplanationUsed: false }),
+    ], 'demo');
+    expect(report.audience.industries).toEqual([{ label: 'marine', count: 1, percentage: 100 }]);
+    expect(report.audience.roleFunctions).toEqual([{ label: 'operations', count: 1, percentage: 100 }]);
+    expect(report.audience.companiesAvailable).toBe(false);
+    expect(report.generationHealth).toMatchObject({ aiProfileUsageRate: 0, deterministicProfileRate: 100, aiRerankUsageRate: 100, aiExplanationUsageRate: 0, generationSuccessRate: 100 });
   });
 });
