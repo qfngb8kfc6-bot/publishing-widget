@@ -1,7 +1,7 @@
 import { access, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
-const required = ['package.json', 'server-entry.mjs', 'dist/widget.js', 'dist/server.mjs', 'dist/embed-test.html'];
+const required = ['package.json', 'server-entry.mjs', 'server-static.mjs', 'dist/widget.js', 'dist/server.mjs', 'dist/index.html', 'dist/admin.html', 'dist/embed-test.html'];
 for (const file of required) {
   try { await access(file); } catch { console.error(`[release:check] missing ${file}`); process.exitCode = 1; }
 }

@@ -22,6 +22,8 @@ import { MemoryReportStore, ReportGenerationService, type ReportStore } from '..
 import { SafeCompanyContextProvider, type CompanyContextProvider } from './company';
 import { createReportRoutes } from './report-routes';
 import { buildProfessionalProfile } from '../core';
+import { AdminAuth } from './admin-auth';
+import { createAdminRoutes } from './admin-routes';
 
 export interface ProductionServerOptions {
   environment?: 'development' | 'test' | 'production';
@@ -77,6 +79,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const aiLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.ai ?? 10 });
   const analyticsLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.analytics ?? 120 });
   const generationLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generation ?? 12 });
+  const adminAuth = new AdminAuth(environment, serverEnvironment);
   const aiConfig = createAIConfig(serverEnvironment);
   const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: aiConfig.timeoutMs, maxTokens: aiConfig.maxTokens }, options.fetchImpl) : undefined);
   const analyticsRoute = createAnalyticsIngestionRoute(analyticsStore, { isPublisherAllowed: (publisherId) => registry.has(publisherId) });
@@ -89,6 +92,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const reportAI = aiProvider ? { config: aiConfig, provider: aiProvider } : undefined;
   const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI);
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore);
+  const adminRoutes = createAdminRoutes({ registry, analyticsStore, generation: reportGeneration, auth: adminAuth, environment });
 
   const trustedProxy = options.trustedProxy ?? false;
   const handle = async (request: Request): Promise<Response> => {
@@ -98,6 +102,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     const publisherId = safeRouteId(url.pathname.match(/^\/api\/publishers\/([^/]+)/)?.[1] ?? url.pathname.match(/^\/api\/analytics\/([^/]+)/)?.[1]);
     const manifest = allowedOriginsFor(publisherId ? registry.get(publisherId)?.manifest : undefined, serverEnvironment);
     try {
+      if (url.pathname.startsWith('/api/admin/')) return await adminRoutes(request);
       if (url.pathname.startsWith('/api/') && request.method === 'OPTIONS') return withHeaders(corsPreflight(manifest, request, environment), request, manifest, environment, requestId);
       if (url.pathname === '/health' && request.method === 'GET') return withHeaders(createGlobalHealthResponse(environment, options.commitSha), request, undefined, environment, requestId);
       if ((url.pathname === '/ready' || url.pathname === '/readiness') && request.method === 'GET') return withHeaders(createReadinessResponse(environment, analyticsStoreMode, options.commitSha), request, undefined, environment, requestId);
@@ -183,7 +188,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, analyticsStore, analyticsStoreMode, reportStore };
+  return { handle, registry, analyticsStore, analyticsStoreMode, reportStore, adminAuth };
 }
 
 export async function runConfiguredAIHealthCheck(serverEnvironment: Record<string, string | undefined> = {}, fetchImpl: typeof fetch = fetch): Promise<{ status: 'disabled' | 'ok'; provider?: string }> {

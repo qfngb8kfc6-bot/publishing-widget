@@ -9,5 +9,5 @@ export default defineConfig({
       },
     },
   },
-  build: { rollupOptions: { input: 'index.html' } },
+  build: { rollupOptions: { input: { main: 'index.html', admin: 'admin.html' } } },
 });

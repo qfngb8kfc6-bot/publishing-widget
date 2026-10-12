@@ -1,9 +1,9 @@
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { createProductionApp, PostgresAnalyticsStore, PostgresReportStore } from './dist/server.mjs';
+import { staticResponse } from './server-static.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'dist');
 const port = Number(process.env.PORT || 8787);
@@ -34,28 +34,6 @@ async function createAnalyticsStore() {
   }
 }
 
-function contentType(filePath) {
-  if (filePath.endsWith('.html')) return 'text/html; charset=utf-8';
-  if (filePath.endsWith('.js')) return 'text/javascript; charset=utf-8';
-  if (filePath.endsWith('.css')) return 'text/css; charset=utf-8';
-  if (filePath.endsWith('.json')) return 'application/json; charset=utf-8';
-  return 'application/octet-stream';
-}
-
-async function staticResponse(request) {
-  const url = new URL(request.url, 'http://localhost');
-  if (request.method !== 'GET' && request.method !== 'HEAD') return null;
-  const pathname = url.pathname === '/' || url.pathname === '/analytics' || url.pathname === '/dashboard' || /^\/p\/[^/]+(?:\/.*)?$/.test(url.pathname) ? '/index.html' : url.pathname;
-  const candidate = path.resolve(root, `.${pathname}`);
-  if (!candidate.startsWith(`${root}${path.sep}`)) return new Response('Not found', { status: 404 });
-  try {
-    const body = await readFile(candidate);
-    const hashedAsset = pathname.startsWith('/assets/') && /-[A-Za-z0-9_-]+\.[a-z0-9]+$/i.test(pathname);
-    const cacheControl = hashedAsset ? 'public, max-age=31536000, immutable' : pathname === '/widget.js' ? 'public, max-age=300, stale-while-revalidate=86400' : 'public, max-age=3600';
-    return new Response(request.method === 'HEAD' ? null : body, { status: 200, headers: { 'Content-Type': contentType(candidate), 'Cache-Control': cacheControl, 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self' https:; base-uri 'self'; frame-ancestors 'self'" } });
-  } catch { return null; }
-}
-
 async function start() {
   let analyticsStore;
   let analyticsStoreMode;
@@ -73,7 +51,7 @@ async function start() {
   const host = incoming.headers.host || `localhost:${port}`;
   const body = incoming.method === 'GET' || incoming.method === 'HEAD' ? undefined : incoming;
   const request = new Request(`${protocol}://${host}${incoming.url}`, { method: incoming.method, headers: incoming.headers, body, duplex: body ? 'half' : undefined });
-  const response = (await staticResponse(request)) ?? await app.handle(request);
+  const response = (await staticResponse(request, root)) ?? await app.handle(request);
   outgoing.statusCode = response.status;
   response.headers.forEach((value, key) => outgoing.setHeader(key, value));
   outgoing.end(Buffer.from(await response.arrayBuffer()));

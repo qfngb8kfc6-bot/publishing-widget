@@ -16,7 +16,7 @@ The recommended starting point is a Node 22+ service running `node server-entry.
 ## Required services
 
 - Node-capable web service for `server-entry.mjs`.
-- Static asset/CDN hosting for `dist/widget.js`, `dist/index.html`, `dist/assets/` and `dist/embed-test.html`.
+- Static asset/CDN hosting for `dist/widget.js`, `dist/index.html`, `dist/admin.html`, `dist/assets/` and `dist/embed-test.html`.
 - Production relational database implementing `AnalyticsStore`, using `db/migrations/001_analytics_events.sql`.
 - Server-side publisher API credentials and, only if approved, an AI provider credential.
 - TLS termination, request logging/monitoring and a secrets manager.
@@ -53,6 +53,7 @@ Never pass API keys through Vite, `PublisherManifest`, browser configuration, an
 - `POST /api/reports/generate` creates a tenant-scoped professional briefing.
 - `GET /api/generations/:id/status` provides the async-compatible generation boundary.
 - `GET /api/reports/:id` reloads a persisted report without regeneration.
+- `GET /admin` and `/admin/` serve the internal admin frontend; `/api/admin/*` remains server-authenticated.
 - Hosted routes `/p/:publisherId/generate/:generationId` and `/p/:publisherId/:reportId` render the branded generation/report experience.
 
 All public API requests receive request IDs, security headers and route-class rate limits. Production CORS requires an exact configured publisher origin; unrestricted `*` access is not used. Localhost origins are accepted only in development/test modes.
