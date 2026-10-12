@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { MemoryReportStore } from '../src/reports';
+import { MemoryReportStore, ReportGenerationService } from '../src/reports';
+import { PublisherRegistry, type NormalizedArticle, type PublisherAdapter } from '../src/core';
 import { createProductionApp } from '../src/server/production';
 import { realPublisherSearchFixture } from '../src/publishers/real-publisher/fixtures';
 import { MockAIProvider } from '../src/ai/providers/mock';
 import { AIProviderError } from '../src/ai/provider';
+import { createDemoDefinition } from '../src/demo/definition';
+import { DemoPublisherAdapter } from '../src/demo/adapter';
+import { demoArticles } from '../src/demo/articles';
+import { SafeCompanyContextProvider } from '../src/server/company';
 
 type AIFailure = 'profile' | 'rerank' | 'content' | 'invalid-profile' | 'invalid-rerank' | 'invalid-content' | 'timeout-profile' | 'rate-limit-rerank';
 
@@ -40,6 +45,37 @@ async function generateWithAI(provider: MockAIProvider, timeoutMs = 40) {
 }
 
 describe('hosted report flow', () => {
+  it('reproduces the live widget request for LD Systems without a generation failure', async () => {
+    const app = createProductionApp({ environment: 'development' });
+    const response = await app.handle(new Request('http://localhost:5173/api/reports/generate', {
+      method: 'POST',
+      headers: { 'Origin': 'http://localhost:5173', 'Content-Type': 'application/json', 'X-Request-ID': 'regression-live-demo-1' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer', sessionId: 'session-regression-live-demo' }),
+    }));
+    const payload = await response.json() as { reportId?: string; error?: string; requestId?: string };
+    expect(response.status, JSON.stringify(payload)).toBe(201);
+    expect(payload.reportId).toBeTruthy();
+    expect(payload.error).toBeUndefined();
+  });
+
+  it.each([0, 1, 3, 6] as const)('persists a valid report with exactly %s eligible recommendations', async (count) => {
+    const adapter = new DemoPublisherAdapter();
+    const relevant = adapter.normalizeArticle(demoArticles[5]);
+    const unrelated = adapter.normalizeArticle(demoArticles[16]);
+    const articles = count === 0 ? [unrelated] : Array.from({ length: count }, (_, index) => ({ ...relevant, id: `${relevant.id}-${index}`, url: `${relevant.url}?variant=${index}`, title: `${relevant.title} ${index + 1}` }));
+    const reports = new MemoryReportStore();
+    const service = new ReportGenerationService((() => {
+      const base = createDemoDefinition();
+      const limited: PublisherAdapter<NormalizedArticle> = { publisherId: 'demo', search: async () => articles, normalizeArticle: (article) => article };
+      const registry = new PublisherRegistry();
+      registry.register({ ...base, adapter: limited });
+      return registry;
+    })(), new SafeCompanyContextProvider(), reports);
+    const report = await service.generate({ publisherId: 'demo', companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer' });
+    expect(report.recommendations).toHaveLength(count);
+    expect(await reports.get(report.id, 'demo')).toMatchObject({ id: report.id, recommendations: expect.any(Array) });
+  });
+
   it('generates, persists, reloads and regenerates a tenant-scoped demo report', async () => {
     const reports = new MemoryReportStore();
     const app = createProductionApp({ environment: 'test', reportStore: reports });
@@ -51,10 +87,13 @@ describe('hosted report flow', () => {
 
     const reportResponse = await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}?publisherId=demo`));
     expect(reportResponse.status).toBe(200);
-    const report = await reportResponse.json() as { companyDomain: string; jobTitle: string; recommendations: unknown[]; professionalProfile: { role: { function: string } } };
+    const report = await reportResponse.json() as { companyDomain: string; jobTitle: string; recommendations: Array<{ article: { id: string }; rankingMetadata: { relevanceType?: string } }>; professionalProfile: { role: { function: string } } };
     expect(report).toMatchObject({ companyDomain: 'ldsystems.uk', jobTitle: 'Software Engineer' });
     expect(report.professionalProfile.role.function).toBe('Engineering');
     expect(report.recommendations.length).toBeGreaterThan(0);
+    expect(report.recommendations.length).toBeLessThanOrEqual(6);
+    expect(report.recommendations.map((item) => item.article.id)).not.toContain('open-source-observatories');
+    expect(report.recommendations.every((item) => ['direct', 'adjacent'].includes(item.rankingMetadata.relevanceType ?? ''))).toBe(true);
     const status = await app.handle(new Request(`https://product.example${payload.statusUrl}`));
     expect(status.status).toBe(200);
     expect(await status.json()).toMatchObject({ companyDomain: 'ldsystems.uk', jobTitle: 'Software Engineer' });

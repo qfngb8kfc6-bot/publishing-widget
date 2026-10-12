@@ -34,6 +34,8 @@ export interface SemanticCandidate {
   tags: string[];
   contentSnippet?: string;
   deterministicScore: number;
+  deterministicRelevanceType?: 'direct' | 'adjacent';
+  relevanceSignals?: string[];
 }
 
 export interface ExplanationRequest {

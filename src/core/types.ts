@@ -95,6 +95,11 @@ export type ProgressStage = 'understanding' | 'searching' | 'comparing' | 'prepa
 export interface RelevanceResult {
   score: number;
   relevanceSignals: string[];
+  relevanceType?: 'direct' | 'adjacent' | 'weak' | 'none';
+  confidence?: number;
+  directMatches?: string[];
+  adjacentMatches?: string[];
+  negativeMatches?: string[];
 }
 
 export interface RankedArticle extends RelevanceResult {

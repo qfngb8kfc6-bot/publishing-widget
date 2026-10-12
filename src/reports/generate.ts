@@ -1,4 +1,4 @@
-import { combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry } from '../core';
+import { combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult } from '../core';
 import { AIProviderError } from '../ai/provider';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
@@ -9,7 +9,7 @@ import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
 
-export const GENERATION_VERSION = '1.1';
+export const GENERATION_VERSION = '1.2';
 
 function reportId(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
@@ -60,13 +60,20 @@ function createEnrichedIntent(profile: ReturnType<typeof buildProfessionalProfil
   };
 }
 
-function explanation(profile: ReturnType<typeof buildProfessionalProfile>, relevanceSignals: string[]): string {
+function explanation(profile: ReturnType<typeof buildProfessionalProfile>, relevance: Pick<RelevanceResult, 'relevanceSignals' | 'relevanceType' | 'directMatches' | 'adjacentMatches'>): string {
+  const matches = relevance.relevanceType === 'direct' ? relevance.directMatches : relevance.adjacentMatches;
+  if (matches?.length) {
+    const lead = relevance.relevanceType === 'direct' ? 'Directly matches' : 'Connects with adjacent themes';
+    return `${lead} ${matches.slice(0, 2).join(' and ')}, relevant to your work as ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}.`;
+  }
+  const relevanceSignals = relevance.relevanceSignals;
   const signal = relevanceSignals[0] ?? 'comes from the publisher’s coverage';
   return `${signal.charAt(0).toUpperCase()}${signal.slice(1)}, with a focus on developments relevant to ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}.`;
 }
 
-function reportSummary(profile: ReturnType<typeof buildProfessionalProfile>): string {
-  return `Based on your role in ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}, this briefing focuses on ${profile.professionalInterests.slice(0, 4).join(', ')} and developments most likely to matter to your work.`;
+function reportSummary(profile: ReturnType<typeof buildProfessionalProfile>, selectedCount: number): string {
+  const focus = profile.directInterests.slice(0, 4).join(', ') || profile.professionalInterests.slice(0, 4).join(', ');
+  return `Based on your role in ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}, this briefing focuses on ${focus} and includes ${selectedCount} selected ${selectedCount === 1 ? 'story' : 'stories'} with a clear connection to your work.`;
 }
 
 interface RankedCandidate {
@@ -77,6 +84,10 @@ interface RankedCandidate {
   semanticSignals: string[];
   finalScore: number;
   rankingMode: 'deterministic' | 'hybrid';
+  relevanceType: 'direct' | 'adjacent';
+  confidence?: number;
+  directMatches: string[];
+  adjacentMatches: string[];
 }
 
 export class ReportGenerationService {
@@ -125,15 +136,15 @@ export class ReportGenerationService {
     const unique = [...new Map(normalizedArticles.map((article) => [article.id, article])).values()];
     const finalLimit = Math.min(definition.config.results.maximumRecommendations, definition.config.content.resultLimit);
     const aiAvailable = this.canUseAI(definition);
-    const candidateLimit = aiAvailable ? Math.min(unique.length, Math.max(finalLimit, this.ai!.config.rerankLimit)) : finalLimit;
     const deterministicRanked: RankedCandidate[] = unique
       .map((article) => {
         const result = scoreProfessionalArticle(article, profile);
-        return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const };
+        return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], result };
       })
-      .sort((a, b) => b.deterministicScore - a.deterministicScore)
-      .slice(0, candidateLimit);
-    let ranked = deterministicRanked;
+      .filter((item) => passesRelevanceThreshold(item.result))
+      .sort((a, b) => (a.relevanceType === b.relevanceType ? b.deterministicScore - a.deterministicScore : a.relevanceType === 'direct' ? -1 : 1))
+      .map(({ result: _result, ...item }) => item);
+    let ranked = deterministicRanked.slice(0, finalLimit);
     let aiRerankUsed = false;
     if (aiAvailable && deterministicRanked.length > 0) {
       try {
@@ -145,17 +156,24 @@ export class ReportGenerationService {
           tags: result.article.tags,
           contentSnippet: result.article.contentSnippet?.slice(0, 500),
           deterministicScore: result.deterministicScore,
+          deterministicRelevanceType: result.relevanceType,
+          relevanceSignals: result.relevanceSignals,
         }));
         const semanticResults = validateSemanticResults(await withTimeout(this.ai!.provider.rerank(createEnrichedIntent(profile, input.publisherId), semanticCandidates), this.ai!.config.timeoutMs), semanticCandidates);
         if (semanticResults.length === 0) throw new Error('no_valid_rerank_results');
         const semanticById = new Map(semanticResults.map((result) => [result.articleId, result]));
         const deterministicWeight = definition.manifest?.ranking?.deterministicWeight ?? this.ai!.config.deterministicWeight;
         const semanticWeight = definition.manifest?.ranking?.semanticWeight ?? this.ai!.config.semanticWeight;
-        ranked = deterministicRanked.map((result, index) => {
+        ranked = deterministicRanked.flatMap((result, index) => {
           const semantic = semanticById.get(result.article.id);
+          if (!semantic) return [];
           const semanticScore = semantic?.semanticScore ?? result.deterministicScore;
-          return { ...result, semanticScore, semanticSignals: semantic?.signals ?? [], finalScore: combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight }), rankingMode: 'hybrid' as const, index };
-        }).sort((a, b) => b.finalScore - a.finalScore || b.deterministicScore - a.deterministicScore || a.index - b.index).slice(0, finalLimit).map(({ index: _index, ...result }) => result);
+          if (semantic.keep === false) return [];
+          const finalScore = combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight });
+          const relevanceType = semantic.relevanceType ?? result.relevanceType;
+          if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) return [];
+          return [{ ...result, semanticScore, semanticSignals: semantic.signals ?? [], finalScore, rankingMode: 'hybrid' as const, relevanceType, confidence: semantic.confidence ?? result.confidence, index }];
+        }).sort((a, b) => (a.relevanceType === b.relevanceType ? b.finalScore - a.finalScore || b.deterministicScore - a.deterministicScore || a.index - b.index : a.relevanceType === 'direct' ? -1 : 1)).slice(0, finalLimit).map(({ index: _index, ...result }) => result);
         aiRerankUsed = true;
       } catch { /* deterministic ranking remains authoritative */ }
     } else {
@@ -164,11 +182,11 @@ export class ReportGenerationService {
     await this.track('ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
     const deterministicRecommendations = ranked.map((item) => ({
       article: item.article,
-      deterministicExplanation: explanation(profile, item.relevanceSignals),
+      deterministicExplanation: explanation(profile, item),
       relevanceSignals: item.relevanceSignals,
       semanticSignals: item.semanticSignals,
     }));
-    let generatedSummary = reportSummary(profile);
+    let generatedSummary = reportSummary(profile, ranked.length);
     const explanationById = new Map<string, string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
@@ -189,7 +207,7 @@ export class ReportGenerationService {
       rank: index + 1,
       rawScore: item.finalScore,
       displayScore: displayRelevanceScore(item.finalScore),
-      explanation: explanationById.get(item.article.id) ?? explanation(profile, item.relevanceSignals),
+      explanation: explanationById.get(item.article.id) ?? explanation(profile, item),
       article: item.article,
       rankingMetadata: {
         relevanceSignals: item.relevanceSignals,
@@ -198,6 +216,8 @@ export class ReportGenerationService {
         deterministicScore: item.deterministicScore,
         semanticScore: item.semanticScore,
         semanticSignals: item.semanticSignals,
+        relevanceType: item.relevanceType,
+        confidence: item.confidence,
         aiProvider: aiRerankUsed || aiExplanationUsed ? this.ai?.provider.providerName : undefined,
       },
     }));

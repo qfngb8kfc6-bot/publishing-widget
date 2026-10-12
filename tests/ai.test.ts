@@ -79,6 +79,14 @@ describe('optional AI intelligence layer', () => {
     expect(valid).toEqual([{ articleId: 'article-1', semanticScore: 91, signals: ['hybrid propulsion', 'marine', 'manufacturing'] }]);
   });
 
+  it('accepts only bounded AI keep and relevance metadata', () => {
+    expect(validateSemanticResults([
+      { articleId: 'article-1', semanticScore: 72, relevanceType: 'adjacent', confidence: 68, keep: false, rationale: 'Only an adjacent connection.', signals: ['marine'] },
+      { articleId: 'article-1', semanticScore: 80, relevanceType: 'invented', keep: true },
+    ], [candidate])).toEqual([{ articleId: 'article-1', semanticScore: 72, signals: ['marine'], keep: false, relevanceType: 'adjacent', confidence: 68, rationale: 'Only an adjacent connection.' }]);
+    expect(validateSemanticResults([{ articleId: 'article-1', semanticScore: 70, keep: 'yes' }], [candidate])).toEqual([]);
+  });
+
   it('uses a stable weighted hybrid score rather than replacing deterministic relevance', () => {
     expect(combineHybridScore(90, 40, { deterministic: 0.7, semantic: 0.3 })).toBe(75);
     expect(combineHybridScore(90, 40)).toBe(75);

@@ -59,7 +59,7 @@ export class MockAIProvider implements AIProvider, ProfessionalAIProvider {
       const text = lower([candidate.title, candidate.description ?? '', ...candidate.categories, ...candidate.tags, candidate.contentSnippet ?? ''].join(' '));
       const signals = concepts.filter((concept) => text.includes(concept)).slice(0, 3);
       const semanticScore = Math.min(100, 42 + signals.length * 19 + (text.includes(lower(intent.persona)) ? 9 : 0));
-      return { articleId: candidate.articleId, semanticScore, signals };
+      return { articleId: candidate.articleId, semanticScore, relevanceType: candidate.deterministicRelevanceType ?? 'adjacent', confidence: semanticScore, keep: true, rationale: signals[0] ?? 'Matches the supplied professional profile.', signals };
     });
   }
 

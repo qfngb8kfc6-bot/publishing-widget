@@ -23,6 +23,10 @@ describe('professional context', () => {
     expect(analyzeRole('Software Engineer').function).toBe('Engineering');
     expect(profile.companyDomain).toBe('ldsystems.uk');
     expect(profile.professionalInterests).toEqual(expect.arrayContaining(['technology', 'AI', 'automation']));
+    expect(profile.directInterests).toContain('language models');
+    expect(profile.adjacentInterests).toContain('robotics');
+    expect(profile.retrieval.concepts.some((concept) => concept.concept === 'language models' && concept.relevanceType === 'direct' && concept.weight > 1)).toBe(true);
+    expect(profile.excludedConcepts).toContain('astronomy');
     expect(profile.retrieval.semanticQueries).toHaveLength(2);
     expect(profile.generatedAt).toBe('2026-10-06T00:00:00.000Z');
   });

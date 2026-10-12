@@ -14,6 +14,8 @@ export interface ReportRecommendation {
     deterministicScore?: number;
     semanticScore?: number;
     semanticSignals?: string[];
+    relevanceType?: 'direct' | 'adjacent';
+    confidence?: number;
     aiProvider?: string;
   };
 }

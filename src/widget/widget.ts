@@ -137,7 +137,10 @@ export class ContentDiscoveryWidget extends HTMLElement {
       let payload: { generationUrl?: string; reportUrl?: string; statusUrl?: string; error?: unknown; requestId?: unknown } = {};
       try { payload = await response.json() as typeof payload; } catch { /* The development diagnostic below retains the HTTP status. */ }
       responseError = typeof payload.error === 'string' && /^[a-z0-9_-]{1,80}$/i.test(payload.error) ? payload.error : undefined;
-      requestId = typeof payload.requestId === 'string' && /^[a-z0-9_-]{1,120}$/i.test(payload.requestId) ? payload.requestId : undefined;
+      const headerRequestId = response.headers.get('X-Request-ID') ?? undefined;
+      requestId = typeof payload.requestId === 'string' && /^[a-z0-9_-]{1,120}$/i.test(payload.requestId)
+        ? payload.requestId
+        : headerRequestId && /^[a-z0-9_-]{1,120}$/i.test(headerRequestId) ? headerRequestId : undefined;
       if (!response.ok || (!payload.generationUrl && !payload.reportUrl && !payload.statusUrl)) throw new Error('generation_unavailable');
       this.track('generation_started');
       window.location.assign(payload.generationUrl ?? payload.reportUrl ?? payload.statusUrl as string);

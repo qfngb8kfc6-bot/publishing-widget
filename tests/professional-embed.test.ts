@@ -144,4 +144,23 @@ describe('professional embed mode', () => {
     warning.mockRestore();
     vi.unstubAllGlobals();
   });
+
+  it('uses the response request-id header when an error body omits it', async () => {
+    const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
+    widget.openWidget();
+    const request = vi.fn(async () => new Response(JSON.stringify({ error: 'generation_unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json', 'X-Request-ID': 'req_header_456' } }));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', request);
+    const form = widget.shadowRoot?.querySelector<HTMLFormElement>('form.briefing-bar');
+    const company = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]');
+    const role = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="jobTitle"]');
+    if (!form || !company || !role) throw new Error('professional form not rendered');
+    company.value = 'ldsystems.uk';
+    role.value = 'Software Engineer';
+    form.requestSubmit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(warning).toHaveBeenCalledWith('[content-discovery] generation request failed', expect.objectContaining({ requestId: 'req_header_456' }));
+    warning.mockRestore();
+    vi.unstubAllGlobals();
+  });
 });

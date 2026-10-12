@@ -69,7 +69,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
     return this.requestJson('semantic-reranking', {
       enrichedIntent: intent,
       candidates: candidates.map((candidate) => ({ ...candidate, contentSnippet: candidate.contentSnippet?.slice(0, 500) })),
-    }, `Return a JSON array of objects with articleId, semanticScore from 0 to 100, and up to three concise grounded signals. Only use article IDs supplied in candidates.`);
+    }, `Return a JSON array of objects with articleId, semanticScore from 0 to 100, relevanceType (direct or adjacent), confidence from 0 to 100, keep (boolean), rationale, and up to three concise grounded signals. You may return fewer results and set keep false for weak or conflicting candidates. Direct matches must outrank merely adjacent matches. Do not reward generic topical overlap. Only use article IDs supplied in candidates.`);
   }
 
   async explainMany(requests: ExplanationRequest[]): Promise<unknown> {
