@@ -1,6 +1,7 @@
 import { DiscoveryError } from '../core';
 import { isPublisherOriginAllowed } from './origin';
 import type { PublisherManifest } from '../publishers/manifest';
+import { ContentSourceError, safeSourceFetch } from '../publishers/content';
 
 export interface RealPublisherProxyConfig {
   upstreamBaseUrl: string;
@@ -33,10 +34,10 @@ export function createRealPublisherProxy(config: RealPublisherProxyConfig, fetch
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? 8000);
     try {
-      const response = await fetchImpl(upstreamUrl, {
+      const response = await safeSourceFetch(upstreamUrl, {
         headers: { Accept: 'application/json', 'X-Request-ID': request.headers.get('X-Request-ID') ?? '', [config.tokenHeader ?? 'Authorization']: `Bearer ${config.apiToken}` },
         signal: controller.signal,
-      });
+      }, { timeoutMs: config.timeoutMs ?? 8000, fetchImpl });
       if (!response.ok) {
         const status = response.status === 401 || response.status === 403 ? 502 : response.status === 429 ? 429 : 503;
         return Response.json({ error: status === 429 ? 'rate_limited' : 'publisher_unavailable' }, { status });
@@ -44,6 +45,8 @@ export function createRealPublisherProxy(config: RealPublisherProxyConfig, fetch
       const body = await response.text();
       return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
+      if (error instanceof ContentSourceError && error.code === 'rate-limit') return Response.json({ error: 'rate_limited' }, { status: 429 });
+      if (error instanceof ContentSourceError && error.code === 'authentication-failure') return Response.json({ error: 'publisher_unavailable' }, { status: 502 });
       if (error instanceof DiscoveryError) throw error;
       return Response.json({ error: 'publisher_unavailable' }, { status: 503 });
     } finally {

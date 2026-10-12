@@ -49,30 +49,48 @@ export interface PublisherConfig {
 
 export interface NormalizedArticle {
   id: string;
+  /** Publisher-provided identifier when one exists. */
+  externalId?: string;
   title: string;
   description?: string;
   url: string;
+  canonicalUrl?: string;
   imageUrl?: string;
   publishedAt?: string;
+  updatedAt?: string;
   author?: string;
+  category?: string;
   categories: string[];
   tags: string[];
+  excerpt?: string;
   contentSnippet?: string;
   body?: string;
   summary?: string;
-  updatedAt?: string;
+  language?: string;
+  sourceType?: string;
+  sourceName?: string;
+  searchText?: string;
   contentType?: string;
   metadata?: Record<string, string | number | boolean>;
+  sourceMetadata?: Record<string, string | number | boolean>;
   publisherId: string;
   audiences?: string[];
   provenance?: ArticleProvenance;
 }
+
+/** Canonical name for articles entering the retrieval pipeline. */
+export type PublisherArticle = NormalizedArticle;
 
 export interface ArticleProvenance {
   publisherId: string;
   sourceArticleId: string;
   sourceUrl: string;
   retrievalSource: string;
+  sourceType?: string;
+  endpoint?: string;
+  originalUrl?: string;
+  ingestedAt?: string;
+  normalizerVersion?: string;
 }
 
 export interface Intent {
@@ -121,10 +139,27 @@ export interface PublisherAdapter<RawArticle = unknown> {
   normalizeArticle(raw: RawArticle): NormalizedArticle | null;
 }
 
+export interface PublisherContentAdapter<RawArticle = unknown> extends PublisherAdapter<RawArticle> {
+  readonly sourceType: string;
+  readonly supportsPagination: boolean;
+  fetch(intent: Intent, options: SearchOptions): Promise<RawArticle[]>;
+  healthCheck?(): Promise<ContentSourceHealth>;
+}
+
+export interface ContentSourceHealth {
+  publisherId: string;
+  sourceType: string;
+  reachable: boolean;
+  recordsChecked: number;
+  normalized: number;
+  warnings: string[];
+}
+
 export type DebugEvent =
   | { type: 'intent'; publisherId: string; intent: Intent }
   | { type: 'publisher_search_request'; publisherId: string; url: string; method: string; query: Record<string, string | number> }
   | { type: 'candidate_retrieval'; publisherId: string; count: number }
+  | { type: 'content_source'; publisherId: string; sourceType: string; durationMs: number; pagesFetched: number; rawCount: number; normalizedCount: number; rejectedCount: number; duplicateCount: number }
   | { type: 'normalized_articles'; publisherId: string; articles: Array<Pick<NormalizedArticle, 'id' | 'url' | 'title' | 'publisherId'>> }
   | { type: 'ranked_results'; publisherId: string; results: Array<{ id: string; score: number; relevanceSignals: string[] }> }
   | { type: 'enriched_intent'; publisherId: string; intent: unknown }

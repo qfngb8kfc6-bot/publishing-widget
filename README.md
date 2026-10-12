@@ -39,7 +39,7 @@ The universal layers live under `src/core/`:
 
 - `PublisherConfig` describes publisher branding, content limits and result presentation. Its optional questionnaire schema is retained only for temporary compatibility with older service consumers and historical data.
 - `PublisherAdapter` is the boundary around publisher search APIs. It exposes `search`, optional `getArticle`, and `normalizeArticle`.
-- `NormalizedArticle` is the universal format used by ranking and the UI. The demo adapter converts its raw article shape into this format.
+- `NormalizedArticle`/`PublisherArticle` is the universal format used by ranking and the UI. Source-specific adapters convert REST, RSS/Atom, sitemap, JSON and CSV records into this format before retrieval.
 - `ProfessionalProfile` and `RetrievalConcepts` are the primary intent model. Hosted generation builds a deterministic foundation, optionally enriches it server-side with the configured AI provider, retrieves candidates, applies deterministic-first hybrid ranking and persists report recommendations with grounded explanations.
 - `rankArticles` is deterministic and provider-free. It scores title, description, category, tags, content snippet, audience/persona and interest matches. The interface can later be replaced or augmented by an embedding/LLM reranker.
 - `AnalyticsClient` receives non-sensitive events with publisher ID, session ID and timestamp. `MemoryAnalytics` is useful in tests; `ConsoleAnalytics` is the Phase 1 default.
@@ -55,6 +55,7 @@ The supported onboarding path is documented in [docs/ONBOARDING.md](/Users/lucad
 ```bash
 npm run publisher:create -- acme-media
 npm run publisher:check -- acme-media
+npm run publisher:content-check -- acme-media
 npm run publisher:embed -- acme-media
 ```
 
@@ -68,6 +69,27 @@ Onboarding another publisher requires a manifest/configuration and adapter rathe
 `PublisherManifest` adds environment, version, feature, ranking, API and origin metadata. `PublisherRegistry.registerManifest()` validates it and refuses duplicate publisher ids. The `_template` directory is compile-safe but never registered.
 
 For a private publisher API, the adapter should call a server-side proxy. Do not put API keys in `widget.js` or expose them in publisher configuration.
+
+### Content source adapters
+
+`src/publishers/content/` provides `RestJsonContentAdapter`, `FeedContentAdapter`, `SitemapContentAdapter`, `StaticJsonContentAdapter` and `CsvContentAdapter`. REST supports mapped response envelopes, page/offset/cursor pagination, bounded candidate limits, timeouts and rate-limit diagnostics. RSS/Atom supports identifiers, summaries/content, dates, authors, categories and enclosure media. Sitemap mode only fetches bounded, allowlisted sitemap URLs and extracts JSON-LD, OpenGraph/meta and plain text from article pages.
+
+All sources normalize into the existing canonical model with stable IDs, tracking-parameter URL cleanup, provenance and plain-text search fields. The current report path is live/on-demand: the adapter retrieves bounded candidates during generation and the existing deterministic/AI ranking pipeline remains authoritative. Static JSON and CSV can also be used as cached/ingested archives by supplying a loader to the corresponding adapter.
+
+Example REST configuration (no credential value belongs here):
+
+```ts
+{
+  type: 'rest-json',
+  baseUrl: 'https://api.publisher.example',
+  endpoint: '/v1/articles',
+  searchQueryParameter: 'q',
+  pagination: { style: 'page', pageParameter: 'page', limitParameter: 'pageSize', pageSize: 50, maxPages: 2 },
+  mappings: { id: 'articleId', title: 'headline', url: 'canonicalUrl', imageUrl: 'media.image' }
+}
+```
+
+Run `npm run publisher:content-check -- <publisher-id>` before registration. It reports source files and sanitized fixtures only; live checks should run in the server environment with secrets supplied by the deployment secret manager.
 
 ## Demo content and behaviour
 

@@ -35,6 +35,7 @@ export const realPublisherManifest: PublisherManifest = {
   ranking: { mode: 'deterministic', deterministicWeight: 1, semanticWeight: 0 },
   features: { aiEnabled: false, explanationsEnabled: true, analyticsEnabled: true },
   api: { baseUrl: '/api/publishers/real-publisher', searchEndpoint: '/search', articleEndpoint: '/articles/:id', authentication: 'server-proxy', timeoutMs: 8000, candidateLimit: 30 },
+  contentSource: { type: 'rest-json', baseUrl: '/api/publishers/real-publisher', endpoint: '/search', articleEndpoint: '/articles/:id', searchQueryParameter: 'q', pagination: { style: 'page', pageParameter: 'page', limitParameter: 'limit', firstPage: 1, pageSize: 30, maxPages: 1 }, candidateLimit: 30, sourceName: 'Real publisher API' },
 };
 
 export const defaultRealPublisherApiConfig: RealPublisherApiConfig = {
@@ -51,6 +52,8 @@ export const defaultRealPublisherApiConfig: RealPublisherApiConfig = {
   candidateLimit: 30,
   timeoutMs: 8000,
   retrievalSource: 'real-publisher-api',
+  pagination: { style: 'page', pageParameter: 'page', limitParameter: 'limit', firstPage: 1, pageSize: 30, maxPages: 1 },
+  sourceName: 'Real publisher API',
 };
 
 export function createRealPublisherApiConfig(environment: RealPublisherEnvironment = {}): RealPublisherApiConfig {

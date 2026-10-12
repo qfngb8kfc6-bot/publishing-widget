@@ -1,5 +1,6 @@
 import type { BrandingConfig, PublisherConfig, QuestionConfig } from '../core';
 import { DEFAULT_THEME } from '../core/theme';
+import type { ContentSourceConfig } from './content/types';
 
 export interface PublisherManifestBranding extends Partial<BrandingConfig> {
   primaryAccent?: string;
@@ -36,6 +37,8 @@ export interface PublisherManifest {
     searchBehavior?: 'intent' | 'keywords';
     categoryMappings?: Record<string, string[]>;
   };
+  /** Optional declarative source metadata. Runtime secrets stay server-side. */
+  contentSource?: ContentSourceConfig;
   results: PublisherConfig['results'];
   ranking?: {
     mode: 'deterministic' | 'hybrid';

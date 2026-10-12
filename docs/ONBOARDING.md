@@ -18,7 +18,7 @@ Branding assets should be HTTPS URLs controlled by the publisher or host asset p
 
 ## 3. Implement the adapter and normalizer
 
-`search()` translates the professional profile intent into publisher-specific query parameters and retrieves 30–100 candidates. `normalizeArticle()` must return the shared `NormalizedArticle` shape or `null` for malformed records. Raw API fields must not escape the adapter/normalizer directory.
+`search()` translates the professional profile intent into publisher-specific query parameters and retrieves 30–100 candidates. `normalizeArticle()` must return the shared `NormalizedArticle`/`PublisherArticle` shape or `null` for malformed records. Raw API fields must not escape the adapter/normalizer directory. The reusable source adapters in `src/publishers/content/` support REST JSON, RSS, Atom, sitemap page extraction, static JSON and CSV; each source ends at the canonical article model before ranking.
 
 Use `src/publishers/real-publisher/` as the working example and add sanitized response fixtures under `<publisher>/fixtures/`. A fixture must never contain credentials or private article data.
 
@@ -28,6 +28,8 @@ Use the server route `/api/publishers/:publisherId/search` and keep private keys
 
 `src/server/real-publisher-proxy.ts` is a platform-neutral example. Mount it in the host server, add rate limiting and use `allowedOrigins` when the deployment needs origin restrictions. Origin allowlisting is an additional boundary; it is not a replacement for authentication.
 
+Private source authentication is represented by a server-side secret reference, not a token value in a manifest. Public request headers may be configured directly; bearer/API-key/custom-header secrets must be resolved by a server adapter. The content adapters reject private/loopback/unsafe URLs, validate redirects, bound pagination and never include source payloads in diagnostics.
+
 ## 5. Register the publisher
 
 Add one entry to the definitions array in `src/publishers/registry.ts`, using `registry.registerManifest(manifest, adapter, explanationProvider)`. The registry validates the manifest, prevents duplicate ids and confirms the adapter id matches. Do not import `_template` into the registry.
@@ -36,6 +38,7 @@ Add one entry to the definitions array in `src/publishers/registry.ts`, using `r
 
 ```bash
 npm run publisher:check -- acme-media
+npm run publisher:content-check -- acme-media
 npm test
 npm run typecheck
 npm run build
@@ -43,6 +46,8 @@ npm run publisher:embed -- acme-media
 ```
 
 The health command performs a source/fixture/placeholder check without reading or printing secrets. Host deployments should additionally execute a live request against the server route with a staging credential and verify timeout, authentication, rate-limit and malformed-response behavior.
+
+The content check reports source files, detected source type and sanitized fixture presence without reading or printing credentials. Live source checks belong in the server environment.
 
 ## 7. Embed
 

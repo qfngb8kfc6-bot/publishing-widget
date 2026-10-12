@@ -1,4 +1,5 @@
 import type { NormalizedArticle } from '../../core';
+import type { ArticleFieldMappings, PaginationConfig } from '../content';
 
 export interface RealPublisherApiConfig {
   baseUrl: string;
@@ -17,6 +18,10 @@ export interface RealPublisherApiConfig {
   candidateLimit: number;
   timeoutMs: number;
   retrievalSource: string;
+  responsePath?: string;
+  pagination?: PaginationConfig;
+  fieldMappings?: ArticleFieldMappings;
+  sourceName?: string;
 }
 
 export interface RealPublisherEnvironment {

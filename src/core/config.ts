@@ -28,6 +28,16 @@ export function validatePublisherManifest(manifest: PublisherManifest): void {
   if (!manifest.content.adapterId.trim()) throw new Error('Publisher manifest requires content.adapterId.');
   if (manifest.allowedOrigins?.some((origin) => !/^https?:\/\/[^\s/]+(?:\/.*)?$/i.test(origin))) throw new Error('Publisher manifest contains an invalid allowed origin.');
   if (manifest.api?.timeoutMs !== undefined && manifest.api.timeoutMs < 1) throw new Error('Publisher API timeout must be positive.');
+  const source = manifest.contentSource;
+  if (source?.type === 'rest-json') {
+    if (!source.baseUrl.trim() || !source.endpoint.trim()) throw new Error('REST content source requires baseUrl and endpoint.');
+    if (source.timeoutMs !== undefined && source.timeoutMs < 1) throw new Error('Content source timeout must be positive.');
+    if (source.candidateLimit !== undefined && (source.candidateLimit < 1 || source.candidateLimit > 100)) throw new Error('Content source candidateLimit must be between 1 and 100.');
+    if (source.pagination?.pageSize !== undefined && source.pagination.pageSize < 1) throw new Error('Content source pageSize must be positive.');
+    if (source.pagination?.maxPages !== undefined && (source.pagination.maxPages < 1 || source.pagination.maxPages > 20)) throw new Error('Content source maxPages must be between 1 and 20.');
+  }
+  if ((source?.type === 'rss' || source?.type === 'atom') && !source.feedUrl.trim()) throw new Error('Feed content source requires feedUrl.');
+  if (source?.type === 'sitemap' && !source.sitemapUrl.trim()) throw new Error('Sitemap content source requires sitemapUrl.');
   if (manifest.ranking) {
     const deterministic = manifest.ranking.deterministicWeight ?? 0.7;
     const semantic = manifest.ranking.semanticWeight ?? 0.3;

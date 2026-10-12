@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "publisher:create": "node scripts/publisher-create.mjs",
     "publisher:check": "node scripts/publisher-check.mjs",
+    "publisher:content-check": "node scripts/publisher-content-check.mjs",
     "publisher": "node scripts/publisher.mjs",
     "publisher:embed": "node scripts/publisher-embed.mjs",
     "db:migrate": "node scripts/db-migrate.mjs",
