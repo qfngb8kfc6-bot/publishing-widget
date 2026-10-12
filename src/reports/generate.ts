@@ -1,4 +1,4 @@
-import { combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult } from '../core';
+import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult } from '../core';
 import { AIProviderError } from '../ai/provider';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
@@ -169,8 +169,10 @@ export class ReportGenerationService {
           if (!semantic) return [];
           const semanticScore = semantic?.semanticScore ?? result.deterministicScore;
           if (semantic.keep === false) return [];
-          const finalScore = combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight });
-          const relevanceType = semantic.relevanceType ?? result.relevanceType;
+          // AI may downgrade an over-optimistic deterministic classification,
+          // but it cannot promote an adjacent match into a direct one.
+          const relevanceType = result.relevanceType === 'adjacent' ? 'adjacent' as const : semantic.relevanceType ?? result.relevanceType;
+          const finalScore = calibrateRelevanceScore(combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight }), relevanceType);
           if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) return [];
           return [{ ...result, semanticScore, semanticSignals: semantic.signals ?? [], finalScore, rankingMode: 'hybrid' as const, relevanceType, confidence: semantic.confidence ?? result.confidence, index }];
         }).sort((a, b) => (a.relevanceType === b.relevanceType ? b.finalScore - a.finalScore || b.deterministicScore - a.deterministicScore || a.index - b.index : a.relevanceType === 'direct' ? -1 : 1)).slice(0, finalLimit).map(({ index: _index, ...result }) => result);

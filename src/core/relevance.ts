@@ -14,6 +14,7 @@ export const RELEVANCE_THRESHOLDS = {
   direct: 24,
   adjacent: 24,
   featured: 55,
+  adjacentMaximum: 59,
 } as const;
 
 /** Interpretable evidence weights: title/metadata outrank body-only matches. */
@@ -123,7 +124,9 @@ function matchingConcepts(concepts: RetrievalConcept[], value: string): Retrieva
 
 function professionalFields(article: NormalizedArticle): { title: string; metadata: string; body: string; all: string } {
   const title = article.title;
-  const metadata = [article.description ?? '', ...article.categories, ...article.tags, ...(article.audiences ?? [])].join(' ');
+  // Audience labels describe distribution, not article subject matter. They
+  // must not turn "manufacturer" into a direct "manufacturing" match.
+  const metadata = [article.description ?? '', ...article.categories, ...article.tags].join(' ');
   const body = [article.contentSnippet ?? '', article.summary ?? '', article.body ?? ''].join(' ');
   return { title, metadata, body, all: `${title} ${metadata} ${body}` };
 }
@@ -162,10 +165,11 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
   const roleBonus = Math.min(10, roleMatchCount * PROFESSIONAL_SCORE_WEIGHTS.roleBonus);
   const companyBonus = Math.min(6, companyMatches.length * PROFESSIONAL_SCORE_WEIGHTS.companyBonus);
   const negativePenalty = Math.min(45, negativeTitle.length * 28 + negativeMetadata.length * 18 + negativeBody.length * 10);
-  const score = Math.max(0, Math.min(100, Math.round(directScore + adjacentScore + roleBonus + companyBonus + freshness - negativePenalty)));
+  const rawScore = Math.max(0, Math.min(100, Math.round(directScore + adjacentScore + roleBonus + companyBonus + freshness - negativePenalty)));
   const meaningfulDirect = directMatches.length > 0 && directScore >= 12 && (directTitle.length > 0 || directMatches.length >= 2 || directMetadata.some((match) => match.source === 'company'));
   const meaningfulAdjacent = adjacentMatches.length > 0 && adjacentScore >= 12;
-  const relevanceType: RelevanceResult['relevanceType'] = meaningfulDirect ? 'direct' : meaningfulAdjacent ? 'adjacent' : score > 0 ? 'weak' : 'none';
+  const relevanceType: RelevanceResult['relevanceType'] = meaningfulDirect ? 'direct' : meaningfulAdjacent ? 'adjacent' : rawScore > 0 ? 'weak' : 'none';
+  const score = calibrateRelevanceScore(rawScore, relevanceType);
   const signals: string[] = [];
   if (meaningfulDirect) signals.push(`directly matches ${directMatches.slice(0, 2).join(' and ')}`);
   if (!meaningfulDirect && meaningfulAdjacent) signals.push(`connects with adjacent themes: ${adjacentMatches.slice(0, 2).join(' and ')}`);
@@ -176,8 +180,13 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
   return { score, relevanceSignals: unique(signals), relevanceType, confidence, directMatches, adjacentMatches, negativeMatches };
 }
 
+export function calibrateRelevanceScore(score: number, relevanceType?: RelevanceResult['relevanceType']): number {
+  const bounded = Math.max(0, Math.min(100, Math.round(score)));
+  return relevanceType === 'adjacent' ? Math.min(bounded, RELEVANCE_THRESHOLDS.adjacentMaximum) : bounded;
+}
+
 export function passesRelevanceThreshold(result: RelevanceResult, featured = false): boolean {
   if (result.relevanceType === 'direct') return result.score >= (featured ? RELEVANCE_THRESHOLDS.featured : Math.max(RELEVANCE_THRESHOLDS.candidate, RELEVANCE_THRESHOLDS.direct));
-  if (result.relevanceType === 'adjacent') return result.score >= (featured ? RELEVANCE_THRESHOLDS.featured : Math.max(RELEVANCE_THRESHOLDS.candidate, RELEVANCE_THRESHOLDS.adjacent));
+  if (result.relevanceType === 'adjacent') return !featured && result.score >= Math.max(RELEVANCE_THRESHOLDS.candidate, RELEVANCE_THRESHOLDS.adjacent);
   return false;
 }

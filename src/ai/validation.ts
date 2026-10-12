@@ -1,4 +1,4 @@
-import { tokenize, type Intent } from '../core';
+import { normalizeToken, tokenize, type Intent } from '../core';
 import type { AIExplanationResult, AIProfessionalProfileEnhancement, AIReportContent, EnrichedIntent, ReportContentRequest, SemanticCandidate } from './types';
 import type { ProfessionalProfile } from '../core';
 
@@ -17,6 +17,18 @@ function optionalString(value: unknown, maxLength = 160): string | undefined {
 
 function appendUnique(existing: string[], additions: string[] | undefined, max = 40): string[] {
   return [...new Set([...existing, ...(additions ?? [])].map((item) => item.trim()).filter(Boolean))].slice(0, max);
+}
+
+const GENERIC_PROFILE_CONCEPTS = new Set(['business', 'change', 'decision support', 'developments', 'industry', 'innovation', 'professional practice', 'technology']);
+
+function isSpecificConcept(value: string): boolean {
+  return !GENERIC_PROFILE_CONCEPTS.has(normalizeToken(value));
+}
+
+function overlapsConcept(left: string, right: string): boolean {
+  const a = normalizeToken(left);
+  const b = normalizeToken(right);
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
 }
 
 export function validateProfessionalProfileEnhancement(raw: unknown): AIProfessionalProfileEnhancement | null {
@@ -82,7 +94,9 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
     responsibilities: appendUnique(profile.role.responsibilities, personEnhancement?.responsibilities),
     decisionAreas: appendUnique(profile.role.decisionAreas ?? [], personEnhancement?.decisionAreas),
     technologies: appendUnique(profile.role.technologies ?? [], personEnhancement?.technologies),
-    professionalThemes: appendUnique(profile.role.professionalThemes, personEnhancement?.themes),
+    // The deterministic role foundation is stable. AI themes are classified
+    // below as bounded direct/adjacent additions instead of replacing it.
+    professionalThemes: profile.role.professionalThemes,
   };
   const companyConcepts = [
     ...(companyEnhancement?.activities ?? []),
@@ -91,17 +105,37 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
     ...(companyEnhancement?.markets ?? []),
   ];
   const roleConcepts = [...(personEnhancement?.decisionAreas ?? []), ...(personEnhancement?.technologies ?? [])];
-  const professionalInterests = appendUnique(profile.professionalInterests, [
+  const aiConcepts = [
     ...(enhancement.professionalInterests ?? []),
     ...(companyEnhancement?.themes ?? []),
     ...(personEnhancement?.themes ?? []),
     ...companyConcepts,
     ...roleConcepts,
-  ]);
-  const searchTerms = appendUnique(profile.searchTerms, [...(enhancement.searchTerms ?? []), ...companyConcepts, ...roleConcepts], 64);
+  ].filter(isSpecificConcept);
+  const deterministicDirect = profile.directInterests?.length ? profile.directInterests : profile.professionalInterests;
+  const verifiedCompanySignals = [...profile.company.topics, ...(profile.company.technologies ?? []), ...(companyEnhancement?.technologies ?? [])];
+  const aiDirect = [...new Set([
+    ...companyConcepts.filter((concept) => isSpecificConcept(concept)),
+    ...aiConcepts.filter((concept) => deterministicDirect.some((base) => overlapsConcept(base, concept)) || verifiedCompanySignals.some((base) => overlapsConcept(base, concept))),
+  ])].slice(0, 16);
+  const aiAdjacent = [...new Set(aiConcepts.filter((concept) => !aiDirect.some((direct) => overlapsConcept(direct, concept))))].slice(0, 16);
+  const directInterests = appendUnique(deterministicDirect, aiDirect, 32);
+  const adjacentInterests = appendUnique(profile.adjacentInterests ?? [], aiAdjacent, 32);
+  // Deterministic direct concepts always lead the profile. This prevents a
+  // vague or reordered model response from changing the user's core identity.
+  const professionalInterests = appendUnique([], [...directInterests, ...adjacentInterests, ...profile.professionalInterests], 48);
+  const searchTerms = appendUnique(profile.searchTerms, [...directInterests, ...adjacentInterests, ...(enhancement.searchTerms ?? [])].filter(isSpecificConcept), 64);
   const semanticQueries = appendUnique(profile.semanticQueries, enhancement.semanticQueries, 12);
   const entities = appendUnique(profile.entities, enhancement.relevantEntities, 32);
   const likelyInformationNeeds = appendUnique(profile.likelyInformationNeeds, enhancement.likelyInformationNeeds, 32);
+  const existingConcepts = profile.retrieval.concepts ?? [];
+  const additions = [
+    ...aiDirect.map((concept) => ({ concept, weight: 0.7, relevanceType: 'direct' as const, source: 'company' as const })),
+    ...aiAdjacent.map((concept) => ({ concept, weight: 0.45, relevanceType: 'adjacent' as const, source: 'company' as const })),
+  ];
+  const concepts = [...existingConcepts, ...additions]
+    .filter((item, index, values) => values.findIndex((candidate) => normalizeToken(candidate.concept) === normalizeToken(item.concept)) === index)
+    .slice(0, 64);
   const retrieval = {
     ...profile.retrieval,
     keywordQueries: appendUnique(profile.retrieval.keywordQueries, searchTerms, 64),
@@ -111,8 +145,9 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
     industryTerms: appendUnique(profile.retrieval.industryTerms, company.industry ? [company.industry] : [], 16),
     roleTerms: appendUnique(profile.retrieval.roleTerms, [...role.responsibilities, ...(role.decisionAreas ?? []), ...(role.technologies ?? [])], 48),
     exclusions: appendUnique(profile.retrieval.exclusions, enhancement.excludedConcepts, 24),
+    concepts,
   };
-  return { ...profile, company, role, professionalInterests, entities, likelyInformationNeeds, searchTerms, semanticQueries, excludedConcepts: retrieval.exclusions, retrieval };
+  return { ...profile, company, role, professionalInterests, directInterests, adjacentInterests, entities, likelyInformationNeeds, searchTerms, semanticQueries, excludedConcepts: retrieval.exclusions, retrieval };
 }
 
 export function validateReportContent(raw: unknown, request: ReportContentRequest): AIReportContent | null {

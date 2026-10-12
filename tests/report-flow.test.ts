@@ -36,6 +36,12 @@ class ConfigurableReportAIProvider extends MockAIProvider {
   }
 }
 
+class InflatedAdjacentAIProvider extends MockAIProvider {
+  override async rerank(_intent: Parameters<MockAIProvider['rerank']>[0], candidates: Parameters<MockAIProvider['rerank']>[1]): Promise<unknown> {
+    return candidates.map((candidate) => ({ articleId: candidate.articleId, semanticScore: 100, relevanceType: 'adjacent', confidence: 100, keep: true, rationale: 'Synthetic inflated adjacency test.', signals: ['generic overlap'] }));
+  }
+}
+
 async function generateWithAI(provider: MockAIProvider, timeoutMs = 40) {
   const app = createProductionApp({ environment: 'test', serverEnvironment: { AI_ENABLED: 'true', AI_PROVIDER: 'mock', AI_MODEL: 'test-model', AI_TIMEOUT_MS: String(timeoutMs) }, aiProvider: provider });
   const response = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }) }));
@@ -167,6 +173,14 @@ describe('hosted report flow', () => {
     expect(events.find((event) => event.name === 'profile_generated')?.metadata).toMatchObject({ aiProfileUsed: true });
     expect(events.find((event) => event.name === 'ranking_completed')?.metadata).toMatchObject({ rankingMode: 'hybrid', aiRerankUsed: true });
     expect(events.find((event) => event.name === 'report_generated')?.metadata).toMatchObject({ aiProfileUsed: true, aiRerankUsed: true, aiExplanationUsed: true });
+  });
+
+  it('caps AI-inflated adjacent matches without promoting them to direct relevance', async () => {
+    const { response, report } = await generateWithAI(new InflatedAdjacentAIProvider());
+    expect(response.status).toBe(201);
+    expect(report.recommendations.length).toBeGreaterThan(0);
+    expect(report.recommendations.every((item: any) => item.rankingMetadata.relevanceType === 'adjacent')).toBe(true);
+    expect(report.recommendations.every((item: any) => item.displayScore <= 59)).toBe(true);
   });
 
   it.each([

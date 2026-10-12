@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeRole, buildProfessionalProfile } from '../src/core';
+import { mergeProfessionalProfileEnhancement } from '../src/ai/validation';
 import { normalizeCompanyUrl, SafeCompanyContextProvider } from '../src/server/company';
 
 describe('professional context', () => {
@@ -34,5 +35,21 @@ describe('professional context', () => {
   it('falls back to the submitted domain when company enrichment is unavailable', async () => {
     const provider = new SafeCompanyContextProvider(async () => new Response('upstream unavailable', { status: 503, headers: { 'Content-Type': 'text/plain' } }));
     await expect(provider.getContext('unavailable.example')).resolves.toMatchObject({ domain: 'unavailable.example', name: 'unavailable', source: 'submitted-domain', topics: [], entities: [] });
+  });
+
+  it('keeps the deterministic role foundation stable across repeated and sparse company inputs', async () => {
+    const provider = new SafeCompanyContextProvider();
+    const known = await provider.getContext('ldsystems.uk');
+    const sparse = await new SafeCompanyContextProvider(async () => new Response('blocked', { status: 503, headers: { 'Content-Type': 'text/plain' } })).getContext('unknown-company.example');
+    const first = buildProfessionalProfile(known, 'Software Engineer', new Date('2026-10-06T00:00:00.000Z'));
+    const second = buildProfessionalProfile(known, 'Software Engineer', new Date('2026-10-06T00:00:00.000Z'));
+    const sparseProfile = buildProfessionalProfile(sparse, 'Software Engineer', new Date('2026-10-06T00:00:00.000Z'));
+    expect(second.directInterests).toEqual(first.directInterests);
+    expect(second.retrieval.concepts).toEqual(first.retrieval.concepts);
+    expect(sparseProfile.directInterests).toEqual(expect.arrayContaining(['software engineering', 'APIs', 'infrastructure']));
+    const merged = mergeProfessionalProfileEnhancement(first, { professionalInterests: ['decision support', 'professional practice', 'software'], person: { themes: ['AI'] } });
+    expect(merged?.directInterests).toEqual(expect.arrayContaining(['software engineering', 'APIs', 'infrastructure']));
+    expect(merged?.directInterests).not.toContain('decision support');
+    expect(merged?.professionalInterests.slice(0, 3)).toEqual(['software engineering', 'developer technology', 'APIs']);
   });
 });

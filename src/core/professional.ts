@@ -28,6 +28,8 @@ export interface RoleContext {
   function: string;
   responsibilities: string[];
   professionalThemes: string[];
+  directThemes?: string[];
+  adjacentThemes?: string[];
   seniority?: string;
   decisionAreas?: string[];
   technologies?: string[];
@@ -86,11 +88,11 @@ interface RoleRule {
   exclusions: string[];
 }
 
-const GENERIC_CONCEPTS = new Set(['business', 'change', 'developments', 'industry', 'industry developments', 'innovation', 'technology']);
+const GENERIC_CONCEPTS = new Set(['business', 'change', 'developments', 'decision support', 'industry', 'industry developments', 'innovation', 'professional practice', 'technology']);
 const ROLE_RULES: RoleRule[] = [
   { test: /software|developer|engineering|architect|devops|platform|technical/i, function: 'Engineering', responsibilities: ['software development', 'system architecture', 'technical implementation'], direct: ['software engineering', 'developer technology', 'APIs', 'infrastructure', 'cloud', 'security', 'AI', 'machine learning', 'language models', 'automation', 'integration', 'data systems', 'platforms', 'systems architecture'], adjacent: ['robotics', 'manufacturing automation', 'IoT', 'embedded systems', 'operational technology', 'sensors', 'digital twins'], exclusions: ['astronomy', 'observatories', 'ecology', 'marine transport'] },
-  { test: /procurement|purchasing|supply|sourcing|buyer/i, function: 'Procurement', responsibilities: ['supplier evaluation', 'commercial planning', 'operational resilience'], direct: ['procurement', 'sourcing', 'vendors', 'supply chains', 'manufacturing', 'cost', 'resilience', 'risk'], adjacent: ['sustainability', 'logistics', 'automation', 'operations', 'regulation'], exclusions: ['astronomy', 'observatories', 'marine science'] },
-  { test: /investment|investor|portfolio|finance|bank|analyst|accounting/i, function: 'Finance and investment', responsibilities: ['market analysis', 'risk assessment', 'capital allocation'], direct: ['finance', 'markets', 'investment', 'capital', 'financial technology', 'risk', 'regulation', 'accounting', 'data'], adjacent: ['AI', 'automation', 'operations', 'strategy', 'sustainability'], exclusions: ['astronomy', 'marine transport', 'ecology'] },
+  { test: /procurement|purchasing|supply|sourcing|buyer/i, function: 'Procurement', responsibilities: ['supplier evaluation', 'commercial planning', 'operational resilience'], direct: ['procurement', 'suppliers', 'sourcing', 'vendors', 'supply chains', 'materials', 'lifecycle', 'manufacturing', 'cost', 'resilience', 'risk'], adjacent: ['sustainability', 'logistics', 'automation', 'operations', 'regulation'], exclusions: ['astronomy', 'observatories', 'marine science'] },
+  { test: /investment|investor|portfolio|finance|financial|bank|analyst|accounting|controller/i, function: 'Finance and investment', responsibilities: ['market analysis', 'risk assessment', 'capital allocation'], direct: ['finance', 'markets', 'investment', 'capital allocation', 'financial performance', 'financial technology', 'cost', 'risk', 'forecasting', 'regulation', 'accounting', 'data'], adjacent: ['AI', 'automation', 'operations', 'strategy', 'sustainability'], exclusions: ['astronomy', 'marine transport', 'ecology'] },
   { test: /marketing|brand|communications|audience/i, function: 'Marketing and communications', responsibilities: ['audience strategy', 'positioning', 'campaign planning'], direct: ['audiences', 'content', 'brands', 'communications', 'growth', 'customer research', 'digital marketing'], adjacent: ['technology', 'AI', 'culture', 'data', 'sustainability'], exclusions: ['astronomy', 'marine engineering'] },
   { test: /research|scientist|academic|laboratory|lab/i, function: 'Research', responsibilities: ['research design', 'evidence review', 'knowledge development'], direct: ['science', 'evidence', 'methodology', 'measurement', 'data', 'research'], adjacent: ['technology', 'climate', 'ecology', 'health', 'innovation'], exclusions: ['generic finance', 'generic marketing'] },
   { test: /operations|operational|delivery|process|supply chain/i, function: 'Operations', responsibilities: ['process improvement', 'delivery planning', 'operational resilience'], direct: ['operations', 'processes', 'delivery', 'systems', 'workflow', 'efficiency', 'supply chain'], adjacent: ['automation', 'manufacturing', 'logistics', 'technology', 'resilience'], exclusions: ['astronomy', 'observatories', 'marine science'] },
@@ -114,7 +116,7 @@ export function analyzeRole(jobTitle: string): RoleContext {
   const rule = ROLE_RULES.find((candidate) => candidate.test.test(rawTitle));
   const fallback: RoleRule = { test: /.*/, function: 'Professional', responsibilities: ['professional development', 'decision support'], direct: ['decision support', 'professional practice'], adjacent: ['business', 'technology'], exclusions: [] };
   const match = rule ?? fallback;
-  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities: match.responsibilities, professionalThemes: [...match.direct, ...match.adjacent], confidence: rule ? 'high' : 'inferred' };
+  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities: match.responsibilities, professionalThemes: [...match.direct, ...match.adjacent], directThemes: match.direct, adjacentThemes: match.adjacent, confidence: rule ? 'high' : 'inferred' };
 }
 
 function ruleFor(role: RoleContext): RoleRule {

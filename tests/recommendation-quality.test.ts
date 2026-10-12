@@ -45,4 +45,17 @@ describe('professional recommendation quality', () => {
     expect(new Set(topIds).size).toBeGreaterThan(1);
     expect(topTypes).toEqual(['direct', 'direct', 'direct']);
   });
+
+  it('reports procurement adjacency evidence without overrating it', async () => {
+    const company = await new SafeCompanyContextProvider().getContext('sunseeker.com');
+    const profile = buildProfessionalProfile(company, 'Head of Procurement');
+    const adapter = new DemoPublisherAdapter();
+    const scored = demoArticles.map((raw) => {
+      const article = adapter.normalizeArticle(raw);
+      const result = scoreProfessionalArticle(article, profile);
+      return { id: article.id, score: result.score, type: result.relevanceType, direct: result.directMatches, adjacent: result.adjacentMatches };
+    }).sort((a, b) => b.score - a.score);
+    expect(profile.directInterests).toEqual(expect.arrayContaining(['procurement', 'vendors', 'supply chains']));
+    expect(scored.filter((item) => item.type === 'adjacent').every((item) => item.score <= 59)).toBe(true);
+  });
 });
