@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const id = process.argv.find((value) => value !== '--' && value !== process.argv[0] && value !== process.argv[1]);
 const idPattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-const reserved = new Set(['_template', 'demo', 'real-publisher']);
+const reserved = new Set(['_template', 'demo', 'real-publisher', 'ibi', 'sgi-europe']);
 
 if (!id || !idPattern.test(id) || reserved.has(id)) {
   console.error('Usage: npm run publisher:create -- acme-media');

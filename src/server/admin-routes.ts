@@ -128,7 +128,7 @@ async function runContentCheck(definition: NonNullable<ReturnType<PublisherRegis
     const diagnostics = contentDiagnostics(definition);
     const denominator = Math.max(1, articles.length);
     return {
-      checkedAt: new Date().toISOString(), sourceType: sourceType(definition) ?? 'unknown', reachable: true, recordsFetched: records.length,
+      checkedAt: new Date().toISOString(), sourceType: sourceType(definition) ?? 'unknown', reachable: true, recordsFetched: diagnostics?.sourceStats?.feedItemsFetched ?? records.length,
       accepted: diagnostics?.accepted ?? articles.length, rejected: diagnostics?.rejected ?? Math.max(0, records.length - articles.length), duplicates: diagnostics?.duplicates ?? 0,
       warnings: diagnostics?.issues.filter((issue) => issue.status === 'warning').map((issue) => safeText(issue.message) ?? 'Source warning.').slice(0, 10) ?? [], elapsedMs: Date.now() - started,
       sampleTitles: articles.map((article) => article.title).filter(Boolean).slice(0, 5), coverage: {

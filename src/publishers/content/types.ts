@@ -62,7 +62,10 @@ export interface FeedSourceConfig {
   feedUrl: string;
   mappings?: ArticleFieldMappings;
   headers?: Record<string, string>;
+  allowedHostnames?: string[];
+  deriveCategoryFromUrl?: boolean;
   timeoutMs?: number;
+  maxBytes?: number;
   candidateLimit?: number;
   sourceName?: string;
 }
@@ -106,6 +109,8 @@ export interface ContentImportDiagnostics {
   warnings: number;
   issues: ContentDiagnostic[];
   sourceStats?: {
+    feedItemsFetched?: number;
+    feedItemsSelected?: number;
     sitemapDocumentsFetched?: number;
     sitemapUrlsFound?: number;
     articleUrlsAccepted?: number;

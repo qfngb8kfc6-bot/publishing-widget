@@ -53,7 +53,7 @@ describe('internal publisher administration', () => {
     const response = await app.handle(request('/api/admin/publishers', {}, cookie));
     expect(response.status).toBe(200);
     const body = await response.json() as { publishers: Array<{ publisherId: string; sourceType: string }> };
-    expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher', 'ibi']);
+    expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher', 'ibi', 'sgi-europe']);
     expect(body.publishers.find((publisher) => publisher.publisherId === 'demo')?.sourceType).toBe('demo');
     expect(JSON.stringify(body)).not.toContain('test-admin-password');
   });
@@ -74,7 +74,7 @@ describe('internal publisher administration', () => {
       const response = await app.handle(request('/api/admin/publishers', {}, cookie));
       expect(response.status).toBe(200);
       const body = await response.json() as { publishers: Array<Record<string, unknown>> };
-      expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher', 'ibi']);
+      expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher', 'ibi', 'sgi-europe']);
       const real = body.publishers.find((publisher) => publisher.publisherId === 'real-publisher')!;
       expect(real.sourceType).toBe('rest-json');
       expect(real.brandingSummary).toMatchObject({ primaryColor: '#36566c' });

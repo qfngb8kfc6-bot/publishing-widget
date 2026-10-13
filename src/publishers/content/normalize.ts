@@ -172,7 +172,7 @@ export function normalizeMappedArticle(raw: unknown, options: CanonicalNormaliza
     language: text(firstValue(record, mappings, 'language', ['language', 'lang', 'inLanguage'])),
     sourceType: options.sourceType,
     sourceName: options.sourceName,
-    searchText: [title, description, summary, contentSnippet, body, ...categories, ...tags].filter(Boolean).join(' '),
+    searchText: [title, description, summary, contentSnippet, body, authorObject?.name ?? authorValue, ...categories, ...tags].filter(Boolean).join(' '),
     publisherId: options.publisherId,
     provenance: {
       publisherId: options.publisherId,

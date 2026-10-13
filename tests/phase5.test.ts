@@ -28,6 +28,6 @@ describe('Phase 5 publisher operations', () => {
 
   it('keeps demo and real publisher definitions in one registry', () => {
     const registry = createPublisherRegistry();
-    expect(registry.list().map((definition) => definition.config.publisherId)).toEqual(['demo', 'real-publisher', 'ibi']);
+    expect(registry.list().map((definition) => definition.config.publisherId)).toEqual(['demo', 'real-publisher', 'ibi', 'sgi-europe']);
   });
 });

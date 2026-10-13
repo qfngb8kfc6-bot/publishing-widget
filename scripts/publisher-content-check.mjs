@@ -16,7 +16,7 @@ const sourceText = await Promise.all(files.filter((file) => file.present).map((f
 const combined = sourceText.join('\n');
 const sourceTypes = [...new Set([...combined.matchAll(/type:\s*['"](rest-json|rss|atom|sitemap|json|csv|static-demo)['"]/g)].map((match) => match[1]))];
 const fixturePath = path.join(directory, 'fixtures');
-const fixturePresent = await access(fixturePath).then(() => true).catch(() => false);
+const fixturePresent = await access(fixturePath).then(() => true).catch(() => access(path.join(directory, 'fixtures.ts')).then(() => true).catch(() => false));
 console.log(`Publisher ${id}: content source ${sourceTypes.length ? sourceTypes.join(', ') : id === 'demo' ? 'static-demo' : 'adapter-defined'}`);
 console.log(`Publisher ${id}: source files ${missing.length ? `missing ${missing.join(', ')}` : 'present'}`);
 console.log(`Publisher ${id}: sanitized fixtures ${fixturePresent ? 'present' : id === 'demo' ? 'built-in demo archive' : 'not found'}`);

@@ -192,12 +192,37 @@ export class RestJsonContentAdapter implements ContentAdapter<unknown> {
   }
 }
 
-function feedRecords(xml: string, type: 'rss' | 'atom'): RawRecord[] {
+function feedImage(block: string): string | undefined {
+  const mediaContent = block.match(/<media:content\b[^>]*>/i)?.[0];
+  const enclosure = block.match(/<enclosure\b[^>]*>/i)?.[0];
+  const mediaThumbnail = block.match(/<media:thumbnail\b[^>]*>/i)?.[0];
+  return (mediaContent && xmlAttribute(mediaContent, 'url')) ?? (enclosure && xmlAttribute(enclosure, 'url')) ?? (mediaThumbnail && xmlAttribute(mediaThumbnail, 'url'));
+}
+
+function feedAuthor(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const cleaned = xmlText(value).replace(/^#\d+¦/, '').replace(/\[.*$/, '').replace(/#+$/, '').trim();
+  return cleaned || undefined;
+}
+
+function feedSection(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const segment = new URL(url).pathname.split('/').filter(Boolean)[0];
+    if (!segment) return undefined;
+    const known: Record<string, string> = { csr: 'CSR', 'csr-and-sustainability': 'CSR and Sustainability' };
+    return known[segment.toLowerCase()] ?? segment.split(/[-_]+/).map((word) => word ? `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}` : '').join(' ');
+  } catch {
+    return undefined;
+  }
+}
+
+function feedRecords(xml: string, type: 'rss' | 'atom', deriveCategoryFromUrl = false): RawRecord[] {
   const blocks = type === 'atom' ? xmlBlocks(xml, 'entry') : xmlBlocks(xml, 'item');
   return blocks.map((block) => {
     const linkTag = block.match(/<link\b[^>]*>/i)?.[0];
     const link = (linkTag && xmlAttribute(linkTag, 'href')) ?? xmlFirstText(block, ['link']);
-    const enclosure = block.match(/<(?:enclosure|media:content)\b[^>]*>/i)?.[0];
+    const section = deriveCategoryFromUrl ? feedSection(link) : undefined;
     return {
       id: xmlFirstText(block, type === 'atom' ? ['id', 'guid'] : ['guid', 'id']),
       guid: xmlFirstText(block, ['guid', 'id']),
@@ -205,12 +230,21 @@ function feedRecords(xml: string, type: 'rss' | 'atom'): RawRecord[] {
       url: link,
       description: xmlFirstText(block, ['content:encoded', 'content', 'summary', 'description']),
       body: xmlFirstText(block, ['content:encoded', 'content']),
-      author: xmlFirstText(block, type === 'atom' ? ['author', 'name', 'dc:creator'] : ['author', 'dc:creator']),
+      author: feedAuthor(xmlFirstText(block, type === 'atom' ? ['author', 'name', 'dc:creator'] : ['abacus:byline', 'author', 'dc:creator'])),
       publishedAt: xmlFirstText(block, type === 'atom' ? ['published', 'updated'] : ['pubDate', 'published', 'date']),
-      categories: xmlBlocks(block, 'category').map(xmlText),
-      image: enclosure ? xmlAttribute(enclosure, 'url') : undefined,
+      categories: [section, ...xmlBlocks(block, 'category').map(xmlText)].filter((value): value is string => Boolean(value)),
+      image: feedImage(block),
     };
   });
+}
+
+function compareFeedDates(left: PublisherArticle, right: PublisherArticle): number {
+  const leftTime = left.publishedAt ? Date.parse(left.publishedAt) : Number.NaN;
+  const rightTime = right.publishedAt ? Date.parse(right.publishedAt) : Number.NaN;
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return rightTime - leftTime;
+  if (Number.isFinite(rightTime)) return 1;
+  if (Number.isFinite(leftTime)) return -1;
+  return 0;
 }
 
 export class FeedContentAdapter implements ContentAdapter<unknown> {
@@ -223,24 +257,28 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
     this.sourceType = config.type;
     this.fetchImpl = fetchImpl ?? globalThis.fetch;
     if (!this.fetchImpl) throw new Error('A fetch implementation is required for a feed content adapter.');
+    assertSafePublicUrl(config.feedUrl, config.allowedHostnames);
   }
 
   async search(_intent: Intent, options: SearchOptions): Promise<unknown[]> {
     const startedAt = Date.now();
-    const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, fetchImpl: this.fetchImpl });
-    const records = feedRecords(xml, this.config.type);
+    const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? 2_000_000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames });
+    const records = feedRecords(xml, this.config.type, this.config.deriveCategoryFromUrl);
     if (!records.length) throw new ContentSourceError('empty-source', 'Feed did not contain any entries.');
     const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.feedUrl, this.config.feedUrl, this.config.sourceName, this.config.mappings, this.config.feedUrl));
+    const ordered = [...result.articles].sort(compareFeedDates);
+    const selected = ordered.slice(0, boundedLimit(options, this.config.candidateLimit ?? 100));
     this.lastDiagnostics = result.diagnostics;
+    this.lastDiagnostics.sourceStats = { feedItemsFetched: records.length, feedItemsSelected: selected.length, normalizedArticles: result.articles.length };
     options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Date.now() - startedAt, pagesFetched: 1, rawCount: records.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
-    options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: Math.min(result.articles.length, options.limit) });
-    return result.articles.slice(0, boundedLimit(options, this.config.candidateLimit ?? 100));
+    options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: selected.length });
+    return selected;
   }
 
   fetch(intent: Intent, options: SearchOptions): Promise<unknown[]> { return this.search(intent, options); }
 
   normalizeArticle(raw: unknown): PublisherArticle | null { return normalizeCanonicalOrMapped(raw, sourceOptions(this.publisherId, this.sourceType, this.config.feedUrl, this.config.feedUrl, this.config.sourceName, this.config.mappings, this.config.feedUrl)); }
-  async healthCheck(): Promise<ContentSourceHealth> { try { const records = await this.search(emptyIntent, { limit: 1 }); return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: true, recordsChecked: records.length, normalized: records.length, warnings: [] }; } catch (error) { return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: false, recordsChecked: 0, normalized: 0, warnings: [error instanceof Error ? error.message : 'Source check failed.'] }; } }
+  async healthCheck(): Promise<ContentSourceHealth> { try { const records = await this.search(emptyIntent, { limit: 1 }); return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: true, recordsChecked: this.lastDiagnostics?.sourceStats?.feedItemsFetched ?? records.length, normalized: this.lastDiagnostics?.accepted ?? records.length, warnings: this.lastDiagnostics?.issues.filter((issue) => issue.status === 'warning').map((issue) => issue.message) ?? [] }; } catch (error) { return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: false, recordsChecked: 0, normalized: 0, warnings: [error instanceof Error ? error.message : 'Source check failed.'] }; } }
 }
 
 function extractHtmlAttribute(tag: string, name: string): string | undefined { return tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, 'i'))?.[1]; }

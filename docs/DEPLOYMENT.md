@@ -99,4 +99,4 @@ After deployment, sign in at `/admin`, create or update the publisher, run a dra
 
 ## Production limitations
 
-IBI News is configured as the first named production publisher through the public sitemap adapter. The generic `real-publisher` definition remains available for a future authenticated integration. Production database credentials, AI credentials, deployment account configuration and approved publisher origins are deployment inputs rather than committed project data.
+IBI News and SGI Europe are configured as named production publishers through their public bounded content sources. The generic `real-publisher` definition remains available for a future authenticated integration. Production database credentials, AI credentials, deployment account configuration and approved publisher origins are deployment inputs rather than committed project data.
