@@ -3,6 +3,14 @@ import type { AnalyticsDateRange, AnalyticsStore, StoredAnalyticsEvent } from '.
 export interface SqlQueryResult<Row> { rows: Row[]; }
 export interface SqlClient { query<Row = Record<string, unknown>>(sql: string, parameters?: unknown[]): Promise<SqlQueryResult<Row>>; end?(): Promise<void>; }
 
+type PostgresAnalyticsRow = Omit<StoredAnalyticsEvent, 'timestamp' | 'receivedAt'> & { timestamp: string | Date; receivedAt: string | Date };
+
+function isoTimestamp(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string') return value;
+  throw new Error('Analytics store returned an invalid timestamp.');
+}
+
 /** Vendor-neutral relational adapter. Inject a configured pg/Supabase client at startup. */
 export class PostgresAnalyticsStore implements AnalyticsStore {
   constructor(private readonly client: SqlClient) {}
@@ -18,8 +26,8 @@ export class PostgresAnalyticsStore implements AnalyticsStore {
     let sql = `SELECT event_id AS "eventId", schema_version AS "schemaVersion", publisher_id AS "publisherId", event_name AS name, occurred_at AS timestamp, session_id AS "sessionId", widget_version AS "widgetVersion", publisher_config_version AS "publisherConfigVersion", metadata, received_at AS "receivedAt" FROM analytics_events WHERE publisher_id = $1`;
     if (scope.range) { parameters.push(scope.range.from, scope.range.to); sql += ` AND occurred_at >= $2 AND occurred_at <= $3`; }
     sql += ' ORDER BY occurred_at ASC';
-    const result = await this.client.query<StoredAnalyticsEvent>(sql, parameters);
-    return Array.isArray(result.rows) ? result.rows : [];
+    const result = await this.client.query<PostgresAnalyticsRow>(sql, parameters);
+    return Array.isArray(result.rows) ? result.rows.map((event) => ({ ...event, timestamp: isoTimestamp(event.timestamp), receivedAt: isoTimestamp(event.receivedAt), metadata: event.metadata ?? {} })) : [];
   }
 
   async listPublisherIds(): Promise<string[]> {

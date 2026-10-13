@@ -3,6 +3,7 @@ import type { AnalyticsStore } from '../src/analytics/types';
 import { createEvent } from '../src/core';
 import { demoManifest } from '../src/demo/config';
 import { createProductionApp } from '../src/server/production';
+import { MemoryPublisherStore, type PublisherStore } from '../src/publishers/store';
 import type { ServerLogFields, StructuredLogger } from '../src/server/logging';
 
 function request(path: string, init: RequestInit = {}, cookie?: string): Request {
@@ -28,6 +29,23 @@ function analyticsStoreThatMustNotBeRead(): AnalyticsStore {
 }
 
 describe('internal publisher administration', () => {
+  it('reports a writable database-backed admin mode to the frontend', async () => {
+    const memory = new MemoryPublisherStore([demoManifest]);
+    const store: PublisherStore = {
+      mode: 'postgres',
+      list: () => memory.list(),
+      get: (publisherId) => memory.get(publisherId),
+      create: (manifest) => memory.create(manifest),
+      update: (manifest) => memory.update(manifest),
+    };
+    const app = createProductionApp({ environment: 'production', serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' }, publisherStore: store });
+    const cookie = await signIn(app);
+    const response = await app.handle(request('/api/admin/publishers', {}, cookie));
+    expect(response.status).toBe(200);
+    const body = await response.json() as { capabilities: { persistenceMode: string; writable: boolean; databaseBacked: boolean; createAllowed: boolean; editAllowed: boolean } };
+    expect(body.capabilities).toEqual({ persistenceMode: 'postgres', writable: true, databaseBacked: true, createAllowed: true, editAllowed: true });
+  });
+
   it('requires server-side admin authentication and lists only safe publisher metadata', async () => {
     const app = createProductionApp({ environment: 'test', serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' } });
     expect((await app.handle(request('/api/admin/publishers', {}, undefined))).status).toBe(401);

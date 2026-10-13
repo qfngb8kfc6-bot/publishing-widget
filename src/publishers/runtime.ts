@@ -12,6 +12,14 @@ export interface PublisherRuntimeOptions {
   cacheTtlMs?: number;
 }
 
+export interface PublisherRuntimeCapabilities {
+  persistenceMode: 'postgres' | 'memory' | 'static';
+  writable: boolean;
+  databaseBacked: boolean;
+  createAllowed: boolean;
+  editAllowed: boolean;
+}
+
 /** Resolves persisted publisher manifests into the existing synchronous registry contract. */
 export class PublisherRuntime {
   private loadedAt = 0;
@@ -52,6 +60,18 @@ export class PublisherRuntime {
   async list(): Promise<PublisherDefinition[]> {
     await this.ensureLoaded();
     return this.registry.list();
+  }
+
+  capabilities(): PublisherRuntimeCapabilities {
+    const mode = this.options.store?.mode ?? (this.options.store ? 'memory' : 'static');
+    const writable = Boolean(this.options.store);
+    return {
+      persistenceMode: mode,
+      writable,
+      databaseBacked: mode === 'postgres',
+      createAllowed: writable,
+      editAllowed: writable,
+    };
   }
 
   async create(manifest: PublisherManifest): Promise<PublisherDefinition> {

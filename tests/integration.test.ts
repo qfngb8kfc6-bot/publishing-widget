@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createEvent } from '../src/core';
 import { realPublisherSearchFixture } from '../src/publishers/real-publisher/fixtures';
 import { createProductionApp } from '../src/server/production';
+import { PostgresAnalyticsStore } from '../src/analytics/postgres-store';
 
 describe('production-style route integration', () => {
   it('proxies a configured publisher request without exposing upstream credentials', async () => {
@@ -33,5 +34,14 @@ describe('production-style route integration', () => {
     const overview = await app.handle(new Request('https://product.example/api/analytics/demo/overview', { headers: { Origin: 'https://approved.example' } }));
     expect(overview.status).toBe(200);
     expect(await overview.json()).toMatchObject({ publisherId: 'demo', publisherName: 'Northstar Journal', overview: { articleClicks: 1, storyClicks: 1 } });
+  });
+
+  it('returns a valid zero-data overview through the production Postgres store path', async () => {
+    const analyticsStore = new PostgresAnalyticsStore({ query: async <Row>() => ({ rows: [] as Row[] }) });
+    const app = createProductionApp({ environment: 'production', analyticsStore, analyticsStoreMode: 'postgres' });
+    const overview = await app.handle(new Request('https://discovery.ldsystems.uk/api/analytics/demo/overview'));
+    expect(overview.status).toBe(200);
+    const body = await overview.json() as { publisherId: string; overview: { widgetImpressions: number }; daily: unknown[] };
+    expect(body).toMatchObject({ publisherId: 'demo', overview: { widgetImpressions: 0 }, daily: [] });
   });
 });

@@ -7,6 +7,8 @@ export interface PublisherRecord {
 }
 
 export interface PublisherStore {
+  /** Identifies the persistence boundary for admin capability reporting. */
+  readonly mode?: 'memory' | 'postgres';
   list(): Promise<PublisherRecord[]>;
   get(publisherId: string): Promise<PublisherRecord | null>;
   create(manifest: PublisherManifest): Promise<PublisherRecord>;
@@ -56,6 +58,7 @@ function cloneRecord(record: PublisherRecord): PublisherRecord {
 
 /** Development/test persistence with the same contract as Postgres. */
 export class MemoryPublisherStore implements PublisherStore {
+  readonly mode = 'memory' as const;
   private readonly records = new Map<string, PublisherRecord>();
 
   constructor(manifests: PublisherManifest[] = []) {
@@ -97,6 +100,7 @@ export interface PublisherSqlClient {
 
 /** Postgres persistence. Only the public manifest and secret references are stored. */
 export class PostgresPublisherStore implements PublisherStore {
+  readonly mode = 'postgres' as const;
   constructor(private readonly client: PublisherSqlClient) {}
 
   async list(): Promise<PublisherRecord[]> {

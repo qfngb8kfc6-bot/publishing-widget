@@ -122,7 +122,8 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     try {
       await publisherRuntime.ensureLoaded();
       publisherId = safeRouteId(url.pathname.match(/^\/api\/publishers\/([^/]+)/)?.[1] ?? url.pathname.match(/^\/api\/analytics\/([^/]+)/)?.[1]);
-      manifest = allowedOriginsFor(publisherId ? registry.get(publisherId)?.manifest : undefined, serverEnvironment);
+      const runtimeDefinition = publisherId ? await publisherRuntime.get(publisherId) : undefined;
+      manifest = allowedOriginsFor(runtimeDefinition?.manifest, serverEnvironment);
       if (url.pathname.startsWith('/api/admin/')) return await adminRoutes(request);
       if (url.pathname.startsWith('/api/') && request.method === 'OPTIONS') return withHeaders(corsPreflight(manifest, request, environment), request, manifest, environment, requestId);
       if (url.pathname === '/health' && request.method === 'GET') return withHeaders(createGlobalHealthResponse(environment, options.commitSha), request, undefined, environment, requestId);
