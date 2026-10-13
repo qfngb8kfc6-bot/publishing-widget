@@ -94,6 +94,9 @@ describe('SGI Europe RSS publisher', () => {
     const payload = await generated.json() as { reportId: string };
     const report = await app.reportStore.get(payload.reportId, 'sgi-europe');
     expect(report).toMatchObject({ id: payload.reportId, publisherId: 'sgi-europe', recommendations: expect.any(Array) });
+    const sgiSectionIds = report!.sections?.flatMap((section) => section.recommendations.map((recommendation) => recommendation.article.id)) ?? [];
+    expect(new Set(sgiSectionIds).size).toBe(sgiSectionIds.length);
+    expect(sgiSectionIds).not.toContain(report!.recommendations[0]?.article.id);
 
     const theme = report!.professionalProfile.professionalInterests[0];
     const themeSearch = await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=sgi-europe`, { method: 'POST' }));

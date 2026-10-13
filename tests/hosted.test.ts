@@ -162,4 +162,32 @@ describe('hosted professional experience', () => {
     expect(analyticsEvents.map((event) => event.name)).toContain('theme_find_stories_clicked');
     expect(analyticsEvents.some((event) => event.name === 'theme_find_stories_clicked' && event.metadata?.reportId === reportId)).toBe(true);
   });
+
+  it.each([2, 4, 8])('renders a report with %s recommendations without duplicate story cards', async (count) => {
+    const app = createProductionApp({ environment: 'test' });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
+    }));
+    const { reportId } = await generated.json() as { reportId: string };
+    const source = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    const seed = source.recommendations[0];
+    const report = {
+      ...source,
+      sections: undefined,
+      recommendations: Array.from({ length: count }, (_, index) => index === 0 ? seed : {
+        ...seed,
+        articleId: `${seed.articleId}-presentation-${index}`,
+        rank: index + 1,
+        article: { ...seed.article, id: `${seed.article.id}-presentation-${index}`, url: `${seed.article.url}?presentation=${index}`, title: `${seed.article.title} ${index + 1}` },
+      }),
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
+    window.history.replaceState({}, '', `/p/demo/${reportId}`);
+    await renderHostedRoute(document, createDemoRegistry());
+    const cards = [...document.querySelectorAll<HTMLElement>('[data-story-card]')];
+    const ids = cards.map((card) => card.dataset.storyCard);
+    expect(cards).toHaveLength(count);
+    expect(new Set(ids).size).toBe(count);
+  });
 });

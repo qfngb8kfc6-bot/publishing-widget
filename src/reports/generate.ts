@@ -11,6 +11,7 @@ import type { AnalyticsStore } from '../analytics/types';
 import { profileForTheme } from './themes';
 import type { StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
+import { allocateEditorialSections, articleIdentityKeys } from './sections';
 
 export const GENERATION_VERSION = '1.2';
 
@@ -122,7 +123,7 @@ export class ReportGenerationService {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleIds = new Set<string>(), requestId?: string): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; deterministicEligible: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; deterministicEligible: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     try {
@@ -151,9 +152,15 @@ export class ReportGenerationService {
     }
     const normalizedArticles = candidates.flatMap((raw) => {
       const article = definition.adapter.normalizeArticle(raw);
-      return article && !excludedArticleIds.has(article.id) ? [article] : [];
+      return article && articleIdentityKeys(article).every((key) => !excludedArticleKeys.has(key)) ? [article] : [];
     });
-    const unique = [...new Map(normalizedArticles.map((article) => [article.id, article])).values()];
+    const seenArticleKeys = new Set<string>();
+    const unique = normalizedArticles.filter((article) => {
+      const keys = articleIdentityKeys(article);
+      if (keys.some((key) => seenArticleKeys.has(key))) return false;
+      keys.forEach((key) => seenArticleKeys.add(key));
+      return true;
+    });
     const finalLimit = Math.min(definition.config.results.maximumRecommendations, definition.config.content.resultLimit);
     const aiAvailable = this.canUseAI(definition);
     const deterministicRanked: RankedCandidate[] = unique
@@ -230,7 +237,7 @@ export class ReportGenerationService {
     const definition = this.registry.get(report.publisherId);
     if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
     const profile = profileForTheme(report.professionalProfile, theme);
-    const excluded = new Set(report.recommendations.map((recommendation) => recommendation.article.id));
+    const excluded = new Set(report.recommendations.flatMap((recommendation) => articleIdentityKeys(recommendation.article)));
     const { ranked } = await this.rankProfile(definition, report.publisherId, profile, excluded);
     return this.recommendationsFromRanked(profile, ranked);
   }
@@ -295,15 +302,17 @@ export class ReportGenerationService {
         }
       } catch { /* deterministic summary and explanations remain authoritative */ }
     }
-    const recommendations = this.recommendationsFromRanked(profile, ranked, explanationById).map((recommendation) => ({
+    const rawRecommendations = this.recommendationsFromRanked(profile, ranked, explanationById).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
         ...recommendation.rankingMetadata,
         aiProvider: aiRerankUsed || aiExplanationUsed ? this.ai?.provider.providerName : undefined,
       },
     }));
+    const allocation = allocateEditorialSections(rawRecommendations, definition.manifest?.reportSections ?? []);
+    const recommendations = allocation.recommendations;
     const report: ReportRecord = {
-      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, recommendations, generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, recommendations, sections: allocation.sections, generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
     try { await this.reports.save(report); } catch (error) { this.logIbiError(input, 'report_persistence', error); throw error; }
     await this.track('report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });

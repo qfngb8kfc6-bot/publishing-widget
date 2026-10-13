@@ -1,4 +1,5 @@
 import type { ReportRecord, ReportStore } from './types';
+import { sectionsFromRecommendations } from './sections';
 
 function clone(report: ReportRecord): ReportRecord {
   return structuredClone(report);
@@ -38,10 +39,11 @@ export class PostgresReportStore implements ReportStore {
     const row = reportResult.rows[0];
     if (!row) return null;
     const recommendations = await this.client.query<Record<string, unknown>>('SELECT article_id, rank, raw_score, display_score, reason, article_json, ranking_metadata_json FROM report_recommendations WHERE report_id = $1 ORDER BY rank ASC', [id]);
+    const normalizedRecommendations = recommendations.rows.map((item) => ({ articleId: String(item.article_id), rank: Number(item.rank), rawScore: Number(item.raw_score), displayScore: Number(item.display_score), explanation: String(item.reason), article: item.article_json as ReportRecord['recommendations'][number]['article'], rankingMetadata: item.ranking_metadata_json as ReportRecord['recommendations'][number]['rankingMetadata'] }));
     return {
       id: String(row.id), publisherId: String(row.publisher_id), sessionId: String(row.session_id), companyUrl: String(row.company_url), companyDomain: String(row.company_domain), companyName: row.company_name ? String(row.company_name) : undefined, jobTitle: String(row.job_title),
       professionalProfile: row.professional_profile_json as ReportRecord['professionalProfile'], retrievalContext: row.retrieval_context_json as ReportRecord['retrievalContext'], overallMatchScore: Number(row.overall_match_score), generatedSummary: String(row.generated_summary),
-      recommendations: recommendations.rows.map((item) => ({ articleId: String(item.article_id), rank: Number(item.rank), rawScore: Number(item.raw_score), displayScore: Number(item.display_score), explanation: String(item.reason), article: item.article_json as ReportRecord['recommendations'][number]['article'], rankingMetadata: item.ranking_metadata_json as ReportRecord['recommendations'][number]['rankingMetadata'] })),
+      recommendations: normalizedRecommendations, sections: sectionsFromRecommendations(normalizedRecommendations),
       generationVersion: String(row.generation_version), rankingVersion: String(row.ranking_version), professionalProfileVersion: String(row.professional_profile_version), aiProviderVersion: String(row.ai_provider_version), publisherConfigVersion: String(row.publisher_config_version), widgetVersion: String(row.widget_version), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
     };
   }

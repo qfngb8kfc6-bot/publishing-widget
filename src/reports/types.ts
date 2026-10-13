@@ -1,4 +1,5 @@
 import type { ProfessionalProfile, RankedArticle } from '../core';
+import type { EditorialSection, EditorialSectionId } from './sections';
 
 export interface ReportRecommendation {
   articleId: string;
@@ -17,6 +18,7 @@ export interface ReportRecommendation {
     relevanceType?: 'direct' | 'adjacent';
     confidence?: number;
     aiProvider?: string;
+    editorialSection?: EditorialSectionId;
   };
 }
 
@@ -33,6 +35,7 @@ export interface ReportRecord {
   overallMatchScore: number;
   generatedSummary: string;
   recommendations: ReportRecommendation[];
+  sections?: EditorialSection[];
   generationVersion: string;
   rankingVersion: string;
   professionalProfileVersion: string;

@@ -127,11 +127,12 @@ describe('hosted report flow', () => {
     const theme = before.professionalProfile.professionalInterests[0] as string;
     let observedQuery = '';
     const extra = { ...before.recommendations[0].article, id: 'theme-focused-extra', title: `${theme} platform update`, url: 'https://demo.publisher.example/theme-focused-extra', description: `Coverage of ${theme}.` };
+    const duplicateByUrl = { ...before.recommendations[0].article, id: 'theme-focused-duplicate-url' };
     const definition = app.registry.get('demo');
     if (!definition) throw new Error('demo definition missing');
     definition.adapter = {
       publisherId: 'demo',
-      search: async (intent) => { observedQuery = intent.queryText; return [extra, ...before.recommendations.map((recommendation: any) => recommendation.article)]; },
+      search: async (intent) => { observedQuery = intent.queryText; return [extra, duplicateByUrl, ...before.recommendations.map((recommendation: any) => recommendation.article)]; },
       normalizeArticle: (article) => article as NormalizedArticle,
     };
     const response = await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=demo`, { method: 'POST' }));
@@ -140,6 +141,7 @@ describe('hosted report flow', () => {
     expect(payload.theme).toBe(theme);
     expect(observedQuery.toLowerCase()).toContain(theme.toLowerCase().split(' ')[0]);
     expect(payload.recommendations.map((item) => item.articleId)).toContain('theme-focused-extra');
+    expect(payload.recommendations.map((item) => item.articleId)).not.toContain('theme-focused-duplicate-url');
     expect(payload.recommendations.map((item) => item.articleId)).not.toContain(before.recommendations[0].articleId);
     expect(await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json()).toMatchObject({ recommendations: before.recommendations });
     expect((await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/not-a-report-theme/search?publisherId=demo`, { method: 'POST' }))).status).toBe(400);

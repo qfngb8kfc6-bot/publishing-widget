@@ -69,6 +69,9 @@ describe('IBI News publisher onboarding', () => {
     const ld = await app.reportStore.get(ldPayload.reportId, 'ibi');
     expect(ld?.recommendations.length).toBeGreaterThan(0);
     expect(ld).toMatchObject({ id: ldPayload.reportId, recommendations: expect.any(Array) });
+    const ibiSectionIds = ld?.sections?.flatMap((section) => section.recommendations.map((recommendation) => recommendation.article.id)) ?? [];
+    expect(new Set(ibiSectionIds).size).toBe(ibiSectionIds.length);
+    expect(ibiSectionIds).not.toContain(ld?.recommendations[0]?.article.id);
 
     const burgessResponse = await generate('burgessyachts.com', 'Product Manager');
     expect(burgessResponse.status).toBe(201);
