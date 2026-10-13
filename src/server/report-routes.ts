@@ -2,6 +2,7 @@ import { readJsonBody, safeRouteId } from './request-validation';
 import type { PublisherRegistry } from '../core';
 import type { ReportGenerationService } from '../reports/generate';
 import type { ReportStore } from '../reports/types';
+import { findReportTheme } from '../reports/themes';
 
 function uuidLike(value: string | undefined): string | null {
   return value && /^[a-zA-Z0-9_-]{8,160}$/.test(value) ? value : null;
@@ -36,6 +37,27 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
       const report = await reports.get(id, publisherId);
       if (!report) return Response.json({ error: 'generation_not_found' }, { status: 404 });
       return Response.json({ generationId: id, status: 'complete', reportId: id, companyName: report.companyName, companyDomain: report.companyDomain, jobTitle: report.jobTitle, generationUrl: `/p/${report.publisherId}/generate/${id}`, reportUrl: `/p/${report.publisherId}/${id}` });
+    }
+    const themeMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/themes\/([^/]+)\/search$/);
+    if (themeMatch) {
+      if (request.method !== 'POST') return Response.json({ error: 'method_not_allowed' }, { status: 405 });
+      const id = uuidLike(themeMatch[1]);
+      if (!id) return Response.json({ error: 'invalid_report_id' }, { status: 400 });
+      const publisherId = safeRouteId(url.searchParams.get('publisherId') ?? undefined);
+      if (!publisherId) return Response.json({ error: 'publisher_id_required' }, { status: 400 });
+      const report = await reports.get(id, publisherId);
+      const definition = registry.get(publisherId);
+      if (!report || !definition || definition.manifest?.enabled === false || report.publisherId !== publisherId) return Response.json({ error: 'report_not_found' }, { status: 404 });
+      let requestedTheme = '';
+      try { requestedTheme = decodeURIComponent(themeMatch[2]); } catch { return Response.json({ error: 'invalid_theme' }, { status: 400 }); }
+      const theme = findReportTheme(report, requestedTheme);
+      if (!theme) return Response.json({ error: 'invalid_theme' }, { status: 400 });
+      try {
+        const recommendations = await generation.searchTheme(report, theme);
+        return Response.json({ reportId: report.id, publisherId, theme, recommendations });
+      } catch {
+        return Response.json({ error: 'theme_search_unavailable' }, { status: 503 });
+      }
     }
     const reportMatch = url.pathname.match(/^\/api\/reports\/([^/]+)$/);
     if (reportMatch && request.method === 'GET') {

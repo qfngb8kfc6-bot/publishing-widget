@@ -116,6 +116,41 @@ describe('hosted report flow', () => {
     expect((await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}?publisherId=demo`))).status).toBe(200);
   });
 
+  it('retrieves focused theme stories through the scoped persisted-report pipeline', async () => {
+    const app = createProductionApp({ environment: 'test' });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
+    }));
+    const { reportId } = await generated.json() as { reportId: string };
+    const before = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    const theme = before.professionalProfile.professionalInterests[0] as string;
+    let observedQuery = '';
+    const extra = { ...before.recommendations[0].article, id: 'theme-focused-extra', title: `${theme} platform update`, url: 'https://demo.publisher.example/theme-focused-extra', description: `Coverage of ${theme}.` };
+    const definition = app.registry.get('demo');
+    if (!definition) throw new Error('demo definition missing');
+    definition.adapter = {
+      publisherId: 'demo',
+      search: async (intent) => { observedQuery = intent.queryText; return [extra, ...before.recommendations.map((recommendation: any) => recommendation.article)]; },
+      normalizeArticle: (article) => article as NormalizedArticle,
+    };
+    const response = await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=demo`, { method: 'POST' }));
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { theme: string; recommendations: Array<{ articleId: string }> };
+    expect(payload.theme).toBe(theme);
+    expect(observedQuery.toLowerCase()).toContain(theme.toLowerCase().split(' ')[0]);
+    expect(payload.recommendations.map((item) => item.articleId)).toContain('theme-focused-extra');
+    expect(payload.recommendations.map((item) => item.articleId)).not.toContain(before.recommendations[0].articleId);
+    expect(await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json()).toMatchObject({ recommendations: before.recommendations });
+    expect((await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/not-a-report-theme/search?publisherId=demo`, { method: 'POST' }))).status).toBe(400);
+    expect((await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=real-publisher`, { method: 'POST' }))).status).toBe(404);
+
+    definition.adapter = { ...definition.adapter, search: async () => [] };
+    const empty = await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=demo`, { method: 'POST' }));
+    expect(empty.status).toBe(200);
+    expect((await empty.json()).recommendations).toEqual([]);
+  });
+
   it('rejects private or malformed company input without exposing external fetch details', async () => {
     const app = createProductionApp({ environment: 'test' });
     const response = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'http://localhost:8080', jobTitle: 'Engineer' }) }));

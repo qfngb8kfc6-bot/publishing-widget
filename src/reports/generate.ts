@@ -4,10 +4,11 @@ import { mergeProfessionalProfileEnhancement, validateReportContent, validateSem
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
 import { normalizeCompanyUrl, type CompanyContextProvider } from '../server/company';
 import { WIDGET_VERSION } from '../version';
-import type { ReportRecord, GenerateReportInput } from './types';
+import type { ReportRecord, ReportRecommendation, GenerateReportInput } from './types';
 import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
+import { profileForTheme } from './themes';
 
 export const GENERATION_VERSION = '1.2';
 
@@ -103,35 +104,12 @@ export class ReportGenerationService {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
   }
 
-  async generate(input: GenerateReportInput): Promise<ReportRecord> {
-    const definition = this.registry.get(input.publisherId);
-    if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
-    const jobTitle = input.jobTitle.replace(/\s+/g, ' ').trim().slice(0, 160);
-    if (!jobTitle) throw new Error('job_title_required');
-    const activeSession = input.sessionId ?? sessionId();
-    await this.track('generation_started', input.publisherId, activeSession);
-    const normalized = normalizeCompanyUrl(input.companyUrl);
-    await this.track('company_analysis_started', input.publisherId, activeSession);
-    const company = await this.companyProvider.getContext(normalized.domain);
-    await this.track('company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
-    let profile = buildProfessionalProfile(company, jobTitle);
-    let aiProfileUsed = false;
-    if (this.canUseAI(definition)) {
-      try {
-        const raw = await withTimeout((this.ai!.provider as ProfessionalAIProvider).enhanceProfessionalProfile({ publisherId: input.publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: jobTitle, company, role: profile.role, profile }), this.ai!.config.timeoutMs);
-        const merged = mergeProfessionalProfileEnhancement(profile, raw);
-        if (merged) { profile = merged; aiProfileUsed = true; }
-      } catch { /* deterministic profile remains authoritative */ }
-    }
-    await this.track('role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
-    await this.track('profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
-    const intent = createIntent(profile, input.publisherId);
-    await this.track('retrieval_started', input.publisherId, activeSession);
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleIds = new Set<string>()): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; aiRerankUsed: boolean }> {
+    const intent = createIntent(profile, publisherId);
     const candidates = await definition.adapter.search(intent, { limit: Math.max(definition.config.content.candidateRetrievalLimit, 30) });
-    await this.track('retrieval_completed', input.publisherId, activeSession, { resultCount: candidates.length });
     const normalizedArticles = candidates.flatMap((raw) => {
       const article = definition.adapter.normalizeArticle(raw);
-      return article ? [article] : [];
+      return article && !excludedArticleIds.has(article.id) ? [article] : [];
     });
     const unique = [...new Map(normalizedArticles.map((article) => [article.id, article])).values()];
     const finalLimit = Math.min(definition.config.results.maximumRecommendations, definition.config.content.resultLimit);
@@ -159,7 +137,7 @@ export class ReportGenerationService {
           deterministicRelevanceType: result.relevanceType,
           relevanceSignals: result.relevanceSignals,
         }));
-        const semanticResults = validateSemanticResults(await withTimeout(this.ai!.provider.rerank(createEnrichedIntent(profile, input.publisherId), semanticCandidates), this.ai!.config.timeoutMs), semanticCandidates);
+        const semanticResults = validateSemanticResults(await withTimeout(this.ai!.provider.rerank(createEnrichedIntent(profile, publisherId), semanticCandidates), this.ai!.config.timeoutMs), semanticCandidates);
         if (semanticResults.length === 0) throw new Error('no_valid_rerank_results');
         const semanticById = new Map(semanticResults.map((result) => [result.articleId, result]));
         const deterministicWeight = definition.manifest?.ranking?.deterministicWeight ?? this.ai!.config.deterministicWeight;
@@ -167,10 +145,8 @@ export class ReportGenerationService {
         ranked = deterministicRanked.flatMap((result, index) => {
           const semantic = semanticById.get(result.article.id);
           if (!semantic) return [];
-          const semanticScore = semantic?.semanticScore ?? result.deterministicScore;
+          const semanticScore = semantic.semanticScore ?? result.deterministicScore;
           if (semantic.keep === false) return [];
-          // AI may downgrade an over-optimistic deterministic classification,
-          // but it cannot promote an adjacent match into a direct one.
           const relevanceType = result.relevanceType === 'adjacent' ? 'adjacent' as const : semantic.relevanceType ?? result.relevanceType;
           const finalScore = calibrateRelevanceScore(combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight }), relevanceType);
           if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) return [];
@@ -181,6 +157,68 @@ export class ReportGenerationService {
     } else {
       ranked = ranked.slice(0, finalLimit);
     }
+    return { ranked, retrievedCount: candidates.length, aiRerankUsed };
+  }
+
+  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, string>()): ReportRecommendation[] {
+    return ranked.map((item, index) => ({
+      articleId: item.article.id,
+      rank: index + 1,
+      rawScore: item.finalScore,
+      displayScore: displayRelevanceScore(item.finalScore),
+      explanation: explanationById.get(item.article.id) ?? explanation(profile, item),
+      article: item.article,
+      rankingMetadata: {
+        relevanceSignals: item.relevanceSignals,
+        rankingMode: item.rankingMode,
+        rankingVersion: RANKING_VERSION,
+        deterministicScore: item.deterministicScore,
+        semanticScore: item.semanticScore,
+        semanticSignals: item.semanticSignals,
+        relevanceType: item.relevanceType,
+        confidence: item.confidence,
+        aiProvider: item.rankingMode === 'hybrid' ? this.ai?.provider.providerName : undefined,
+      },
+    }));
+  }
+
+  async searchTheme(report: ReportRecord, theme: string): Promise<ReportRecommendation[]> {
+    const definition = this.registry.get(report.publisherId);
+    if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
+    const profile = profileForTheme(report.professionalProfile, theme);
+    const excluded = new Set(report.recommendations.map((recommendation) => recommendation.article.id));
+    const { ranked } = await this.rankProfile(definition, report.publisherId, profile, excluded);
+    return this.recommendationsFromRanked(profile, ranked);
+  }
+
+  async generate(input: GenerateReportInput): Promise<ReportRecord> {
+    const definition = this.registry.get(input.publisherId);
+    if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
+    const jobTitle = input.jobTitle.replace(/\s+/g, ' ').trim().slice(0, 160);
+    if (!jobTitle) throw new Error('job_title_required');
+    const activeSession = input.sessionId ?? sessionId();
+    await this.track('generation_started', input.publisherId, activeSession);
+    const normalized = normalizeCompanyUrl(input.companyUrl);
+    await this.track('company_analysis_started', input.publisherId, activeSession);
+    const company = await this.companyProvider.getContext(normalized.domain);
+    await this.track('company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
+    let profile = buildProfessionalProfile(company, jobTitle);
+    let aiProfileUsed = false;
+    if (this.canUseAI(definition)) {
+      try {
+        const raw = await withTimeout((this.ai!.provider as ProfessionalAIProvider).enhanceProfessionalProfile({ publisherId: input.publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: jobTitle, company, role: profile.role, profile }), this.ai!.config.timeoutMs);
+        const merged = mergeProfessionalProfileEnhancement(profile, raw);
+        if (merged) { profile = merged; aiProfileUsed = true; }
+      } catch { /* deterministic profile remains authoritative */ }
+    }
+    await this.track('role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
+    await this.track('profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
+    await this.track('retrieval_started', input.publisherId, activeSession);
+    const ranking = await this.rankProfile(definition, input.publisherId, profile);
+    const ranked = ranking.ranked;
+    const aiRerankUsed = ranking.aiRerankUsed;
+    const aiAvailable = this.canUseAI(definition);
+    await this.track('retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
     await this.track('ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
     const deterministicRecommendations = ranked.map((item) => ({
       article: item.article,
@@ -204,22 +242,10 @@ export class ReportGenerationService {
         }
       } catch { /* deterministic summary and explanations remain authoritative */ }
     }
-    const recommendations = ranked.map((item, index) => ({
-      articleId: item.article.id,
-      rank: index + 1,
-      rawScore: item.finalScore,
-      displayScore: displayRelevanceScore(item.finalScore),
-      explanation: explanationById.get(item.article.id) ?? explanation(profile, item),
-      article: item.article,
+    const recommendations = this.recommendationsFromRanked(profile, ranked, explanationById).map((recommendation) => ({
+      ...recommendation,
       rankingMetadata: {
-        relevanceSignals: item.relevanceSignals,
-        rankingMode: item.rankingMode,
-        rankingVersion: RANKING_VERSION,
-        deterministicScore: item.deterministicScore,
-        semanticScore: item.semanticScore,
-        semanticSignals: item.semanticSignals,
-        relevanceType: item.relevanceType,
-        confidence: item.confidence,
+        ...recommendation.rankingMetadata,
         aiProvider: aiRerankUsed || aiExplanationUsed ? this.ai?.provider.providerName : undefined,
       },
     }));

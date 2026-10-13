@@ -205,7 +205,10 @@ export type AnalyticsEventName =
   | 'profile_edit_clicked'
   | 'report_shared'
   | 'report_saved'
-  | 'cta_clicked';
+  | 'cta_clicked'
+  | 'theme_find_stories_clicked'
+  | 'theme_results_loaded'
+  | 'theme_story_clicked';
 
 export type AnalyticsMetadataValue = string | number | boolean;
 export type AnalyticsMetadata = Record<string, AnalyticsMetadataValue>;

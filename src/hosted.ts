@@ -1,7 +1,8 @@
 import { BatchingAnalyticsClient } from './analytics/client';
-import { createEvent, DEFAULT_THEME, type PublisherRegistry } from './core';
+import { createEvent, DEFAULT_THEME, normalizeToken, type PublisherRegistry } from './core';
 import type { PublisherExperienceBranding, PublisherManifest } from './publishers/manifest';
 import type { ReportRecord, ReportRecommendation } from './reports';
+import { reportThemes } from './reports/themes';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&#38;', '<': '&#60;', '>': '&#62;', "'": '&#39;', '"': '&#34;' })[character] ?? character);
@@ -136,9 +137,19 @@ function storyMarkup(recommendation: ReportRecommendation, manifest: PublisherMa
 
 function highlightMarkup(report: ReportRecord): string {
   const profile = report.professionalProfile;
-  const values = [...new Set([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes])].filter(Boolean).slice(0, 4);
+  const values = reportThemes(report);
   if (!values.length) return '';
-  return `<section class="highlights-section" aria-labelledby="highlights-heading"><p class="section-kicker">Highlights</p><h2 id="highlights-heading">Top themes in your briefing</h2><div class="highlight-grid">${values.map((value, index) => `<article class="highlight-card"><span class="highlight-index">${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(value)}</h3><p>Relevant to your ${escapeHtml(profile.role.function.toLowerCase())} focus and the information needs identified for this briefing.</p></article>`).join('')}</div></section>`;
+  return `<section class="highlights-section" aria-labelledby="highlights-heading"><p class="section-kicker">Highlights</p><h2 id="highlights-heading">Top themes in your briefing</h2><div class="highlight-grid">${values.map((value, index) => `<article class="highlight-card"><span class="highlight-index">${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(value)}</h3><p>Relevant to your ${escapeHtml(profile.role.function.toLowerCase())} focus and the information needs identified for this briefing.</p><button class="highlight-action" type="button" data-theme-search="${escapeHtml(value)}">Find stories →</button></article>`).join('')}</div></section>`;
+}
+
+function themeResultsMarkup(): string {
+  return '<section class="theme-results" data-theme-results hidden aria-live="polite" aria-busy="false"></section>';
+}
+
+function themeResultsContent(theme: string, report: ReportRecord, manifest: PublisherManifest, recommendations: ReportRecommendation[]): string {
+  const heading = `<p class="section-kicker">Focused reading</p><h2 class="theme-results-heading">Stories about ${escapeHtml(theme)}</h2><p class="theme-results-subheading">Selected for your role as ${escapeHtml(report.jobTitle)}</p>`;
+  if (!recommendations.length) return `${heading}<p class="theme-results-status">No strong stories were found for this theme in the current coverage.</p>`;
+  return `${heading}<div class="story-grid">${recommendations.map((recommendation) => storyMarkup(recommendation, manifest)).join('')}</div>`;
 }
 
 function optionalSectionsMarkup(manifest: PublisherManifest, recommendations: ReportRecommendation[]): string {
@@ -209,13 +220,13 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   const identity = identityLabel(report);
   const reportBranding = manifest.branding.report;
   const reportBackground = 'background-color:var(--report-fallback)';
-  const reportCoverStyle = `<style>.report-hero{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${cssUrl(reportBranding?.desktopBackgroundImage)}}@media(max-width:780px){.report-hero{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${cssUrl(reportBranding?.mobileBackgroundImage ?? reportBranding?.desktopBackgroundImage)}}}</style>`;
+  const reportCoverStyle = `<style>.report-hero{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${cssUrl(reportBranding?.desktopBackgroundImage)}}@media(max-width:780px){.report-hero{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${cssUrl(reportBranding?.mobileBackgroundImage ?? reportBranding?.desktopBackgroundImage)}}}.highlight-action{position:absolute;z-index:1;left:22px;bottom:22px;display:inline-flex;padding:0;border:0;color:#2a2c8f;background:transparent;font-size:.8rem;font-weight:800}.highlight-action:hover{text-decoration:underline}.theme-results{max-width:1100px;margin:-58px auto 80px;padding:28px;border:1px solid rgba(20,30,60,.1);border-radius:24px;background:#fff;box-shadow:0 16px 44px rgba(21,26,58,.08)}.theme-results[hidden]{display:none}.theme-results-heading{margin:0;color:#151a3a;font:600 clamp(1.8rem,4vw,3rem)/1 var(--font);letter-spacing:-.055em}.theme-results-subheading{margin:8px 0 22px;color:#69707d;font-size:.9rem}.theme-results-status{margin:0;color:#69707d}.theme-results .story-grid{margin-top:20px}@media(max-width:520px){.theme-results{margin:-20px 0 56px;padding:22px 18px}}</style>`;
   const feature = report.recommendations[0];
   const additional = report.recommendations.slice(1);
   const additionalMarkup = additional.length ? `<section class="also-relevant stories-section" aria-labelledby="additional-heading"><p class="section-kicker">Also relevant</p><h2 class="section-heading" id="additional-heading">More stories for your work</h2><div class="story-grid">${additional.map((recommendation) => storyMarkup(recommendation, manifest)).join('')}</div></section>` : '';
   const reportTitle = manifest.results.heading || 'Stories selected for your work';
   app.className = 'report-page';
-  app.innerHTML = `${reportCoverStyle}<section class="report-hero" style="${reportBackground}" aria-labelledby="report-heading"><div class="report-hero-content"><div class="report-brand">${brandMarkup(manifest)}</div><button class="report-identity" type="button" data-edit><span class="identity-icon" aria-hidden="true">↗</span><span>${escapeHtml(identity)}</span><span class="identity-edit">Edit</span></button><p class="section-kicker">Your personalised briefing</p><h1 id="report-heading">Your personalised briefing</h1><h2 class="report-title">${escapeHtml(reportTitle)}</h2></div></section><section class="match-summary-card" aria-label="${report.overallMatchScore}% relevance"><div class="relevance-ring" style="--match:${report.overallMatchScore}%"><span>${report.overallMatchScore}%</span><small>relevance</small></div><div class="match-summary-copy"><p class="section-kicker">A briefing shaped around your context</p><p>${escapeHtml(report.generatedSummary)}</p><div class="summary-actions"><a class="action-button" href="#top-stories">View top stories <span aria-hidden="true">↓</span></a><button class="text-button" type="button" data-share>Share report <span aria-hidden="true">↗</span></button></div></div></section><div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div><div class="report-content">${highlightMarkup(report)}<section class="stories-section top-stories" id="top-stories" aria-labelledby="top-stories-heading"><div class="section-heading-row"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">Stories selected for your work</h2></div><span class="story-count">${report.recommendations.length} recommendations</span></div>${feature ? storyMarkup(feature, manifest, true) : '<p>No strong matches were found in the current coverage.</p>'}</section>${additionalMarkup}${optionalSectionsMarkup(manifest, report.recommendations)}<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div></div>${editSheetMarkup(report)}`;
+  app.innerHTML = `${reportCoverStyle}<section class="report-hero" style="${reportBackground}" aria-labelledby="report-heading"><div class="report-hero-content"><div class="report-brand">${brandMarkup(manifest)}</div><button class="report-identity" type="button" data-edit><span class="identity-icon" aria-hidden="true">↗</span><span>${escapeHtml(identity)}</span><span class="identity-edit">Edit</span></button><p class="section-kicker">Your personalised briefing</p><h1 id="report-heading">Your personalised briefing</h1><h2 class="report-title">${escapeHtml(reportTitle)}</h2></div></section><section class="match-summary-card" aria-label="${report.overallMatchScore}% relevance"><div class="relevance-ring" style="--match:${report.overallMatchScore}%"><span>${report.overallMatchScore}%</span><small>relevance</small></div><div class="match-summary-copy"><p class="section-kicker">A briefing shaped around your context</p><p>${escapeHtml(report.generatedSummary)}</p><div class="summary-actions"><a class="action-button" href="#top-stories">View top stories <span aria-hidden="true">↓</span></a><button class="text-button" type="button" data-share>Share report <span aria-hidden="true">↗</span></button></div></div></section><div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div><div class="report-content">${highlightMarkup(report)}${themeResultsMarkup()}<section class="stories-section top-stories" id="top-stories" aria-labelledby="top-stories-heading"><div class="section-heading-row"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">Stories selected for your work</h2></div><span class="story-count">${report.recommendations.length} recommendations</span></div>${feature ? storyMarkup(feature, manifest, true) : '<p>No strong matches were found in the current coverage.</p>'}</section>${additionalMarkup}${optionalSectionsMarkup(manifest, report.recommendations)}<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div></div>${editSheetMarkup(report)}`;
 
   const cover = app.querySelector<HTMLElement>('.report-hero');
   const contextBar = app.querySelector<HTMLElement>('[data-sticky-context]');
@@ -229,7 +240,47 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   updateSticky();
 
   report.recommendations.forEach((recommendation, index) => analytics.track(createEvent('story_impression', report.publisherId, report.sessionId, { reportId: report.id, articleId: recommendation.article.id, articlePosition: index + 1, articleCategory: recommendation.article.categories[0] ?? 'Coverage', articleTitle: recommendation.article.title, articlePublishedAt: recommendation.article.publishedAt ?? '', rankingMode: recommendation.rankingMetadata.rankingMode })));
-  app.querySelectorAll<HTMLElement>('[data-story-id]').forEach((element) => element.addEventListener('click', () => analytics.track(createEvent('story_clicked', report.publisherId, report.sessionId, { reportId: report.id, articleId: element.dataset.storyId ?? '' }))));
+  const bindStoryClicks = (scope: ParentNode) => scope.querySelectorAll<HTMLElement>('[data-story-id]').forEach((element) => {
+    if (element.dataset.analyticsBound) return;
+    element.dataset.analyticsBound = 'true';
+    element.addEventListener('click', () => {
+      const theme = element.closest<HTMLElement>('[data-theme-results]')?.dataset.theme;
+      analytics.track(createEvent(theme ? 'theme_story_clicked' : 'story_clicked', report.publisherId, report.sessionId, { reportId: report.id, articleId: element.dataset.storyId ?? '', ...(theme ? { theme: normalizeToken(theme) } : {}) }));
+    });
+  });
+  bindStoryClicks(app);
+
+  const themeResults = app.querySelector<HTMLElement>('[data-theme-results]');
+  app.querySelectorAll<HTMLButtonElement>('[data-theme-search]').forEach((button) => button.addEventListener('click', async () => {
+    if (button.disabled || !themeResults) return;
+    const theme = button.dataset.themeSearch ?? '';
+    button.disabled = true;
+    const originalLabel = button.textContent ?? 'Find stories →';
+    button.textContent = 'Finding stories…';
+    themeResults.hidden = false;
+    themeResults.dataset.theme = theme;
+    themeResults.setAttribute('aria-busy', 'true');
+    themeResults.innerHTML = '<p class="theme-results-status">Finding stories…</p>';
+    analytics.track(createEvent('theme_find_stories_clicked', report.publisherId, report.sessionId, { reportId: report.id, theme: normalizeToken(theme) }));
+    try {
+      const response = await fetch(`/api/reports/${encodeURIComponent(report.id)}/themes/${encodeURIComponent(theme)}/search?publisherId=${encodeURIComponent(report.publisherId)}`, { method: 'POST' });
+      if (!response.ok) throw new Error('theme_search_failed');
+      const payload = await response.json() as { theme?: string; recommendations?: ReportRecommendation[] };
+      const recommendations = Array.isArray(payload.recommendations) ? payload.recommendations : [];
+      const resolvedTheme = payload.theme ?? theme;
+      themeResults.dataset.theme = resolvedTheme;
+      themeResults.innerHTML = themeResultsContent(resolvedTheme, report, manifest, recommendations);
+      bindStoryClicks(themeResults);
+      analytics.track(createEvent('theme_results_loaded', report.publisherId, report.sessionId, { reportId: report.id, theme: normalizeToken(resolvedTheme), resultCount: recommendations.length }));
+    } catch {
+      themeResults.innerHTML = '<p class="theme-results-status">We couldn’t find stories for this theme right now.</p>';
+      analytics.track(createEvent('theme_results_loaded', report.publisherId, report.sessionId, { reportId: report.id, theme: normalizeToken(theme), resultCount: 0 }));
+    } finally {
+      themeResults.setAttribute('aria-busy', 'false');
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  }));
 
   const share = async () => {
     const url = window.location.href;

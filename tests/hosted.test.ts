@@ -120,4 +120,46 @@ describe('hosted professional experience', () => {
     expect(styles).toContain('color-mix(in srgb, #10251a 60%, transparent)');
     expect(styles).toContain('https://assets.example/report-desktop.jpg');
   });
+
+  it('wires every theme action and replaces focused results with safe analytics events', async () => {
+    const app = createProductionApp({ environment: 'test' });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
+    }));
+    const { reportId } = await generated.json() as { reportId: string };
+    const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json();
+    const requests: Array<{ input: string; init?: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ input: url, init });
+      if (url.includes('/api/analytics/events')) return Response.json({ accepted: true });
+      if (url.includes('/themes/')) {
+        const theme = decodeURIComponent(url.split('/themes/')[1].split('/search')[0]);
+        return Response.json({ theme, recommendations: theme === report.professionalProfile.professionalInterests[0] ? report.recommendations.slice(1, 2) : [] });
+      }
+      return Response.json(report);
+    }));
+    window.history.replaceState({}, '', `/p/demo/${reportId}`);
+    await renderHostedRoute(document, createDemoRegistry());
+
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-theme-search]')];
+    expect(buttons.length).toBe(4);
+    expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(true);
+    await buttons[0].click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(false);
+    expect(document.querySelector('.theme-results-heading')?.textContent).toContain(report.professionalProfile.professionalInterests[0]);
+    expect(document.querySelector('.theme-results .story-card')).not.toBeNull();
+
+    await buttons[1].click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector('.theme-results')?.textContent).toContain('No strong stories were found');
+    expect(requests.filter((request) => request.input.includes('/themes/')).length).toBe(2);
+    const analyticsEvents = requests.filter((request) => request.input.includes('/api/analytics/events')).flatMap((request) => {
+      try { return (JSON.parse(String(request.init?.body)) as { events?: Array<{ name: string; metadata?: Record<string, unknown> }> }).events ?? []; } catch { return []; }
+    });
+    expect(analyticsEvents.map((event) => event.name)).toContain('theme_find_stories_clicked');
+    expect(analyticsEvents.some((event) => event.name === 'theme_find_stories_clicked' && event.metadata?.reportId === reportId)).toBe(true);
+  });
 });
