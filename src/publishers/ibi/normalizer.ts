@@ -33,7 +33,7 @@ export function normalizeIbiArticle(raw: IbiRawArticle | unknown): NormalizedArt
     publisherId: 'ibi',
     sourceType: 'sitemap',
     sourceUrl: ibiSitemapUrl,
-    sourceName: 'IBI News public sitemap',
+    sourceName: 'IBI News robots-advertised sitemap index',
     mappings: {
       id: ['id', '@id'],
       externalId: ['externalId', 'external_id'],

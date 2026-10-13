@@ -286,8 +286,10 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
       try { const html = await fetchText(page, { headers: { Accept: 'text/html,application/xhtml+xml' } }, { timeoutMs: this.config.pageTimeoutMs ?? 8000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames ?? [sitemapUrl.hostname] }); records.push(pageMetadata(html, page)); }
       catch (error) { this.lastDiagnostics = this.lastDiagnostics ?? { accepted: 0, rejected: 0, duplicates: 0, warnings: 0, issues: [] }; this.lastDiagnostics.warnings += 1; this.lastDiagnostics.issues.push({ status: 'warning', message: error instanceof Error ? error.message : 'Article page could not be fetched.' }); }
     }
+    if (!pages.length) throw new ContentSourceError('empty-source', 'Sitemap did not contain any matching article URLs.');
     const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.sitemapUrl, this.config.sitemapUrl, this.config.sourceName, undefined));
     this.lastDiagnostics = result.diagnostics;
+    if (!result.articles.length) throw new ContentSourceError('empty-source', 'Sitemap did not yield any normalizable articles.');
     options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Date.now() - startedAt, pagesFetched: 1, rawCount: pages.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
     options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: result.articles.length });
     return result.articles;

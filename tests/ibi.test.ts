@@ -23,7 +23,10 @@ function fixtureArticleAdapter(): PublisherAdapter<NormalizedArticle> {
 function fixtureRegistry(): PublisherRegistry {
   const definition = createIbiDefinition(async (input) => {
     const url = String(input);
-    if (url.endsWith('/sitemap.xml')) {
+    if (url.includes('GoogleSiteMapIndex.aspx')) {
+      return new Response('<sitemapindex><sitemap><loc>https://www.ibinews.com/googlesitemap.aspx?year=2026</loc></sitemap></sitemapindex>', { status: 200, headers: { 'Content-Type': 'application/xml' } });
+    }
+    if (url.includes('googlesitemap.aspx')) {
       const locations = ibiFixtureArticles.filter((article) => article.url?.startsWith('https://www.ibinews.com/')).map((article) => `<url><loc>${article.url}</loc></url>`).join('');
       return new Response(`<urlset>${locations}</urlset>`, { status: 200, headers: { 'Content-Type': 'application/xml' } });
     }
@@ -46,7 +49,7 @@ describe('IBI News publisher onboarding', () => {
     const first = normalizeIbiArticle(ibiFixtureArticles[0]);
     const duplicate = normalizeIbiArticle(ibiFixtureArticles.find((article) => article.id === 'ibi-fixture-duplicate'));
     expect(first).toMatchObject({ id: 'ibi-fixture-materials', externalId: 'ibi-fixture-materials', publisherId: 'ibi', sourceType: 'sitemap', canonicalUrl: 'https://www.ibinews.com/ibi-fixture/materials.article' });
-    expect(first?.provenance).toMatchObject({ publisherId: 'ibi', sourceArticleId: 'ibi-fixture-materials', retrievalSource: 'IBI News public sitemap' });
+    expect(first?.provenance).toMatchObject({ publisherId: 'ibi', sourceArticleId: 'ibi-fixture-materials', retrievalSource: 'IBI News robots-advertised sitemap index' });
     expect(duplicate?.canonicalUrl).toBe('https://www.ibinews.com/ibi-fixture/suppliers.article');
     expect(normalizeIbiArticle(ibiFixtureArticles.find((article) => article.id === 'ibi-fixture-invalid'))).toBeNull();
     const normalized = ibiFixtureArticles.flatMap((raw) => {
@@ -58,18 +61,39 @@ describe('IBI News publisher onboarding', () => {
     expect(deduplicateArticles(normalized).articles).toHaveLength(16);
   });
 
-  it('uses the bounded sitemap source and shared canonical adapter path', async () => {
-    let requested = 0;
+  it('uses the bounded sitemap index source and shared canonical adapter path', async () => {
+    const requested: string[] = [];
     const definition = createIbiDefinition(async (input) => {
-      requested += 1;
       const url = String(input);
-      if (url.endsWith('/sitemap.xml')) return new Response('<urlset><url><loc>https://www.ibinews.com/ibi-fixture/materials.article</loc></url><url><loc>https://www.ibinews.com/ibi-fixture/materials.article?utm_source=fixture</loc></url></urlset>', { status: 200 });
-      return new Response('<html><head><meta property="og:title" content="IBI fixture article"><meta property="og:url" content="https://www.ibinews.com/ibi-fixture/materials.article"><meta property="description" content="Materials"></head></html>', { status: 200 });
+      requested.push(url);
+      if (url.includes('GoogleSiteMapIndex.aspx')) return new Response('<sitemapindex><sitemap><loc>https://www.ibinews.com/googlesitemap.aspx?year=2026</loc></sitemap><sitemap><loc>https://www.ibinews.com/googlesitemap.aspx?year=2025</loc></sitemap></sitemapindex>', { status: 200 });
+      if (url.includes('googlesitemap.aspx?year=2026')) return new Response('<urlset><url><loc>https://www.ibinews.com/news/ibi-relocates/56346.article</loc></url><url><loc>https://www.ibinews.com/news/ibi-relocates/56346.article?utm_source=fixture</loc></url></urlset>', { status: 200 });
+      if (url.includes('googlesitemap.aspx?year=2025')) return new Response('<urlset><url><loc>https://www.ibinews.com/interactive-digital-editions/ibi-aug-sept-26-digital-issue/55788.article</loc></url><url><loc>https://www.ibinews.com/news/not-an-article</loc></url></urlset>', { status: 200 });
+      const article = url.includes('56346.article') ? { title: 'IBI headquarters move', description: 'Materials', date: '2026-10-10' } : { title: 'IBI digital issue', description: 'Technology', date: '2026-10-09' };
+      return new Response(`<html><head><meta property="og:title" content="${article.title}"><meta property="og:url" content="${url}"><meta property="description" content="${article.description}"><meta property="article:published_time" content="${article.date}"></head><body>${article.description}</body></html>`, { status: 200 });
     });
     const records = await definition.adapter.search({ publisherId: 'ibi', answers: {}, queryText: 'procurement', keywords: ['procurement'], interests: ['procurement'], personas: [] }, { limit: 30 });
-    expect(requested).toBe(3);
-    expect(records).toHaveLength(1);
-    expect(definition.adapter.normalizeArticle(records[0])).toMatchObject({ publisherId: 'ibi', title: 'IBI fixture article' });
+    expect(requested.filter((url) => url.includes('/sitemap.xml'))).toHaveLength(0);
+    expect(requested.filter((url) => url.includes('GoogleSiteMapIndex.aspx') || url.includes('googlesitemap.aspx'))).toHaveLength(3);
+    expect(requested).toHaveLength(6);
+    expect(requested.every((url) => !url.includes('/sitemap.xml'))).toBe(true);
+    expect(records).toHaveLength(2);
+    expect(definition.adapter.lastDiagnostics?.duplicates).toBe(1);
+    expect(definition.adapter.normalizeArticle(records[0])).toMatchObject({ publisherId: 'ibi', title: 'IBI headquarters move' });
+  });
+
+  it('handles malformed, empty and subscriber-only listing/article pages safely', async () => {
+    const empty = createIbiDefinition(async (input) => String(input).includes('GoogleSiteMapIndex.aspx') ? new Response('<sitemapindex></sitemapindex>', { status: 200 }) : new Response('<html><body>No stories here</body></html>', { status: 200 }));
+    await expect(empty.adapter.search({ publisherId: 'ibi', answers: {}, queryText: '', keywords: [], interests: [], personas: [] }, { limit: 30 })).rejects.toMatchObject({ code: 'empty-source' });
+    const subscriber = createIbiDefinition(async (input) => {
+      const url = String(input);
+      if (url.includes('GoogleSiteMapIndex.aspx')) return new Response('<sitemapindex><sitemap><loc>https://www.ibinews.com/googlesitemap.aspx?year=2026</loc></sitemap></sitemapindex>', { status: 200 });
+      if (url.includes('googlesitemap.aspx')) return new Response('<urlset><url><loc>https://www.ibinews.com/news/subscriber-story/56346.article</loc></url></urlset>', { status: 200 });
+      return new Response('<html><head><meta property="og:title" content="Subscriber-safe headline"><meta property="og:description" content="Public metadata only"><link rel="canonical" href="https://www.ibinews.com/news/subscriber-story/56346.article"></head><body>Subscriber-only</body></html>', { status: 200 });
+    });
+    const rows = await subscriber.adapter.search({ publisherId: 'ibi', answers: {}, queryText: '', keywords: [], interests: [], personas: [] }, { limit: 1 });
+    expect(subscriber.adapter.normalizeArticle(rows[0])).toMatchObject({ title: 'Subscriber-safe headline', description: 'Public metadata only', url: 'https://www.ibinews.com/news/subscriber-story/56346.article' });
+    expect(JSON.stringify(rows)).not.toContain('password');
   });
 
   it('produces meaningfully different role reports from the same IBI archive and focused theme results', async () => {

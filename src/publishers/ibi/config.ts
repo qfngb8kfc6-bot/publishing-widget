@@ -2,17 +2,17 @@ import type { PublisherConfig } from '../../core';
 import type { PublisherManifest } from '../manifest';
 import type { SitemapSourceConfig } from '../content';
 
-export const ibiSitemapUrl = 'https://www.ibinews.com/sitemap.xml';
+export const ibiSitemapUrl = 'https://www.ibinews.com/GoogleSiteMapIndex.aspx';
 
 export const ibiContentSource: SitemapSourceConfig = {
   type: 'sitemap',
   sitemapUrl: ibiSitemapUrl,
-  allowedHostnames: ['www.ibinews.com', 'ibinews.com'],
-  urlPattern: '\\.article(?:$|\\?)',
   maxSitemaps: 5,
   maxUrls: 30,
+  allowedHostnames: ['www.ibinews.com', 'ibinews.com'],
+  urlPattern: '\\.article(?:$|\\?)',
   pageTimeoutMs: 8000,
-  sourceName: 'IBI News public sitemap',
+  sourceName: 'IBI News robots-advertised sitemap index',
 };
 
 export const ibiConfig: PublisherConfig = {

@@ -8,19 +8,19 @@
 
 ## Content source
 
-IBI is configured through the shared sitemap adapter using:
+IBI is configured through the shared bounded sitemap adapter using the sitemap index advertised by IBI's `robots.txt`:
 
 ```text
-https://www.ibinews.com/sitemap.xml
+https://www.ibinews.com/GoogleSiteMapIndex.aspx
 ```
 
-Only bounded article URLs on `ibinews.com` are fetched. The runtime requests at most 30 article pages per candidate retrieval, normalizes each page into `PublisherArticle`, deduplicates canonical URLs/GUIDs/IDs, and then applies the existing professional relevance and optional AI reranking pipeline. It does not load the full IBI archive or send the archive to AI.
+The index returns bounded child sitemaps such as `googlesitemap.aspx?year=2026`; article links use public `*.article` URLs. The runtime follows at most five sitemap documents and fetches at most 30 article pages per candidate retrieval, normalizes each page into `PublisherArticle`, deduplicates canonical URLs/GUIDs/IDs, and then applies the existing professional relevance and optional AI reranking pipeline. It does not load the full IBI archive or send the archive to AI.
 
 The source is public and requires no secret reference. The repository contains sanitized fixtures for tests only; they are not production content.
 
 ## Refresh and checks
 
-The sitemap is fetched when a bounded report retrieval or admin content check runs. Publisher manifest caching remains governed by `PUBLISHER_CACHE_TTL_MS`; no Redis or separate IBI archive cache is introduced.
+The sitemap index, bounded child sitemaps and article metadata are fetched when a bounded report retrieval or admin content check runs. Publisher manifest caching remains governed by `PUBLISHER_CACHE_TTL_MS`; no Redis or separate IBI archive cache is introduced.
 
 Run the source inspection command:
 
@@ -41,6 +41,8 @@ For live diagnostics, sign in to `/admin`, open IBI News, and run **Run saved ch
 7. Use the publisher analytics link to confirm events are scoped to `ibi`.
 8. Disable/re-enable the publisher from the saved configuration when required.
 
+If the existing persisted `ibi` manifest still contains the retired `/sitemap.xml` URL, save the updated source configuration once through the admin control plane after deploying this build. This change does not mutate production Postgres automatically.
+
 ## Embed
 
 ```html
@@ -53,4 +55,4 @@ The initial manifest uses safe text/color fallbacks because an approved IBI logo
 
 No IBI API key is required for the public sitemap source. The service still requires the normal production `DATABASE_URL`, admin password and deployment settings documented in `docs/DEPLOYMENT.md`.
 
-The current source is bounded latest sitemap coverage rather than a full historical archive. Subscriber-only access remains controlled by IBI; the widget only indexes fields publicly returned by the configured article pages. A verified IBI RSS URL or licensed content API can be adopted later by changing the saved source configuration through admin, without changing the core ranking or report code.
+The current source is bounded sitemap coverage rather than a full historical crawl. Subscriber-only access remains controlled by IBI; the widget only indexes fields publicly returned by the configured article pages. A verified IBI RSS URL or licensed content API can be adopted later by changing the saved source configuration through admin, without changing the core ranking or report code.
