@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import path from 'node:path';
+import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { createProductionApp, PostgresAnalyticsStore, PostgresReportStore } from './dist/server.mjs';
@@ -34,7 +35,18 @@ async function createAnalyticsStore() {
   }
 }
 
+async function assertProductionArtifacts() {
+  const required = ['admin.html', 'index.html', 'server.mjs'];
+  const missing = [];
+  for (const file of required) {
+    try { await access(path.join(root, file)); } catch { missing.push(`dist/${file}`); }
+  }
+  if (missing.length) throw new Error(`[server] required production artifact missing: ${missing.join(', ')}`);
+}
+
 async function start() {
+  await assertProductionArtifacts();
+  console.log('[server] entry=server-entry static=true');
   let analyticsStore;
   let analyticsStoreMode;
   let reportStore;

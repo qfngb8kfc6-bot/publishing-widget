@@ -13,6 +13,8 @@ product-domain/api/...
 
 The recommended starting point is a Node 22+ service running `node server-entry.mjs`, optionally behind a CDN/reverse proxy. The server composition is in [`src/server/production.ts`](/Users/lucadominguez/publishing%20widget/src/server/production.ts); it reuses the publisher proxy, AI proxy, analytics ingestion, storage interface, CORS, rate limiting, request IDs and health handlers.
 
+For Render, use `npm run build` as the build command and `node server-entry.mjs` as the start command. There is currently no `render.yaml` in this repository, so the Render service command is configured in the Render dashboard. Do not use `node dist/server.mjs`, `npm run build:server`, or `npm run dev` as the production start command; those paths do not run the static frontend server.
+
 ## Required services
 
 - Node-capable web service for `server-entry.mjs`.
@@ -31,7 +33,7 @@ npm run build
 NODE_ENV=production HOST=0.0.0.0 PORT=8787 node server-entry.mjs
 ```
 
-`npm run build` typechecks the project, builds the demo frontend, widget bundle and `dist/server.mjs`. `npm start` performs the same build and starts the server.
+`npm run build` typechecks the project, builds the demo frontend, admin frontend, widget bundle and `dist/server.mjs`, then asserts that the production artifacts exist. `npm start` performs the same build and starts `server-entry.mjs`.
 
 Before starting a production instance, run `npm run db:migrate`, then `npm run analytics:check`. The server uses `DB_POOL_MAX`, `DB_CONNECTION_TIMEOUT_MS`, `DB_IDLE_TIMEOUT_MS` and `DB_STATEMENT_TIMEOUT_MS`; SIGTERM/SIGINT close the HTTP server and database pool cleanly. Set `TRUSTED_PROXY=true` only when a known reverse proxy overwrites `x-forwarded-for`; otherwise forwarding headers are not used for rate-limit identity.
 
