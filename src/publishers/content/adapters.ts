@@ -258,8 +258,8 @@ function pageMetadata(html: string, pageUrl: string): RawRecord {
     body: structured.articleBody ?? body.slice(0, 50000), url: structured.url ?? findMeta(['og:url']) ?? (canonical ? extractHtmlAttribute(canonical, 'href') : undefined) ?? pageUrl,
     image: typeof structured.image === 'string' ? structured.image : asRecord(structured.image)?.url ?? findMeta(['og:image', 'twitter:image']),
     author: typeof structured.author === 'string' ? structured.author : asRecord(structured.author)?.name ?? findMeta(['author', 'article:author']),
-    publishedAt: structured.datePublished ?? findMeta(['article:published_time', 'date']), updatedAt: structured.dateModified ?? findMeta(['article:modified_time']),
-    categories: structured.articleSection, tags: structured.keywords, language: structured.inLanguage ?? findMeta(['og:locale']),
+    publishedAt: structured.datePublished ?? findMeta(['article:published_time', 'pubdate', 'date']), updatedAt: structured.dateModified ?? findMeta(['article:modified_time']),
+    categories: structured.articleSection ?? findMeta(['article:section', 'primarynavigation']), tags: structured.keywords ?? findMeta(['keywords', 'news_keywords']), language: structured.inLanguage ?? findMeta(['og:locale']),
   };
 }
 
@@ -278,19 +278,24 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
   async search(_intent: Intent, options: SearchOptions): Promise<unknown[]> {
     const startedAt = Date.now();
     const sitemapUrl = assertSafePublicUrl(this.config.sitemapUrl, this.config.allowedHostnames);
-    const urls = await this.discoverUrls(sitemapUrl, this.config.maxSitemaps ?? 5);
+    const discovery = await this.discoverUrls(sitemapUrl, this.config.maxSitemaps ?? 5);
     const pattern = this.config.urlPattern ? new RegExp(this.config.urlPattern) : undefined;
-    const pages = urls.filter((url) => !pattern || pattern.test(url)).slice(0, Math.min(options.limit, this.config.maxUrls ?? 30));
+    const articleUrls = discovery.entries
+      .filter((entry) => !pattern || pattern.test(entry.url))
+      .sort((left, right) => compareSitemapDates(right.lastmod, left.lastmod));
+    const pages = articleUrls.slice(0, Math.min(options.limit, this.config.maxUrls ?? 30));
     const records: RawRecord[] = [];
+    let articlePagesFetched = 0;
     for (const page of pages) {
-      try { const html = await fetchText(page, { headers: { Accept: 'text/html,application/xhtml+xml' } }, { timeoutMs: this.config.pageTimeoutMs ?? 8000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames ?? [sitemapUrl.hostname] }); records.push(pageMetadata(html, page)); }
+      try { const html = await fetchText(page.url, { headers: { Accept: 'text/html,application/xhtml+xml' } }, { timeoutMs: this.config.pageTimeoutMs ?? 8000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames ?? [sitemapUrl.hostname] }); records.push(pageMetadata(html, page.url)); articlePagesFetched += 1; }
       catch (error) { this.lastDiagnostics = this.lastDiagnostics ?? { accepted: 0, rejected: 0, duplicates: 0, warnings: 0, issues: [] }; this.lastDiagnostics.warnings += 1; this.lastDiagnostics.issues.push({ status: 'warning', message: error instanceof Error ? error.message : 'Article page could not be fetched.' }); }
     }
     if (!pages.length) throw new ContentSourceError('empty-source', 'Sitemap did not contain any matching article URLs.');
     const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.sitemapUrl, this.config.sitemapUrl, this.config.sourceName, undefined));
     this.lastDiagnostics = result.diagnostics;
+    this.lastDiagnostics.sourceStats = { sitemapDocumentsFetched: discovery.documentsFetched, sitemapUrlsFound: discovery.entries.length, articleUrlsAccepted: articleUrls.length, articleUrlsSelected: pages.length, articlePagesFetched, normalizedArticles: result.articles.length };
     if (!result.articles.length) throw new ContentSourceError('empty-source', 'Sitemap did not yield any normalizable articles.');
-    options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Date.now() - startedAt, pagesFetched: 1, rawCount: pages.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
+    options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Date.now() - startedAt, pagesFetched: discovery.documentsFetched + articlePagesFetched, rawCount: articleUrls.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
     options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: result.articles.length });
     return result.articles;
   }
@@ -300,16 +305,50 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
   normalizeArticle(raw: unknown): PublisherArticle | null { return isCanonical(raw) ? raw : normalizeMappedArticle(raw, sourceOptions(this.publisherId, this.sourceType, this.config.sitemapUrl, this.config.sitemapUrl, this.config.sourceName, undefined)); }
   async healthCheck(): Promise<ContentSourceHealth> { try { const records = await this.search(emptyIntent, { limit: 1 }); return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: true, recordsChecked: records.length, normalized: records.length, warnings: this.lastDiagnostics?.issues.filter((issue) => issue.status === 'warning').map((issue) => issue.message) ?? [] }; } catch (error) { return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: false, recordsChecked: 0, normalized: 0, warnings: [error instanceof Error ? error.message : 'Source check failed.'] }; } }
 
-  private async discoverUrls(root: URL, maxSitemaps: number): Promise<string[]> {
-    const queue = [root.toString()]; const visited = new Set<string>(); const pages: string[] = [];
+  private async discoverUrls(root: URL, maxSitemaps: number): Promise<{ entries: SitemapEntry[]; documentsFetched: number }> {
+    const queue = [root.toString()]; const visited = new Set<string>(); const entries: SitemapEntry[] = [];
     while (queue.length && visited.size < maxSitemaps) {
       const current = queue.shift()!; if (visited.has(current)) continue; visited.add(current);
       const xml = await fetchText(current, { headers: { Accept: 'application/xml,text/xml' } }, { timeoutMs: this.config.pageTimeoutMs ?? 8000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames ?? [root.hostname] });
       const isIndex = /<sitemapindex\b/i.test(xml);
       const blocks = xmlBlocks(xml, isIndex ? 'sitemap' : 'url');
-      for (const block of blocks) { const loc = xmlFirstText(block, ['loc']); if (!loc) continue; const safe = assertSafePublicUrl(loc, this.config.allowedHostnames ?? [root.hostname]); if (isIndex && visited.size + queue.length < maxSitemaps) queue.push(safe.toString()); else pages.push(safe.toString()); }
+      const locations = blocks.flatMap((block) => {
+        const loc = xmlFirstText(block, ['loc']);
+        if (!loc) return [];
+        const safe = assertSafePublicUrl(loc, this.config.allowedHostnames ?? [root.hostname]);
+        return [{ url: safe.toString(), lastmod: xmlFirstText(block, ['lastmod']) }];
+      });
+      if (isIndex) {
+        // Some publisher indexes put a broad, non-article sitemap before the
+        // year-specific sitemaps. Prefer the newest year within the bounded
+        // traversal so maxSitemaps cannot silently exclude current content.
+        locations.sort((left, right) => sitemapPriority(right.url) - sitemapPriority(left.url));
+        for (const location of locations) if (visited.size + queue.length < maxSitemaps) queue.push(location.url);
+      } else {
+        for (const location of locations) entries.push({ url: location.url, lastmod: location.lastmod });
+      }
     }
-    return [...new Set(pages)];
+    return { entries: [...new Map(entries.map((entry) => [entry.url, entry])).values()], documentsFetched: visited.size };
+  }
+}
+
+interface SitemapEntry { url: string; lastmod?: string; }
+
+function compareSitemapDates(left: string | undefined, right: string | undefined): number {
+  const leftTime = left ? Date.parse(left) : Number.NaN;
+  const rightTime = right ? Date.parse(right) : Number.NaN;
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime - rightTime;
+  if (Number.isFinite(leftTime)) return -1;
+  if (Number.isFinite(rightTime)) return 1;
+  return 0;
+}
+
+function sitemapPriority(value: string): number {
+  try {
+    const year = Number(new URL(value).searchParams.get('year'));
+    return Number.isInteger(year) && year >= 1900 && year <= 2200 ? year : 0;
+  } catch {
+    return 0;
   }
 }
 

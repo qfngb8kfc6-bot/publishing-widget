@@ -32,6 +32,13 @@ describe('professional context', () => {
     expect(profile.generatedAt).toBe('2026-10-06T00:00:00.000Z');
   });
 
+  it('treats technology professional roles as technical work rather than generic professional context', async () => {
+    const company = await new SafeCompanyContextProvider().getContext('ldsystems.uk');
+    const profile = buildProfessionalProfile(company, 'Technology Professional', new Date('2026-10-06T00:00:00.000Z'));
+    expect(profile.role.function).toBe('Engineering');
+    expect(profile.retrieval.concepts.some((concept) => concept.concept === 'technology' && concept.relevanceType === 'direct')).toBe(true);
+  });
+
   it('falls back to the submitted domain when company enrichment is unavailable', async () => {
     const provider = new SafeCompanyContextProvider(async () => new Response('upstream unavailable', { status: 503, headers: { 'Content-Type': 'text/plain' } }));
     await expect(provider.getContext('unavailable.example')).resolves.toMatchObject({ domain: 'unavailable.example', name: 'unavailable', source: 'submitted-domain', topics: [], entities: [] });

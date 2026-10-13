@@ -45,6 +45,44 @@ function fixtureService(): { service: ReportGenerationService; registry: Publish
 }
 
 describe('IBI News publisher onboarding', () => {
+  it('runs both production profile paths, preserves real candidates and persists zero-result reports', async () => {
+    const articles = new Map([
+      ['https://www.ibinews.com/news/technology-automation/56346.article', { title: 'Marine technology platform adds automation to digital operations', description: 'Software and AI tools improve digital products and operational technology for marine businesses.', section: 'Technology', keywords: ['technology', 'software', 'AI', 'automation', 'digital products'], date: '2026-10-13' }],
+      ['https://www.ibinews.com/interactive-digital-editions/ibi-aug-sept-26-digital-issue/55788.article', { title: 'Marine market outlook and company developments', description: 'A wider industry update for marine businesses.', section: 'News', keywords: ['markets'], date: '2026-10-12' }],
+    ]);
+    const fetchImpl = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('GoogleSiteMapIndex.aspx')) return new Response('<sitemapindex><sitemap><loc>https://www.ibinews.com/googlesitemap.aspx?year=2026</loc></sitemap></sitemapindex>', { status: 200 });
+      if (url.includes('googlesitemap.aspx')) return new Response(`<urlset>${[...articles.entries()].map(([articleUrl, article]) => `<url><loc>${articleUrl}</loc><lastmod>${article.date}T12:00:00Z</lastmod></url>`).join('')}</urlset>`, { status: 200 });
+      const article = articles.get(url);
+      if (!article) return new Response('not found', { status: 404 });
+      return new Response(`<html><head><link rel="canonical" href="${url}"><meta property="og:title" content="${article.title}"><meta property="og:description" content="${article.description}"><script type="application/ld+json">${JSON.stringify({ '@type': 'Article', headline: article.title, description: article.description, articleSection: article.section, keywords: article.keywords, datePublished: article.date, url })}</script></head><body><p>${article.description}</p></body></html>`, { status: 200 });
+    };
+    const logs: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    const logger = { info: (message: string, fields?: Record<string, unknown>) => logs.push({ message, fields }), error: (message: string, fields?: Record<string, unknown>) => logs.push({ message, fields }) };
+    const app = createProductionApp({ environment: 'test', fetchImpl, companyContextProvider: new SafeCompanyContextProvider(async () => new Response('unavailable', { status: 503 })), logger });
+    const generate = (companyUrl: string, jobTitle: string) => app.handle(new Request('https://local.test/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'ibi', companyUrl, jobTitle }) }));
+
+    const ldResponse = await generate('ldsystems.uk', 'Technology Professional');
+    expect(ldResponse.status).toBe(201);
+    const ldPayload = await ldResponse.json() as { reportId: string };
+    const ld = await app.reportStore.get(ldPayload.reportId, 'ibi');
+    expect(ld?.recommendations.length).toBeGreaterThan(0);
+    expect(ld).toMatchObject({ id: ldPayload.reportId, recommendations: expect.any(Array) });
+
+    const burgessResponse = await generate('burgessyachts.com', 'Product Manager');
+    expect(burgessResponse.status).toBe(201);
+    const burgessPayload = await burgessResponse.json() as { reportId: string };
+    const burgess = await app.reportStore.get(burgessPayload.reportId, 'ibi');
+    expect(burgess?.recommendations).toEqual([]);
+    expect(burgess?.overallMatchScore).toBe(0);
+    expect(burgess).toMatchObject({ id: burgessPayload.reportId, recommendations: [] });
+    const ldRequestId = ldResponse.headers.get('X-Request-ID');
+    const burgessRequestId = burgessResponse.headers.get('X-Request-ID');
+    expect(logs.find((entry) => entry.message === 'ibi_generation_content_source' && entry.fields?.requestId === ldRequestId)?.fields).toMatchObject({ publisherId: 'ibi', sitemapUrlsFound: 2, articleUrlsAccepted: 2, articlePagesFetched: 2, normalizedArticles: 2 });
+    expect(logs.find((entry) => entry.message === 'ibi_generation_counts' && entry.fields?.requestId === burgessRequestId)?.fields).toMatchObject({ retrievalCandidates: 2, normalizedArticles: 2, deterministicEligible: 0, finalRecommendations: 0 });
+  });
+
   it('normalizes stable IDs, canonical URLs, provenance and rejects malformed records', () => {
     const first = normalizeIbiArticle(ibiFixtureArticles[0]);
     const duplicate = normalizeIbiArticle(ibiFixtureArticles.find((article) => article.id === 'ibi-fixture-duplicate'));

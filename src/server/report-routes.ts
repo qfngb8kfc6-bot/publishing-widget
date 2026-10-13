@@ -9,7 +9,7 @@ function uuidLike(value: string | undefined): string | null {
 }
 
 export function createReportRoutes(registry: PublisherRegistry, generation: ReportGenerationService, reports: ReportStore) {
-  return async function handle(request: Request): Promise<Response> {
+  return async function handle(request: Request, requestId?: string): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/api/reports/generate') {
       if (request.method !== 'POST') return Response.json({ error: 'method_not_allowed' }, { status: 405 });
@@ -20,7 +20,7 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
         const jobTitle = typeof body.jobTitle === 'string' ? body.jobTitle : '';
         if (!publisherId || !registry.get(publisherId) || registry.get(publisherId)?.manifest?.enabled === false) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
         if (companyUrl.length > 253 || jobTitle.length > 160 || !companyUrl.trim() || !jobTitle.trim()) return Response.json({ error: 'invalid_generation_input' }, { status: 400 });
-        const report = await generation.generate({ publisherId, companyUrl, jobTitle, sessionId: typeof body.sessionId === 'string' ? body.sessionId.slice(0, 160) : undefined });
+        const report = await generation.generate({ publisherId, companyUrl, jobTitle, sessionId: typeof body.sessionId === 'string' ? body.sessionId.slice(0, 160) : undefined, requestId: requestId ?? request.headers.get('X-Request-ID') ?? undefined });
         return Response.json({ generationId: report.id, status: 'complete', statusUrl: `/api/generations/${report.id}/status?publisherId=${encodeURIComponent(publisherId)}`, generationUrl: `/p/${publisherId}/generate/${report.id}`, reportId: report.id, reportUrl: `/p/${publisherId}/${report.id}` }, { status: 201 });
       } catch (error) {
         const code = error instanceof Error ? error.message : 'generation_failed';

@@ -9,6 +9,8 @@ import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
 import { profileForTheme } from './themes';
+import type { StructuredLogger } from '../server/logging';
+import { safeLogText } from '../server/logging';
 
 export const GENERATION_VERSION = '1.2';
 
@@ -92,7 +94,23 @@ interface RankedCandidate {
 }
 
 export class ReportGenerationService {
-  constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer) {}
+  constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger) {}
+
+  private logIbi(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, message: string, fields: Parameters<StructuredLogger['info']>[1] = {}): void {
+    if (input.publisherId !== 'ibi' || !this.logger) return;
+    this.logger.info(message, { requestId: input.requestId, publisherId: input.publisherId, ...fields });
+  }
+
+  private logIbiError(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, stage: string, error: unknown): void {
+    if (input.publisherId !== 'ibi' || !this.logger) return;
+    this.logger.error('ibi_generation_failed', {
+      requestId: input.requestId,
+      publisherId: input.publisherId,
+      stage,
+      errorName: error instanceof Error ? error.name : 'unknown',
+      errorMessage: safeLogText(error instanceof Error ? error.message : 'Unknown generation failure'),
+    });
+  }
 
   private async track(name: Parameters<typeof createEvent>[0], publisherId: string, sessionId: string, metadata?: Record<string, string | number | boolean>): Promise<void> {
     if (!this.analytics) return;
@@ -104,9 +122,33 @@ export class ReportGenerationService {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleIds = new Set<string>()): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; aiRerankUsed: boolean }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleIds = new Set<string>(), requestId?: string): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; deterministicEligible: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
     const intent = createIntent(profile, publisherId);
-    const candidates = await definition.adapter.search(intent, { limit: Math.max(definition.config.content.candidateRetrievalLimit, 30) });
+    let candidates: unknown[];
+    try {
+      candidates = await definition.adapter.search(intent, {
+        limit: Math.max(definition.config.content.candidateRetrievalLimit, 30),
+        onDebug: (event) => {
+          if (publisherId !== 'ibi' || event.type !== 'content_source') return;
+          const stats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { sitemapDocumentsFetched?: number; sitemapUrlsFound?: number; articleUrlsAccepted?: number; articleUrlsSelected?: number; articlePagesFetched?: number; normalizedArticles?: number } } }).lastDiagnostics?.sourceStats;
+          this.logger?.info('ibi_generation_content_source', {
+            requestId,
+            publisherId,
+            stage: 'retrieval',
+            sitemapDocumentsFetched: stats?.sitemapDocumentsFetched ?? event.pagesFetched,
+            sitemapUrlsFound: stats?.sitemapUrlsFound,
+            articleUrlsAccepted: stats?.articleUrlsAccepted ?? event.rawCount,
+            articleUrlsSelected: stats?.articleUrlsSelected,
+            articlePagesFetched: stats?.articlePagesFetched,
+            normalizedArticles: stats?.normalizedArticles ?? event.normalizedCount,
+            retrievalCandidates: event.normalizedCount,
+          });
+        },
+      });
+    } catch (error) {
+      this.logIbiError({ publisherId, requestId }, 'retrieval', error);
+      throw error;
+    }
     const normalizedArticles = candidates.flatMap((raw) => {
       const article = definition.adapter.normalizeArticle(raw);
       return article && !excludedArticleIds.has(article.id) ? [article] : [];
@@ -122,6 +164,7 @@ export class ReportGenerationService {
       .filter((item) => passesRelevanceThreshold(item.result))
       .sort((a, b) => (a.relevanceType === b.relevanceType ? b.deterministicScore - a.deterministicScore : a.relevanceType === 'direct' ? -1 : 1))
       .map(({ result: _result, ...item }) => item);
+    this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, normalizedArticles: unique.length, deterministicEligible: deterministicRanked.length });
     let ranked = deterministicRanked.slice(0, finalLimit);
     let aiRerankUsed = false;
     if (aiAvailable && deterministicRanked.length > 0) {
@@ -157,7 +200,8 @@ export class ReportGenerationService {
     } else {
       ranked = ranked.slice(0, finalLimit);
     }
-    return { ranked, retrievedCount: candidates.length, aiRerankUsed };
+    this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_output', { stage: 'ranking', deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, finalRecommendations: ranked.length });
+    return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed };
   }
 
   private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, string>()): ReportRecommendation[] {
@@ -192,15 +236,23 @@ export class ReportGenerationService {
   }
 
   async generate(input: GenerateReportInput): Promise<ReportRecord> {
+    this.logIbi(input, 'ibi_generation_started', { stage: 'start' });
     const definition = this.registry.get(input.publisherId);
-    if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
+    if (!definition || definition.manifest?.enabled === false) {
+      const error = new Error('invalid_publisher');
+      this.logIbiError(input, 'publisher_resolution', error);
+      throw error;
+    }
     const jobTitle = input.jobTitle.replace(/\s+/g, ' ').trim().slice(0, 160);
     if (!jobTitle) throw new Error('job_title_required');
     const activeSession = input.sessionId ?? sessionId();
     await this.track('generation_started', input.publisherId, activeSession);
-    const normalized = normalizeCompanyUrl(input.companyUrl);
+    let normalized: ReturnType<typeof normalizeCompanyUrl>;
+    try { normalized = normalizeCompanyUrl(input.companyUrl); } catch (error) { this.logIbiError(input, 'company_normalization', error); throw error; }
     await this.track('company_analysis_started', input.publisherId, activeSession);
-    const company = await this.companyProvider.getContext(normalized.domain);
+    let company: Awaited<ReturnType<CompanyContextProvider['getContext']>>;
+    try { company = await this.companyProvider.getContext(normalized.domain); }
+    catch (error) { this.logIbiError(input, 'company_context', error); throw error; }
     await this.track('company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
     let profile = buildProfessionalProfile(company, jobTitle);
     let aiProfileUsed = false;
@@ -214,9 +266,10 @@ export class ReportGenerationService {
     await this.track('role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
     await this.track('profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
     await this.track('retrieval_started', input.publisherId, activeSession);
-    const ranking = await this.rankProfile(definition, input.publisherId, profile);
+    const ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId);
     const ranked = ranking.ranked;
     const aiRerankUsed = ranking.aiRerankUsed;
+    this.logIbi(input, 'ibi_generation_counts', { stage: 'ranking', retrievalCandidates: ranking.retrievedCount, normalizedArticles: ranking.normalizedCount, deterministicEligible: ranking.deterministicEligible, aiRerankSurvivors: ranking.aiRerankSurvivors, finalRecommendations: ranked.length });
     const aiAvailable = this.canUseAI(definition);
     await this.track('retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
     await this.track('ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
@@ -252,8 +305,9 @@ export class ReportGenerationService {
     const report: ReportRecord = {
       id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, recommendations, generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
-    await this.reports.save(report);
+    try { await this.reports.save(report); } catch (error) { this.logIbiError(input, 'report_persistence', error); throw error; }
     await this.track('report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });
+    this.logIbi(input, 'ibi_generation_completed', { stage: 'complete', finalRecommendations: recommendations.length });
     return report;
   }
 }

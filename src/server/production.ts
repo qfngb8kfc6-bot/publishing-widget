@@ -108,7 +108,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const aiRoute = aiProvider ? createAIProxy(aiProvider) : undefined;
   const companyContextProvider = options.companyContextProvider ?? new SafeCompanyContextProvider(options.fetchImpl ?? fetch);
   const reportAI = aiProvider ? { config: aiConfig, provider: aiProvider } : undefined;
-  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI);
+  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger);
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore);
   const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment });
 
@@ -171,7 +171,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
           reportManifest = requestedPublisher ? allowedOriginsFor(registry.get(requestedPublisher)?.manifest, serverEnvironment) : undefined;
           if (request.headers.get('Origin') && (!reportManifest || !originAllowed(reportManifest, request.headers.get('Origin'), environment))) return jsonError('origin_not_allowed', 403, requestId);
         }
-        return withHeaders(await reportRoutes(request), request, reportManifest, environment, requestId);
+        return withHeaders(await reportRoutes(request, requestId), request, reportManifest, environment, requestId);
       }
       const overviewMatch = url.pathname.match(/^\/api\/analytics\/([^/]+)\/overview$/);
       if (overviewMatch && request.method === 'GET' && publisherId) {

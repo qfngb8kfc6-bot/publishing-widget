@@ -9,6 +9,17 @@ export interface ServerLogFields {
   errorName?: string;
   errorMessage?: string;
   errorStack?: string;
+  stage?: string;
+  sitemapDocumentsFetched?: number;
+  sitemapUrlsFound?: number;
+  articleUrlsAccepted?: number;
+  articleUrlsSelected?: number;
+  articlePagesFetched?: number;
+  normalizedArticles?: number;
+  retrievalCandidates?: number;
+  deterministicEligible?: number;
+  aiRerankSurvivors?: number;
+  finalRecommendations?: number;
 }
 
 export interface StructuredLogger { info(message: string, fields?: ServerLogFields): void; error(message: string, fields?: ServerLogFields): void; }

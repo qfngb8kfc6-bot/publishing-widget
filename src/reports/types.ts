@@ -53,4 +53,5 @@ export interface GenerateReportInput {
   companyUrl: string;
   jobTitle: string;
   sessionId?: string;
+  requestId?: string;
 }

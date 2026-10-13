@@ -14,7 +14,7 @@ IBI is configured through the shared bounded sitemap adapter using the sitemap i
 https://www.ibinews.com/GoogleSiteMapIndex.aspx
 ```
 
-The index returns bounded child sitemaps such as `googlesitemap.aspx?year=2026`; article links use public `*.article` URLs. The runtime follows at most five sitemap documents and fetches at most 30 article pages per candidate retrieval, normalizes each page into `PublisherArticle`, deduplicates canonical URLs/GUIDs/IDs, and then applies the existing professional relevance and optional AI reranking pipeline. It does not load the full IBI archive or send the archive to AI.
+The index returns bounded child sitemaps such as `googlesitemap.aspx?year=2026`; article links use public `*.article` URLs. The runtime follows at most five sitemap documents and fetches at most 100 article pages per candidate retrieval, normalizes each page into `PublisherArticle`, deduplicates canonical URLs/GUIDs/IDs, and then applies the existing professional relevance and optional AI reranking pipeline. It does not load the full IBI archive or send the archive to AI.
 
 The source is public and requires no secret reference. The repository contains sanitized fixtures for tests only; they are not production content.
 

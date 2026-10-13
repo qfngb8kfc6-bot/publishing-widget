@@ -95,6 +95,28 @@ describe('RSS, Atom and sitemap adapters', () => {
     const rows = await adapter.search(intent, { limit: 1 });
     expect(adapter.normalizeArticle(rows[0])?.title).toBe('Indexed story');
   });
+
+  it('selects recently modified sitemap articles before applying the URL bound', async () => {
+    const adapter = new SitemapContentAdapter('dated-publisher', { type: 'sitemap', sitemapUrl: 'https://publisher.example.test/index.xml', maxSitemaps: 2, maxUrls: 1 }, async (input) => {
+      if (String(input).endsWith('index.xml')) return new Response('<sitemapindex><sitemap><loc>https://publisher.example.test/articles.xml</loc></sitemap></sitemapindex>', { status: 200 });
+      if (String(input).endsWith('articles.xml')) return new Response('<urlset><url><loc>https://publisher.example.test/old</loc><lastmod>2026-01-02T00:00:00Z</lastmod></url><url><loc>https://publisher.example.test/current</loc><lastmod>2026-10-13T00:00:00Z</lastmod></url></urlset>', { status: 200 });
+      return new Response('<html><head><title>Current story</title><link rel="canonical" href="https://publisher.example.test/current" /></head><body>Current body</body></html>', { status: 200 });
+    });
+    const rows = await adapter.search(intent, { limit: 1 });
+    expect(adapter.normalizeArticle(rows[0])).toMatchObject({ title: 'Current story', url: 'https://publisher.example.test/current' });
+  });
+
+  it('prioritizes the newest year child sitemap within the sitemap bound', async () => {
+    const adapter = new SitemapContentAdapter('dated-publisher', { type: 'sitemap', sitemapUrl: 'https://publisher.example.test/index.xml', maxSitemaps: 2, maxUrls: 1 }, async (input) => {
+      const url = String(input);
+      if (url.endsWith('index.xml')) return new Response('<sitemapindex><sitemap><loc>https://publisher.example.test/googlesitemap.aspx</loc></sitemap><sitemap><loc>https://publisher.example.test/googlesitemap.aspx?year=2026</loc></sitemap></sitemapindex>', { status: 200 });
+      if (url.includes('year=2026')) return new Response('<urlset><url><loc>https://publisher.example.test/current.article</loc><lastmod>2026-10-13</lastmod></url></urlset>', { status: 200 });
+      if (url.endsWith('.article')) return new Response('<html><head><title>Current story</title></head><body>Current body</body></html>', { status: 200 });
+      return new Response('<urlset><url><loc>https://publisher.example.test/old.article</loc><lastmod>2025-01-01</lastmod></url></urlset>', { status: 200 });
+    });
+    const rows = await adapter.search(intent, { limit: 1 });
+    expect(adapter.normalizeArticle(rows[0])?.url).toBe('https://publisher.example.test/current.article');
+  });
 });
 
 describe('content source security and operational errors', () => {

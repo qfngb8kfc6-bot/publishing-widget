@@ -105,6 +105,14 @@ export interface ContentImportDiagnostics {
   duplicates: number;
   warnings: number;
   issues: ContentDiagnostic[];
+  sourceStats?: {
+    sitemapDocumentsFetched?: number;
+    sitemapUrlsFound?: number;
+    articleUrlsAccepted?: number;
+    articleUrlsSelected?: number;
+    articlePagesFetched?: number;
+    normalizedArticles?: number;
+  };
 }
 
 export interface ContentImportResult {
