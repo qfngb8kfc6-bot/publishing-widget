@@ -20,6 +20,12 @@ export class PublisherRegistry {
     this.definitions.set(definition.config.publisherId, { ...definition, manifest: definition.manifest ?? manifestFromPublisherConfig(definition.config) });
   }
 
+  upsert(definition: PublisherDefinition): void {
+    validatePublisherConfig(definition.config);
+    if (definition.config.publisherId !== definition.adapter.publisherId) throw new Error('Publisher config and adapter ids must match.');
+    this.definitions.set(definition.config.publisherId, { ...definition, manifest: definition.manifest ?? manifestFromPublisherConfig(definition.config) });
+  }
+
   registerManifest(manifest: PublisherManifest, adapter: PublisherAdapter, explanationProvider: ExplanationProvider): void {
     validatePublisherManifest(manifest);
     if (manifest.publisherId !== adapter.publisherId) throw new Error('Publisher manifest and adapter ids must match.');

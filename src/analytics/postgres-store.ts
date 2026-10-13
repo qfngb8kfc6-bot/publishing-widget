@@ -19,12 +19,12 @@ export class PostgresAnalyticsStore implements AnalyticsStore {
     if (scope.range) { parameters.push(scope.range.from, scope.range.to); sql += ` AND occurred_at >= $2 AND occurred_at <= $3`; }
     sql += ' ORDER BY occurred_at ASC';
     const result = await this.client.query<StoredAnalyticsEvent>(sql, parameters);
-    return result.rows;
+    return Array.isArray(result.rows) ? result.rows : [];
   }
 
   async listPublisherIds(): Promise<string[]> {
     const result = await this.client.query<{ publisherId: string }>('SELECT DISTINCT publisher_id AS "publisherId" FROM analytics_events ORDER BY publisher_id');
-    return result.rows.map((row) => row.publisherId);
+    return (Array.isArray(result.rows) ? result.rows : []).map((row) => row.publisherId);
   }
 
   async close(): Promise<void> {

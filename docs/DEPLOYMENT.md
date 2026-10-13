@@ -19,7 +19,7 @@ For Render, use `npm run build` as the build command and `node server-entry.mjs`
 
 - Node-capable web service for `server-entry.mjs`.
 - Static asset/CDN hosting for `dist/widget.js`, `dist/index.html`, `dist/admin.html`, `dist/assets/` and `dist/embed-test.html`.
-- Production relational database implementing `AnalyticsStore`, using `db/migrations/001_analytics_events.sql`.
+- Production relational database implementing analytics, reports and the publisher store, using all migrations in `db/migrations/`.
 - Server-side publisher API credentials and, only if approved, an AI provider credential.
 - TLS termination, request logging/monitoring and a secrets manager.
 
@@ -35,11 +35,11 @@ NODE_ENV=production HOST=0.0.0.0 PORT=8787 node server-entry.mjs
 
 `npm run build` typechecks the project, builds the demo frontend, admin frontend, widget bundle and `dist/server.mjs`, then asserts that the production artifacts exist. `npm start` performs the same build and starts `server-entry.mjs`.
 
-Before starting a production instance, run `npm run db:migrate`, then `npm run analytics:check`. The server uses `DB_POOL_MAX`, `DB_CONNECTION_TIMEOUT_MS`, `DB_IDLE_TIMEOUT_MS` and `DB_STATEMENT_TIMEOUT_MS`; SIGTERM/SIGINT close the HTTP server and database pool cleanly. Set `TRUSTED_PROXY=true` only when a known reverse proxy overwrites `x-forwarded-for`; otherwise forwarding headers are not used for rate-limit identity.
+Before starting a production instance, run `npm run db:migrate`, then `npm run analytics:check`. Migration `003_publishers.sql` creates the persistent publisher control-plane table. The server uses `DB_POOL_MAX`, `DB_CONNECTION_TIMEOUT_MS`, `DB_IDLE_TIMEOUT_MS` and `DB_STATEMENT_TIMEOUT_MS`; SIGTERM/SIGINT close the HTTP server and database pool cleanly. Set `TRUSTED_PROXY=true` only when a known reverse proxy overwrites `x-forwarded-for`; otherwise forwarding headers are not used for rate-limit identity.
 
 ## Environment
 
-Required values depend on the publisher. Use `PUBLISHER_<ID>_API_KEY`, `PUBLISHER_<ID>_BASE_URL`, endpoint values and `PUBLISHER_<ID>_ALLOWED_ORIGINS` for scalable onboarding. The current generic real-publisher compatibility variables are documented in `.env.example`.
+Required values depend on the publisher. Persist only a `secretRef` in the publisher manifest, for example `env:ACME_API_TOKEN`, and provide `ACME_API_TOKEN` to the server environment. Use `PUBLISHER_CACHE_TTL_MS` to tune publisher manifest cache freshness. The current generic real-publisher compatibility variables are documented in `.env.example`.
 
 Never pass API keys through Vite, `PublisherManifest`, browser configuration, analytics, request IDs or logs. `AI_API_KEY` and publisher tokens are server-only.
 
@@ -56,13 +56,16 @@ Never pass API keys through Vite, `PublisherManifest`, browser configuration, an
 - `GET /api/generations/:id/status` provides the async-compatible generation boundary.
 - `GET /api/reports/:id` reloads a persisted report without regeneration.
 - `GET /admin` and `/admin/` serve the internal admin frontend; `/api/admin/*` remains server-authenticated.
+- `POST /api/admin/publishers` creates a persistent publisher.
+- `PATCH /api/admin/publishers/:publisherId/config` persists branding, origins, enable state and content source configuration.
+- `POST /api/admin/publishers/:publisherId/content-check` checks saved configuration, or a supplied draft before saving.
 - Hosted routes `/p/:publisherId/generate/:generationId` and `/p/:publisherId/:reportId` render the branded generation/report experience.
 
 All public API requests receive request IDs, security headers and route-class rate limits. Production CORS requires an exact configured publisher origin; unrestricted `*` access is not used. Localhost origins are accepted only in development/test modes.
 
 ## Database and retention
 
-Apply migrations in order before enabling production analytics and reports. Migration `002_reports.sql` adds tenant-scoped reports and recommendations with JSONB versioned profile/retrieval data. The event table is indexed by publisher/time, publisher/event and publisher/article. Raw events and derived daily/article/topic aggregates should receive separate retention policies later; no automated deletion job is included in this phase.
+Apply migrations in order before enabling production analytics, reports and publisher administration. Migration `002_reports.sql` adds tenant-scoped reports and recommendations with JSONB versioned profile/retrieval data. Migration `003_publishers.sql` stores the public publisher manifest and secret references; it never stores secret values. The event table is indexed by publisher/time, publisher/event and publisher/article. Raw events and derived daily/article/topic aggregates should receive separate retention policies later; no automated deletion job is included in this phase.
 
 ## Static caching and rollback
 
@@ -82,6 +85,17 @@ curl https://discovery.ldsystems.uk/health
 ```
 
 For a configured live publisher, run `npm run publisher -- publisher-id`. It performs one bounded search, validates that a supported result array is present and prints no response body or secret. Verify success, 401/403, 404, 429, 5xx, timeout and malformed JSON with staging fixtures before changing the manifest to production.
+
+For a new production deployment, use this order:
+
+```text
+npm ci
+npm run build
+npm run db:migrate
+NODE_ENV=production node server-entry.mjs
+```
+
+After deployment, sign in at `/admin`, create or update the publisher, run a draft content check, save the manifest, and verify that the generated absolute embed snippet points to the deployed `/widget.js` URL.
 
 ## Production limitations
 

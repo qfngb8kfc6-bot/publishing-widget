@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AnalyticsStore } from '../src/analytics/types';
+import { createEvent } from '../src/core';
 import { demoManifest } from '../src/demo/config';
 import { createProductionApp } from '../src/server/production';
 import type { ServerLogFields, StructuredLogger } from '../src/server/logging';
@@ -58,13 +59,70 @@ describe('internal publisher administration', () => {
       expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher']);
       const real = body.publishers.find((publisher) => publisher.publisherId === 'real-publisher')!;
       expect(real.sourceType).toBe('rest-json');
-      expect(real.brandingSummary).toBeNull();
+      expect(real.brandingSummary).toMatchObject({ primaryColor: '#36566c' });
       expect(real.allowedOrigins).toEqual([]);
       expect(JSON.stringify(body)).not.toContain('server-only-token');
     } finally {
       definition.manifest = originalManifest;
       definition.config = originalConfig;
     }
+  });
+
+  it('creates and updates a persistent publisher, checks drafts, and runs reports from saved source config', async () => {
+    const requestedUrls: string[] = [];
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password', ACME_API_TOKEN: 'server-secret' },
+      fetchImpl: async (input) => {
+        requestedUrls.push(String(input));
+        return new Response(JSON.stringify({ articles: [{ id: 'acme-1', title: 'Enterprise software platform update', description: 'A useful technology development.', url: 'https://acme.example/stories/acme-1', categories: ['Technology'], tags: ['software', 'enterprise'], publishedAt: '2026-10-01' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+      companyContextProvider: { getContext: async () => ({ domain: 'ldsystems.uk', canonicalUrl: 'https://ldsystems.uk/', name: 'LD Systems', industry: 'technology', description: 'A software company.', topics: ['technology', 'software'], entities: ['LD Systems'], source: 'demo-fixture', fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
+    });
+    const cookie = await signIn(app);
+    const draft = {
+      publisherId: 'acme-media', name: 'Acme Media', enabled: true, environment: 'production', publisherConfigVersion: '1',
+      branding: { primaryAccent: '#123456', widgetTitle: 'Build your Acme briefing', introductoryCopy: 'A briefing from Acme Media.' },
+      content: { adapterId: 'rest-json', resultLimit: 8, candidateRetrievalLimit: 30, searchBehavior: 'keywords' },
+      contentSource: { type: 'rest-json', baseUrl: 'https://acme.example', endpoint: '/search', searchQueryParameter: 'q', authentication: { mode: 'bearer', secretRef: 'env:ACME_API_TOKEN' }, pagination: { style: 'page', pageParameter: 'page', limitParameter: 'limit', firstPage: 1, pageSize: 30, maxPages: 1 }, candidateLimit: 30 },
+      results: { heading: 'Stories selected for you', description: 'Acme stories.', maximumRecommendations: 8, openArticleInNewTab: true },
+      ranking: { mode: 'deterministic', deterministicWeight: 1, semanticWeight: 0 }, features: { aiEnabled: false, explanationsEnabled: true, analyticsEnabled: true }, allowedOrigins: ['https://acme.example'],
+    };
+    const created = await app.handle(request('/api/admin/publishers', { method: 'POST', body: JSON.stringify(draft) }, cookie));
+    expect(created.status).toBe(201);
+    expect(JSON.stringify(await created.clone().json())).not.toContain('server-secret');
+    const draftCheck = await app.handle(request('/api/admin/publishers/acme-media/content-check', { method: 'POST', body: JSON.stringify(draft) }, cookie));
+    expect(draftCheck.status).toBe(200);
+    expect(requestedUrls.some((url) => url.startsWith('https://acme.example/search'))).toBe(true);
+    const publicSearch = await app.handle(new Request('https://product.example/api/publishers/acme-media/search?q=software'));
+    expect(publicSearch.status).toBe(200);
+    expect((await publicSearch.json()).publisherId).toBe('acme-media');
+    const report = await app.handle(request('/api/admin/publishers/acme-media/test-report', { method: 'POST', body: JSON.stringify({ companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer' }) }, cookie));
+    expect(report.status).toBe(201);
+    const saved = { ...draft, name: 'Acme Media Updated', enabled: false, branding: { ...draft.branding, primaryAccent: '#654321' }, allowedOrigins: ['https://updated.example'] };
+    const updated = await app.handle(request('/api/admin/publishers/acme-media/config', { method: 'PATCH', body: JSON.stringify(saved) }, cookie));
+    expect(updated.status).toBe(200);
+    const detail = await app.handle(request('/api/admin/publishers/acme-media', {}, cookie));
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as { publisher: { name: string; enabled: boolean; allowedOrigins: string[]; contentSource: { authentication?: { secretRef?: string; secretConfigured?: boolean } } } };
+    expect(detailBody.publisher).toMatchObject({ name: 'Acme Media Updated', enabled: false, allowedOrigins: ['https://updated.example'] });
+    expect(detailBody.publisher.contentSource.authentication).toMatchObject({ secretRef: 'env:ACME_API_TOKEN', secretConfigured: true });
+    expect(JSON.stringify(detailBody)).not.toContain('server-secret');
+    const publicRoute = await app.handle(new Request('https://product.example/api/publishers/acme-media/search?q=software'));
+    expect(publicRoute.status).toBe(404);
+  });
+
+  it('returns zero-data analytics for a persisted publisher without cross-tenant data', async () => {
+    const app = createProductionApp({ environment: 'test', serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' } });
+    const cookie = await signIn(app);
+    const event = createEvent('widget_impression', 'real-publisher', 'real-session');
+    await app.analyticsStore.append([{ ...event, eventId: event.eventId!, schemaVersion: event.schemaVersion!, receivedAt: event.timestamp }]);
+    const overview = await app.handle(new Request('https://admin.example/api/analytics/demo/overview'));
+    expect(overview.status).toBe(200);
+    const body = await overview.json() as { publisherId: string; overview: { widgetImpressions: number; storyClicks: number }; daily: unknown[] };
+    expect(body).toMatchObject({ publisherId: 'demo', overview: { widgetImpressions: 0, storyClicks: 0 } });
+    expect(body.daily).toEqual([]);
+    expect(cookie).toBeTruthy();
   });
 
   it('keeps the public error stable while logging a safe diagnostic for an admin failure', async () => {
@@ -111,9 +169,9 @@ describe('internal publisher administration', () => {
     expect(invalid.status).toBe(400);
     const invalidBody = await invalid.text();
     expect(invalidBody).not.toContain('do-not-return-this');
-    const mutation = await app.handle(request('/api/admin/publishers/demo/config', { method: 'PATCH', body: JSON.stringify(demoManifest) }, cookie));
-    expect(mutation.status).toBe(409);
-    expect((await mutation.json()).error).toBe('config_static_read_only');
+    const mutation = await app.handle(request('/api/admin/publishers/demo/config', { method: 'PATCH', body: JSON.stringify({ ...demoManifest, branding: { ...demoManifest.branding, primaryAccent: '#123456' } }) }, cookie));
+    expect(mutation.status).toBe(200);
+    expect((await mutation.json()).persistence).toBe('publisher-store');
   });
 
   it('returns a safe detail view, embed contract and publisher-scoped analytics link', async () => {
@@ -123,7 +181,7 @@ describe('internal publisher administration', () => {
     expect(response.status).toBe(200);
     const body = await response.json() as { embed: string; links: { analytics: string }; publisher: { publisherId: string } };
     expect(body.publisher.publisherId).toBe('demo');
-    expect(body.embed).toContain('data-publisher="demo"');
+    expect(body.embed).toContain('<script src="https://admin.example/widget.js" data-publisher="demo"');
     expect(body.links.analytics).toBe('/analytics?publisher=demo');
   });
 

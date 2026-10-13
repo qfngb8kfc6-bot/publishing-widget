@@ -105,7 +105,7 @@ export class ReportGenerationService {
 
   async generate(input: GenerateReportInput): Promise<ReportRecord> {
     const definition = this.registry.get(input.publisherId);
-    if (!definition) throw new Error('invalid_publisher');
+    if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
     const jobTitle = input.jobTitle.replace(/\s+/g, ' ').trim().slice(0, 160);
     if (!jobTitle) throw new Error('job_title_required');
     const activeSession = input.sessionId ?? sessionId();

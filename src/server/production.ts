@@ -6,6 +6,8 @@ import { buildAnalyticsReport } from '../analytics/metrics';
 import { MemoryAnalyticsStore } from '../analytics/store';
 import type { AnalyticsStore } from '../analytics/types';
 import { createPublisherRegistry } from '../publishers/registry';
+import { MemoryPublisherStore, PostgresPublisherStore, type PublisherStore } from '../publishers/store';
+import { PublisherRuntime } from '../publishers/runtime';
 import { createRealPublisherApiConfig } from '../publishers/real-publisher/config';
 import { createAIProxy } from './ai-proxy';
 import { createAnalyticsIngestionRoute } from './analytics-route';
@@ -38,10 +40,13 @@ export interface ProductionServerOptions {
   analyticsStoreMode?: 'memory' | 'postgres';
   reportStore?: ReportStore;
   companyContextProvider?: CompanyContextProvider;
+  publisherStore?: PublisherStore;
+  publisherCacheTtlMs?: number;
 }
 
 export { PostgresAnalyticsStore } from '../analytics/postgres-store';
 export { PostgresReportStore } from '../reports/store';
+export { PostgresPublisherStore } from '../publishers/store';
 
 function jsonError(error: string, status: number, requestId: string): Response {
   return Response.json({ error, requestId }, { status, headers: { 'X-Request-ID': requestId } });
@@ -71,6 +76,16 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const serverRealUpstream = serverEnvironment.REAL_PUBLISHER_UPSTREAM_BASE_URL ?? serverEnvironment.REAL_PUBLISHER_API_BASE_URL;
   const realServerConfig = serverRealToken && serverRealUpstream ? { ...createRealPublisherApiConfig(serverEnvironment), baseUrl: serverRealUpstream, requestHeaders: { Accept: 'application/json', Authorization: `Bearer ${serverRealToken}` } } : undefined;
   const registry = createPublisherRegistry(realServerConfig, options.fetchImpl);
+  const publisherStore = options.publisherStore ?? (environment === 'production' ? undefined : new MemoryPublisherStore(registry.list().flatMap((definition) => definition.manifest ? [definition.manifest] : [])));
+  const publisherRuntime = new PublisherRuntime(registry, {
+    store: publisherStore,
+    fetchImpl: options.fetchImpl,
+    cacheTtlMs: options.publisherCacheTtlMs ?? Number(serverEnvironment.PUBLISHER_CACHE_TTL_MS ?? 5000),
+    resolveSecret: (reference) => {
+      const key = reference.replace(/^env:/, '');
+      return /^[A-Z][A-Z0-9_]{1,100}$/.test(key) ? serverEnvironment[key] : undefined;
+    },
+  });
   const analyticsStore = options.analyticsStore ?? new MemoryAnalyticsStore();
   const analyticsStoreMode: 'memory' | 'postgres' = options.analyticsStoreMode ?? (options.analyticsStore ? 'postgres' : 'memory');
   const reportStore = options.reportStore ?? new MemoryReportStore();
@@ -85,29 +100,36 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const analyticsRoute = createAnalyticsIngestionRoute(analyticsStore, { isPublisherAllowed: (publisherId) => registry.has(publisherId) });
   const realToken = serverRealToken;
   const realUpstream = serverRealUpstream;
-  const realProxy = realToken && realUpstream ? createRealPublisherProxy({ upstreamBaseUrl: realUpstream, searchEndpoint: serverEnvironment.REAL_PUBLISHER_SEARCH_ENDPOINT ?? '/search', articleEndpoint: serverEnvironment.REAL_PUBLISHER_ARTICLE_ENDPOINT ?? '/articles/:id', apiToken: realToken, timeoutMs: Number(serverEnvironment.REAL_PUBLISHER_TIMEOUT_MS ?? 8000), allowedOrigins: registry.get('real-publisher')?.manifest?.allowedOrigins, allowedQueryParameters: ['q', 'page', 'limit'] }, options.fetchImpl) : undefined;
-  const publisherSearchRoute = createPublisherSearchRoute(registry, (publisherId) => publisherId === 'real-publisher' ? realProxy : undefined);
+  const realProxy = realToken && realUpstream ? createRealPublisherProxy({ upstreamBaseUrl: realUpstream, searchEndpoint: serverEnvironment.REAL_PUBLISHER_SEARCH_ENDPOINT ?? '/search', articleEndpoint: serverEnvironment.REAL_PUBLISHER_ARTICLE_ENDPOINT ?? '/articles/:id', apiToken: realToken, timeoutMs: Number(serverEnvironment.REAL_PUBLISHER_TIMEOUT_MS ?? 8000), allowedQueryParameters: ['q', 'page', 'limit'] }, options.fetchImpl) : undefined;
+  const publisherSearchRoute = createPublisherSearchRoute(registry, (publisherId) => {
+    const source = registry.get(publisherId)?.manifest?.contentSource;
+    return publisherId === 'real-publisher' && source?.type === 'rest-json' && source.baseUrl.startsWith('/api/') ? realProxy : undefined;
+  });
   const aiRoute = aiProvider ? createAIProxy(aiProvider) : undefined;
   const companyContextProvider = options.companyContextProvider ?? new SafeCompanyContextProvider(options.fetchImpl ?? fetch);
   const reportAI = aiProvider ? { config: aiConfig, provider: aiProvider } : undefined;
   const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI);
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore);
-  const adminRoutes = createAdminRoutes({ registry, analyticsStore, generation: reportGeneration, auth: adminAuth, environment });
+  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment });
 
   const trustedProxy = options.trustedProxy ?? false;
   const handle = async (request: Request): Promise<Response> => {
     const started = Date.now();
     const requestId = request.headers.get('X-Request-ID') || createRequestId();
     const url = new URL(request.url);
-    const publisherId = safeRouteId(url.pathname.match(/^\/api\/publishers\/([^/]+)/)?.[1] ?? url.pathname.match(/^\/api\/analytics\/([^/]+)/)?.[1]);
-    const manifest = allowedOriginsFor(publisherId ? registry.get(publisherId)?.manifest : undefined, serverEnvironment);
+    let publisherId: string | null = null;
+    let manifest: PublisherManifest | undefined;
     try {
+      await publisherRuntime.ensureLoaded();
+      publisherId = safeRouteId(url.pathname.match(/^\/api\/publishers\/([^/]+)/)?.[1] ?? url.pathname.match(/^\/api\/analytics\/([^/]+)/)?.[1]);
+      manifest = allowedOriginsFor(publisherId ? registry.get(publisherId)?.manifest : undefined, serverEnvironment);
       if (url.pathname.startsWith('/api/admin/')) return await adminRoutes(request);
       if (url.pathname.startsWith('/api/') && request.method === 'OPTIONS') return withHeaders(corsPreflight(manifest, request, environment), request, manifest, environment, requestId);
       if (url.pathname === '/health' && request.method === 'GET') return withHeaders(createGlobalHealthResponse(environment, options.commitSha), request, undefined, environment, requestId);
       if ((url.pathname === '/ready' || url.pathname === '/readiness') && request.method === 'GET') return withHeaders(createReadinessResponse(environment, analyticsStoreMode, options.commitSha), request, undefined, environment, requestId);
       if (url.pathname.match(/^\/api\/publishers\/[^/]+\/health$/) && request.method === 'GET' && publisherId) {
         if (!manifest || !originAllowed(manifest, request.headers.get('Origin'), environment)) return jsonError('origin_not_allowed', 403, requestId);
+        if (registry.get(publisherId)?.manifest?.enabled === false) return jsonError('publisher_not_found', 404, requestId);
         return withHeaders(createPublisherHealthResponse(registry, publisherId, environment, serverEnvironment), request, manifest, environment, requestId);
       }
       if (url.pathname.match(/^\/api\/publishers\/[^/]+\/search$/)) {
@@ -153,9 +175,11 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       const overviewMatch = url.pathname.match(/^\/api\/analytics\/([^/]+)\/overview$/);
       if (overviewMatch && request.method === 'GET' && publisherId) {
         if (!manifest || !originAllowed(manifest, request.headers.get('Origin'), environment)) return jsonError('origin_not_allowed', 403, requestId);
+        if (registry.get(publisherId)?.manifest?.enabled === false) return jsonError('publisher_not_found', 404, requestId);
         const from = url.searchParams.get('from'); const to = url.searchParams.get('to');
         const range = from && to ? { from, to } : undefined;
-        const report = buildAnalyticsReport(await analyticsStore.query({ publisherId, range }), publisherId, range);
+        const events = await analyticsStore.query({ publisherId, range });
+        const report = buildAnalyticsReport(Array.isArray(events) ? events : [], publisherId, range);
         return withHeaders(Response.json({ ...report, publisherName: manifest.name }), request, manifest, environment, requestId);
       }
       if (url.pathname.startsWith('/api/ai/')) {
@@ -204,7 +228,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, analyticsStore, analyticsStoreMode, reportStore, adminAuth };
+  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, adminAuth };
 }
 
 export async function runConfiguredAIHealthCheck(serverEnvironment: Record<string, string | undefined> = {}, fetchImpl: typeof fetch = fetch): Promise<{ status: 'disabled' | 'ok'; provider?: string }> {

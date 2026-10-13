@@ -4,6 +4,8 @@ import { validateAllowedOrigins, validatePublisherManifest } from '../core/confi
 import type { PublisherRegistry } from '../core';
 import type { PublisherManifest } from '../publishers/manifest';
 import type { ContentImportDiagnostics, ContentSourceConfig } from '../publishers/content';
+import { PublisherStoreError } from '../publishers/store';
+import type { PublisherRuntime } from '../publishers/runtime';
 import { ContentSourceError } from '../publishers/content/security';
 import type { ReportGenerationService } from '../reports/generate';
 import { AdminAuth, adminOriginAllowed } from './admin-auth';
@@ -11,6 +13,7 @@ import { readJsonBody, safeRouteId } from './request-validation';
 
 interface AdminRoutesOptions {
   registry: PublisherRegistry;
+  publisherRuntime: PublisherRuntime;
   analyticsStore: AnalyticsStore;
   generation: ReportGenerationService;
   auth: AdminAuth;
@@ -69,7 +72,7 @@ export function safeManifest(manifest: PublisherManifest): Record<string, unknow
     contentSource: safeSource(manifest.contentSource),
     api: manifest.api ? { ...manifest.api } : undefined,
     allowedOrigins: manifest.allowedOrigins ? [...manifest.allowedOrigins] : [],
-    admin: { persistence: 'static-source', editable: false, secretHandling: 'server-side-references-only' },
+    admin: { persistence: 'publisher-store', editable: true, secretHandling: 'server-side-references-only' },
   };
 }
 
@@ -139,6 +142,30 @@ async function runContentCheck(definition: NonNullable<ReturnType<PublisherRegis
   }
 }
 
+async function readOptionalJsonBody(request: Request): Promise<Record<string, unknown> | undefined> {
+  const text = await request.text();
+  if (!text.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    throw new Error('invalid_json');
+  }
+}
+
+function manifestBody(body: Record<string, unknown>): PublisherManifest {
+  const value = body.manifest && typeof body.manifest === 'object' && !Array.isArray(body.manifest) ? body.manifest : body;
+  return value as unknown as PublisherManifest;
+}
+
+function mutationError(error: unknown): Response {
+  if (error instanceof PublisherStoreError && error.code === 'already_exists') return Response.json({ error: 'publisher_already_exists' }, { status: 409 });
+  if (error instanceof PublisherStoreError && error.code === 'not_found') return Response.json({ error: 'publisher_not_found' }, { status: 404 });
+  if (error instanceof PublisherStoreError && error.code === 'invalid_record') return Response.json({ error: 'publisher_configuration_invalid' }, { status: 400 });
+  if (error instanceof PublisherStoreError && error.code === 'unavailable') return Response.json({ error: 'publisher_persistence_unavailable' }, { status: 503 });
+  return Response.json({ error: 'publisher_persistence_unavailable' }, { status: 503 });
+}
+
 function analyticsSummary(report: ReturnType<typeof buildAnalyticsReport>) {
   return { widgetOpens: report.overview.widgetOpens, reportsGenerated: report.overview.reportsGenerated, storyClicks: report.overview.storyClicks, generationSuccessRate: report.generationHealth.generationSuccessRate };
 }
@@ -175,12 +202,26 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
     const denied = requireAdmin(request);
     if (denied) return denied;
     if (url.pathname === '/api/admin/publishers' && request.method === 'GET') {
-      const publishers = options.registry.list().map((definition) => ({
+      const publishers = (await options.publisherRuntime.list()).map((definition) => ({
         ...safePublisherSummary(definition, lastContentChecks.get(definition.config.publisherId)),
         environment: definition.manifest?.environment ?? 'development',
         allowedOrigins: Array.isArray(definition.manifest?.allowedOrigins) ? [...definition.manifest.allowedOrigins] : [],
       }));
-      return Response.json({ publishers, persistence: 'static-source' });
+      return Response.json({ publishers, persistence: 'publisher-store' });
+    }
+    if (url.pathname === '/api/admin/publishers' && request.method === 'POST') {
+      try {
+        const body = await readJsonBody(request, 64_000) as Record<string, unknown>;
+        const manifest = manifestBody(body);
+        validatePublisherManifest(manifest, { allowDisabled: true });
+        validateAllowedOrigins(manifest.allowedOrigins);
+        const definition = await options.publisherRuntime.create(manifest);
+        return Response.json({ publisher: safeManifest(definition.manifest!), persistence: 'publisher-store' }, { status: 201 });
+      } catch (error) {
+        if (error instanceof Error && ['invalid_json', 'payload_too_large'].includes(error.message)) return Response.json({ error: error.message }, { status: 400 });
+        if (error instanceof Error && !(error instanceof PublisherStoreError)) return Response.json({ error: safeText(error.message) ?? 'invalid_publisher' }, { status: 400 });
+        return mutationError(error);
+      }
     }
     const match = url.pathname.match(/^\/api\/admin\/publishers\/([^/]+)(?:\/(content-check|test-report|validate|export|config))?$/);
     if (!match) return Response.json({ error: 'not_found' }, { status: 404 });
@@ -190,14 +231,35 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
     if (!definition) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
     const action = match[2];
     const manifest = definition.manifest ?? manifestFromDefinition(definition);
-    if (!action && request.method === 'GET') return Response.json({ publisher: safeManifest(manifest), analytics: analyticsSummary(buildAnalyticsReport(await options.analyticsStore.query({ publisherId }), publisherId)), lastContentCheck: lastContentChecks.get(publisherId) ?? null, embed: `<script src="/widget.js" data-publisher="${publisherId}" defer></script>`, links: { analytics: `/analytics?publisher=${encodeURIComponent(publisherId)}`, publicDemo: `/?publisher=${encodeURIComponent(publisherId)}` }, persistence: 'static-source' });
-    if (action === 'content-check' && request.method === 'POST') { const result = await runContentCheck(definition); lastContentChecks.set(publisherId, result); return Response.json(result, { status: result.reachable ? 200 : 502 }); }
+    if (!action && request.method === 'GET') {
+      const events = await options.analyticsStore.query({ publisherId });
+      const report = buildAnalyticsReport(Array.isArray(events) ? events : [], publisherId);
+      return Response.json({ publisher: safeManifest(manifest), analytics: analyticsSummary(report), lastContentCheck: lastContentChecks.get(publisherId) ?? null, embed: `<script src="${new URL('/widget.js', request.url).toString()}" data-publisher="${publisherId}" defer></script>`, links: { analytics: `/analytics?publisher=${encodeURIComponent(publisherId)}`, publicDemo: `/?publisher=${encodeURIComponent(publisherId)}` }, persistence: 'publisher-store' });
+    }
+    if (action === 'content-check' && request.method === 'POST') {
+      try {
+        const body = await readOptionalJsonBody(request);
+        let checkDefinition = definition;
+        if (body) {
+          const draft = manifestBody(body);
+          validatePublisherManifest(draft, { allowDisabled: true });
+          validateAllowedOrigins(draft.allowedOrigins);
+          if (draft.publisherId !== publisherId) return Response.json({ error: 'publisher_id_mismatch' }, { status: 400 });
+          checkDefinition = options.publisherRuntime.draft(draft);
+        }
+        const result = await runContentCheck(checkDefinition);
+        lastContentChecks.set(publisherId, result);
+        return Response.json(result, { status: result.reachable ? 200 : 502 });
+      } catch (error) {
+        return Response.json({ error: error instanceof Error ? safeText(error.message) ?? 'invalid_content_check' : 'invalid_content_check' }, { status: 400 });
+      }
+    }
     if (action === 'export' && request.method === 'GET') return Response.json(safeManifest(definition.manifest ?? manifestFromDefinition(definition)));
     if (action === 'validate' && request.method === 'POST') {
       try {
         const draft = await readJsonBody(request, 64_000) as PublisherManifest;
         validatePublisherManifest(draft, { allowDisabled: true }); validateAllowedOrigins(draft.allowedOrigins);
-        return Response.json({ valid: true, publisherId: draft.publisherId, message: 'Draft is valid. Export it and update the static manifest source to persist it.' });
+        return Response.json({ valid: true, publisherId: draft.publisherId, message: 'Draft is valid. Save it to persist the publisher configuration.' });
       } catch (error) { return Response.json({ valid: false, error: error instanceof Error ? safeText(error.message) ?? 'invalid_manifest' : 'invalid_manifest' }, { status: 400 }); }
     }
     if (action === 'test-report' && request.method === 'POST') {
@@ -210,7 +272,21 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
         return Response.json({ generationId: report.id, status: 'complete', generationUrl: `/p/${publisherId}/generate/${report.id}`, reportUrl: `/p/${publisherId}/${report.id}`, reportId: report.id }, { status: 201 });
       } catch { return Response.json({ error: 'generation_unavailable' }, { status: 503 }); }
     }
-    if (action === 'config' && (request.method === 'POST' || request.method === 'PATCH' || request.method === 'PUT')) return Response.json({ error: 'config_static_read_only', message: 'Publisher manifests are static source files. Validate and export the draft, then deploy the source change.' }, { status: 409 });
+    if (action === 'config' && (request.method === 'POST' || request.method === 'PATCH' || request.method === 'PUT')) {
+      try {
+        const body = await readJsonBody(request, 64_000) as Record<string, unknown>;
+        const draft = manifestBody(body);
+        if (draft.publisherId !== publisherId) return Response.json({ error: 'publisher_id_mismatch' }, { status: 400 });
+        validatePublisherManifest(draft, { allowDisabled: true });
+        validateAllowedOrigins(draft.allowedOrigins);
+        const updated = await options.publisherRuntime.update(draft);
+        return Response.json({ publisher: safeManifest(updated.manifest!), persistence: 'publisher-store' });
+      } catch (error) {
+        if (error instanceof Error && ['invalid_json', 'payload_too_large'].includes(error.message)) return Response.json({ error: error.message }, { status: 400 });
+        if (error instanceof Error && !(error instanceof PublisherStoreError)) return Response.json({ error: safeText(error.message) ?? 'invalid_publisher' }, { status: 400 });
+        return mutationError(error);
+      }
+    }
     return invalidMethod();
   };
 }

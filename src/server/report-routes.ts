@@ -17,7 +17,7 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
         const publisherId = safeRouteId(typeof body.publisherId === 'string' ? body.publisherId : undefined);
         const companyUrl = typeof body.companyUrl === 'string' ? body.companyUrl : '';
         const jobTitle = typeof body.jobTitle === 'string' ? body.jobTitle : '';
-        if (!publisherId || !registry.has(publisherId)) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
+        if (!publisherId || !registry.get(publisherId) || registry.get(publisherId)?.manifest?.enabled === false) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
         if (companyUrl.length > 253 || jobTitle.length > 160 || !companyUrl.trim() || !jobTitle.trim()) return Response.json({ error: 'invalid_generation_input' }, { status: 400 });
         const report = await generation.generate({ publisherId, companyUrl, jobTitle, sessionId: typeof body.sessionId === 'string' ? body.sessionId.slice(0, 160) : undefined });
         return Response.json({ generationId: report.id, status: 'complete', statusUrl: `/api/generations/${report.id}/status?publisherId=${encodeURIComponent(publisherId)}`, generationUrl: `/p/${publisherId}/generate/${report.id}`, reportId: report.id, reportUrl: `/p/${publisherId}/${report.id}` }, { status: 201 });

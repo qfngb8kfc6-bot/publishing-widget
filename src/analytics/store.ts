@@ -15,7 +15,7 @@ export class MemoryAnalyticsStore implements AnalyticsStore {
   }
 
   async query(scope: { publisherId: string; range?: AnalyticsDateRange }): Promise<StoredAnalyticsEvent[]> {
-    return this.events.filter((event) => event.publisherId === scope.publisherId && inRange(event.timestamp, scope.range)).map((event) => ({ ...event, metadata: event.metadata ? { ...event.metadata } : undefined }));
+    return (this.events ?? []).filter((event) => event.publisherId === scope.publisherId && inRange(event.timestamp, scope.range)).map((event) => ({ ...event, metadata: event.metadata ? { ...event.metadata } : undefined }));
   }
 
   async listPublisherIds(): Promise<string[]> {
