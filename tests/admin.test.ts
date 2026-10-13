@@ -53,7 +53,7 @@ describe('internal publisher administration', () => {
     const response = await app.handle(request('/api/admin/publishers', {}, cookie));
     expect(response.status).toBe(200);
     const body = await response.json() as { publishers: Array<{ publisherId: string; sourceType: string }> };
-    expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher']);
+    expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher', 'ibi']);
     expect(body.publishers.find((publisher) => publisher.publisherId === 'demo')?.sourceType).toBe('demo');
     expect(JSON.stringify(body)).not.toContain('test-admin-password');
   });
@@ -74,7 +74,7 @@ describe('internal publisher administration', () => {
       const response = await app.handle(request('/api/admin/publishers', {}, cookie));
       expect(response.status).toBe(200);
       const body = await response.json() as { publishers: Array<Record<string, unknown>> };
-      expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher']);
+      expect(body.publishers.map((publisher) => publisher.publisherId)).toEqual(['demo', 'real-publisher', 'ibi']);
       const real = body.publishers.find((publisher) => publisher.publisherId === 'real-publisher')!;
       expect(real.sourceType).toBe('rest-json');
       expect(real.brandingSummary).toMatchObject({ primaryColor: '#36566c' });
@@ -201,6 +201,11 @@ describe('internal publisher administration', () => {
     expect(body.publisher.publisherId).toBe('demo');
     expect(body.embed).toContain('<script src="https://admin.example/widget.js" data-publisher="demo"');
     expect(body.links.analytics).toBe('/analytics?publisher=demo');
+    const ibiResponse = await app.handle(request('/api/admin/publishers/ibi', {}, cookie));
+    expect(ibiResponse.status).toBe(200);
+    const ibiBody = await ibiResponse.json() as { embed: string; publisher: { allowedOrigins: string[]; contentSource: { type: string } } };
+    expect(ibiBody.embed).toContain('<script src="https://admin.example/widget.js" data-publisher="ibi"');
+    expect(ibiBody.publisher).toMatchObject({ allowedOrigins: ['https://ibinews.com', 'https://www.ibinews.com'], contentSource: { type: 'sitemap' } });
   });
 
   it('rejects cross-origin admin mutations and supports logout', async () => {

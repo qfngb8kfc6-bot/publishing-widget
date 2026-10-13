@@ -1,6 +1,8 @@
 # First publisher integration status
 
-The registered `real-publisher` adapter is a safe generic integration scaffold, not a claim about an undocumented external API. It supports configurable base URL, search/article endpoints, query names, pagination, candidate limits, timeout and server-proxy authentication, and implements the shared content-adapter health contract.
+IBI News is now the first named production publisher configuration. Its stable tenant ID is `ibi`; see [IBI onboarding](./IBI-ONBOARDING.md) for the source, admin workflow and embed contract.
+
+The registered `real-publisher` adapter remains a safe generic integration scaffold, not a claim about an undocumented external API. It supports configurable base URL, search/article endpoints, query names, pagination, candidate limits, timeout and server-proxy authentication, and implements the shared content-adapter health contract.
 
 For new source types, use the reusable adapters in `src/publishers/content/`: `RestJsonContentAdapter`, `FeedContentAdapter`, `SitemapContentAdapter`, `StaticJsonContentAdapter` and `CsvContentAdapter`. They all terminate at the canonical `PublisherArticle` model; the recommendation engine does not know which source produced an article.
 

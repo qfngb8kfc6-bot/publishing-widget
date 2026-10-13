@@ -99,4 +99,4 @@ After deployment, sign in at `/admin`, create or update the publisher, run a dra
 
 ## Production limitations
 
-The first real publisher remains a generic adapter because this repository has not been given a named publisher's API documentation or credentials. Production database credentials, AI credentials, deployment account configuration and approved publisher origins are deployment inputs rather than committed project data.
+IBI News is configured as the first named production publisher through the public sitemap adapter. The generic `real-publisher` definition remains available for a future authenticated integration. Production database credentials, AI credentials, deployment account configuration and approved publisher origins are deployment inputs rather than committed project data.
