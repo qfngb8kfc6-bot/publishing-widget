@@ -1,6 +1,28 @@
-export interface ServerLogFields { requestId?: string; publisherId?: string; route?: string; durationMs?: number; status?: number; errorType?: string; }
+export interface ServerLogFields {
+  requestId?: string;
+  publisherId?: string;
+  route?: string;
+  operation?: string;
+  durationMs?: number;
+  status?: number;
+  errorType?: string;
+  errorName?: string;
+  errorMessage?: string;
+  errorStack?: string;
+}
 
 export interface StructuredLogger { info(message: string, fields?: ServerLogFields): void; error(message: string, fields?: ServerLogFields): void; }
+
+/** Keep diagnostics useful without allowing exception text to become a secret sink. */
+export function safeLogText(value: unknown, limit = 4_000): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value
+    .replace(/bearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+    .replace(/([?&](?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password)=)[^&#\s]*/gi, '$1[redacted]')
+    .replace(/(authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|cookie|set-cookie)(\s*[:=]\s*)(["']?)([^,\s"']+)\3/gi, '$1$2[redacted]')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .slice(0, limit);
+}
 
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {

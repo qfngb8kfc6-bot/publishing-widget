@@ -12,7 +12,7 @@ import { createAnalyticsIngestionRoute } from './analytics-route';
 import { corsHeaders, corsPreflight, originAllowed } from './cors';
 import { createGlobalHealthResponse, createPublisherHealthResponse } from './health';
 import { createReadinessResponse } from './health';
-import { createStructuredLogger, createRequestId, type StructuredLogger } from './logging';
+import { createStructuredLogger, createRequestId, safeLogText, type StructuredLogger } from './logging';
 import { requestRateLimitKey, SlidingWindowRateLimiter } from './rate-limit';
 import { createPublisherSearchRoute } from './publisher-routes';
 import { createRealPublisherProxy } from './real-publisher-proxy';
@@ -182,7 +182,23 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       }
       return jsonError('not_found', 404, requestId);
     } catch (error) {
-      logger.error('request_failed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started, status: 500, errorType: error instanceof Error ? error.name : 'unknown' });
+      const errorName = error instanceof Error ? error.name : 'unknown';
+      const errorMessage = error instanceof Error ? error.message : 'Unknown server error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      const adminPublisherId = safeRouteId(url.pathname.match(/^\/api\/admin\/publishers\/([^/]+)/)?.[1]);
+      const operation = url.pathname === '/api/admin/publishers' ? 'admin_publisher_list' : url.pathname.startsWith('/api/admin/') ? 'admin_request' : undefined;
+      logger.error('request_failed', {
+        requestId,
+        publisherId: publisherId ?? adminPublisherId ?? undefined,
+        route: url.pathname,
+        operation,
+        durationMs: Date.now() - started,
+        status: 500,
+        errorType: errorName,
+        errorName,
+        errorMessage: safeLogText(errorMessage),
+        errorStack: safeLogText(errorStack, 6_000),
+      });
       return jsonError('internal_error', 500, requestId);
     } finally {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });

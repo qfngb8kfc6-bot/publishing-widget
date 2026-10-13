@@ -73,9 +73,38 @@ export function safeManifest(manifest: PublisherManifest): Record<string, unknow
   };
 }
 
-function sourceType(definition: ReturnType<PublisherRegistry['get']>): string {
+function sourceType(definition: ReturnType<PublisherRegistry['get']>): string | null {
   const adapter = definition?.adapter as unknown as { sourceType?: unknown } | undefined;
-  return definition?.manifest?.contentSource?.type ?? (typeof adapter?.sourceType === 'string' ? adapter.sourceType : definition?.manifest?.content.adapterId ?? 'unknown');
+  const configured = definition?.manifest?.contentSource?.type;
+  if (typeof configured === 'string' && configured) return configured;
+  if (typeof adapter?.sourceType === 'string' && adapter.sourceType) return adapter.sourceType;
+  const adapterId = definition?.manifest?.content?.adapterId ?? definition?.config?.content?.adapterType;
+  return typeof adapterId === 'string' && adapterId ? adapterId : null;
+}
+
+function safeBrandingSummary(definition: ReturnType<PublisherRegistry['get']>): { primaryColor: string | null; logo: string | null } | null {
+  const branding = definition?.manifest?.branding ?? definition?.config?.branding;
+  if (!branding || typeof branding !== 'object') return null;
+  const primaryColor = 'primaryAccent' in branding && typeof branding.primaryAccent === 'string' ? branding.primaryAccent : 'primaryColor' in branding && typeof branding.primaryColor === 'string' ? branding.primaryColor : null;
+  const logo = 'logo' in branding && typeof branding.logo === 'string' ? branding.logo : null;
+  return { primaryColor, logo };
+}
+
+function safePublisherSummary(definition: ReturnType<PublisherRegistry['get']>, lastCheck: ContentCheckResult | undefined): Record<string, unknown> {
+  const id = definition?.manifest?.publisherId ?? definition?.config?.publisherId ?? 'unknown';
+  const origins = definition?.manifest?.allowedOrigins;
+  const primaryOrigin = Array.isArray(origins) && typeof origins[0] === 'string' ? origins[0] : null;
+  return {
+    id,
+    publisherId: id,
+    name: typeof definition?.manifest?.name === 'string' ? definition.manifest.name : definition?.config?.publisherName ?? 'Unknown publisher',
+    enabled: definition?.manifest?.enabled !== false,
+    primaryOrigin,
+    sourceType: sourceType(definition),
+    brandingSummary: safeBrandingSummary(definition),
+    healthStatus: lastCheck ? (lastCheck.reachable ? 'reachable' : 'unavailable') : 'unknown',
+    contentCheck: lastCheck ?? null,
+  };
 }
 
 function contentDiagnostics(definition: NonNullable<ReturnType<PublisherRegistry['get']>>): ContentImportDiagnostics | undefined {
@@ -96,7 +125,7 @@ async function runContentCheck(definition: NonNullable<ReturnType<PublisherRegis
     const diagnostics = contentDiagnostics(definition);
     const denominator = Math.max(1, articles.length);
     return {
-      checkedAt: new Date().toISOString(), sourceType: sourceType(definition), reachable: true, recordsFetched: records.length,
+      checkedAt: new Date().toISOString(), sourceType: sourceType(definition) ?? 'unknown', reachable: true, recordsFetched: records.length,
       accepted: diagnostics?.accepted ?? articles.length, rejected: diagnostics?.rejected ?? Math.max(0, records.length - articles.length), duplicates: diagnostics?.duplicates ?? 0,
       warnings: diagnostics?.issues.filter((issue) => issue.status === 'warning').map((issue) => safeText(issue.message) ?? 'Source warning.').slice(0, 10) ?? [], elapsedMs: Date.now() - started,
       sampleTitles: articles.map((article) => article.title).filter(Boolean).slice(0, 5), coverage: {
@@ -106,7 +135,7 @@ async function runContentCheck(definition: NonNullable<ReturnType<PublisherRegis
       },
     };
   } catch (error) {
-    return { checkedAt: new Date().toISOString(), sourceType: sourceType(definition), reachable: false, recordsFetched: 0, accepted: 0, rejected: 0, duplicates: 0, warnings: [], elapsedMs: Date.now() - started, sampleTitles: [], coverage: { image: 0, publishedAt: 0, description: 0 }, error: safeError(error) };
+    return { checkedAt: new Date().toISOString(), sourceType: sourceType(definition) ?? 'unknown', reachable: false, recordsFetched: 0, accepted: 0, rejected: 0, duplicates: 0, warnings: [], elapsedMs: Date.now() - started, sampleTitles: [], coverage: { image: 0, publishedAt: 0, description: 0 }, error: safeError(error) };
   }
 }
 
@@ -146,9 +175,10 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
     const denied = requireAdmin(request);
     if (denied) return denied;
     if (url.pathname === '/api/admin/publishers' && request.method === 'GET') {
-      const publishers = await Promise.all(options.registry.list().map(async (definition) => {
-        const analytics = analyticsSummary(buildAnalyticsReport(await options.analyticsStore.query({ publisherId: definition.config.publisherId }), definition.config.publisherId));
-        return { publisherId: definition.config.publisherId, name: definition.config.publisherName, enabled: definition.manifest?.enabled ?? true, environment: definition.manifest?.environment ?? 'development', sourceType: sourceType(definition), allowedOrigins: definition.manifest?.allowedOrigins ?? [], contentCheck: lastContentChecks.get(definition.config.publisherId) ?? null, analytics };
+      const publishers = options.registry.list().map((definition) => ({
+        ...safePublisherSummary(definition, lastContentChecks.get(definition.config.publisherId)),
+        environment: definition.manifest?.environment ?? 'development',
+        allowedOrigins: Array.isArray(definition.manifest?.allowedOrigins) ? [...definition.manifest.allowedOrigins] : [],
       }));
       return Response.json({ publishers, persistence: 'static-source' });
     }
