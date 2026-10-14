@@ -9,6 +9,7 @@ import { createDemoDefinition } from '../src/demo/definition';
 import { DemoPublisherAdapter } from '../src/demo/adapter';
 import { demoArticles } from '../src/demo/articles';
 import { SafeCompanyContextProvider } from '../src/server/company';
+import type { ServerLogFields } from '../src/server/logging';
 
 type AIFailure = 'profile' | 'rerank' | 'content' | 'invalid-profile' | 'invalid-rerank' | 'invalid-content' | 'timeout-profile' | 'rate-limit-rerank';
 
@@ -39,6 +40,12 @@ class ConfigurableReportAIProvider extends MockAIProvider {
 class InflatedAdjacentAIProvider extends MockAIProvider {
   override async rerank(_intent: Parameters<MockAIProvider['rerank']>[0], candidates: Parameters<MockAIProvider['rerank']>[1]): Promise<unknown> {
     return candidates.map((candidate) => ({ articleId: candidate.articleId, semanticScore: 100, relevanceType: 'adjacent', confidence: 100, keep: true, rationale: 'Synthetic inflated adjacency test.', signals: ['generic overlap'] }));
+  }
+}
+
+class RejectingAIProvider extends MockAIProvider {
+  override async rerank(_intent: Parameters<MockAIProvider['rerank']>[0], candidates: Parameters<MockAIProvider['rerank']>[1]): Promise<unknown> {
+    return candidates.map((candidate) => ({ articleId: candidate.articleId, semanticScore: 0, keep: false, signals: ['synthetic rejection'] }));
   }
 }
 
@@ -151,6 +158,47 @@ describe('hosted report flow', () => {
     const empty = await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=demo`, { method: 'POST' }));
     expect(empty.status).toBe(200);
     expect((await empty.json()).recommendations).toEqual([]);
+  });
+
+  it('keeps deterministic theme results when AI rejects every eligible candidate', async () => {
+    const logs: Array<{ message: string; fields?: ServerLogFields }> = [];
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { AI_ENABLED: 'true', AI_PROVIDER: 'mock', AI_MODEL: 'test-model', AI_TIMEOUT_MS: '40' },
+      aiProvider: new RejectingAIProvider(),
+      logger: { info: (message, fields) => logs.push({ message, fields }), error: () => undefined },
+    });
+    const demoDefinition = app.registry.get('demo');
+    if (!demoDefinition) throw new Error('demo definition missing');
+    const demoAdapter = new DemoPublisherAdapter();
+    const guaranteedArticles = Array.from({ length: 10 }, (_, index) => ({
+      ...demoArticles[5],
+      id: `theme-ai-fallback-${index}`,
+      url: `https://demo.publisher.example/articles/theme-ai-fallback-${index}`,
+      title: `Software engineering platform update ${index}`,
+      dek: 'A software engineering and developer technology update.',
+      keywords: ['software engineering', 'developer technology', 'technology'],
+      body: 'Software engineering teams are improving platform systems, APIs and automation.',
+    }));
+    demoDefinition.adapter = {
+      publisherId: 'demo',
+      search: async () => guaranteedArticles,
+      normalizeArticle: (raw) => demoAdapter.normalizeArticle(raw as typeof guaranteedArticles[number]),
+    };
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
+    }));
+    expect(generated.status).toBe(201);
+    const { reportId } = await generated.json() as { reportId: string };
+    const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    const theme = report.professionalProfile.professionalInterests[0] as string;
+    const response = await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=demo`, { method: 'POST' }));
+    expect(response.status).toBe(200);
+    const result = await response.json() as { recommendations: unknown[] };
+    expect(result.recommendations.length).toBeGreaterThan(0);
+    const diagnostic = logs.filter((entry) => entry.message === 'theme_retrieval_diagnostics').at(-1);
+    expect(diagnostic?.fields).toMatchObject({ failureStage: 'complete', aiFilteredCount: expect.any(Number) });
   });
 
   it('rejects private or malformed company input without exposing external fetch details', async () => {

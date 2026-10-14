@@ -136,12 +136,13 @@ export class ReportGenerationService {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; deterministicEligible: number; aiEligibleCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     try {
       candidates = await definition.adapter.search(intent, {
         limit: Math.max(definition.config.content.candidateRetrievalLimit, 30),
+        archiveWide,
         onDebug: (event) => {
           if (publisherId !== 'ibi' || event.type !== 'content_source') return;
           const stats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { sitemapDocumentsFetched?: number; sitemapUrlsFound?: number; articleUrlsAccepted?: number; articleUrlsSelected?: number; articlePagesFetched?: number; normalizedArticles?: number; preselectionInputCount?: number; preselectionOutputCount?: number } } }).lastDiagnostics?.sourceStats;
@@ -165,10 +166,12 @@ export class ReportGenerationService {
       this.logIbiError({ publisherId, requestId }, 'retrieval', error);
       throw error;
     }
-    const normalizedArticles = candidates.flatMap((raw) => {
+    const normalizedCandidates = candidates.flatMap((raw) => {
       const article = definition.adapter.normalizeArticle(raw);
-      return article && articleIdentityKeys(article).every((key) => !excludedArticleKeys.has(key)) ? [article] : [];
+      return article ? [article] : [];
     });
+    const excludedArticleCount = normalizedCandidates.filter((article) => articleIdentityKeys(article).some((key) => excludedArticleKeys.has(key))).length;
+    const normalizedArticles = normalizedCandidates.filter((article) => articleIdentityKeys(article).every((key) => !excludedArticleKeys.has(key)));
     const seenArticleKeys = new Set<string>();
     const unique = normalizedArticles.filter((article) => {
       const keys = articleIdentityKeys(article);
@@ -176,9 +179,21 @@ export class ReportGenerationService {
       keys.forEach((key) => seenArticleKeys.add(key));
       return true;
     });
+    const sourceStats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { normalizedArticles?: number; preselectionInputCount?: number; preselectionOutputCount?: number } } }).lastDiagnostics?.sourceStats;
+    const normalizedArticleCount = sourceStats?.normalizedArticles ?? normalizedCandidates.length;
+    const preselectionInputCount = archiveWide ? normalizedArticleCount : sourceStats?.preselectionInputCount ?? normalizedArticleCount;
+    const preselectionLimit = Math.min(Math.max(definition.config.content.candidateRetrievalLimit, 30), 100);
+    const preselected = archiveWide
+      ? unique
+        .map((article) => ({ article, score: scoreProfessionalArticle(article, profile).score }))
+        .sort((left, right) => right.score - left.score)
+        .slice(0, preselectionLimit)
+        .map(({ article }) => article)
+      : unique;
+    const preselectionOutputCount = archiveWide ? preselected.length : sourceStats?.preselectionOutputCount ?? preselected.length;
     const finalLimit = Math.min(definition.config.results.maximumRecommendations, definition.config.content.resultLimit);
     const aiAvailable = this.canUseAI(definition);
-    const deterministicRanked: RankedCandidate[] = unique
+    const deterministicRanked: RankedCandidate[] = preselected
       .map((article) => {
         const result = scoreProfessionalArticle(article, profile);
         return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
@@ -187,13 +202,10 @@ export class ReportGenerationService {
       .sort((a, b) => (a.relevanceType === b.relevanceType ? b.deterministicScore - a.deterministicScore : a.relevanceType === 'direct' ? -1 : 1))
       .map(({ result: _result, ...item }) => item);
     const aiEligibleCount = aiAvailable ? Math.min(deterministicRanked.length, this.ai!.config.rerankLimit) : 0;
-    const sourceStats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { normalizedArticles?: number; preselectionInputCount?: number; preselectionOutputCount?: number } } }).lastDiagnostics?.sourceStats;
-    const normalizedArticleCount = sourceStats?.normalizedArticles ?? candidates.length;
-    const preselectionInputCount = sourceStats?.preselectionInputCount ?? normalizedArticleCount;
-    const preselectionOutputCount = sourceStats?.preselectionOutputCount ?? candidates.length;
-    this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, rankingCandidateCount: candidates.length, normalizedArticles: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, eligibleCount: deterministicRanked.length });
+    this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, rankingCandidateCount: preselected.length, normalizedArticles: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, eligibleCount: deterministicRanked.length });
     let ranked = deterministicRanked.slice(0, finalLimit);
     let aiRerankUsed = false;
+    let aiFilteredCount = 0;
     if (aiAvailable && deterministicRanked.length > 0) {
       try {
         const semanticCandidates: SemanticCandidate[] = deterministicRanked.slice(0, aiEligibleCount).map((result) => ({
@@ -212,7 +224,7 @@ export class ReportGenerationService {
         const semanticById = new Map(semanticResults.map((result) => [result.articleId, result]));
         const deterministicWeight = definition.manifest?.ranking?.deterministicWeight ?? this.ai!.config.deterministicWeight;
         const semanticWeight = definition.manifest?.ranking?.semanticWeight ?? this.ai!.config.semanticWeight;
-        ranked = deterministicRanked.flatMap((result, index) => {
+        const aiRankedCandidates = deterministicRanked.slice(0, aiEligibleCount).flatMap((result, index) => {
           const semantic = semanticById.get(result.article.id);
           if (!semantic) return [];
           const semanticScore = semantic.semanticScore ?? result.deterministicScore;
@@ -221,14 +233,27 @@ export class ReportGenerationService {
           const finalScore = calibrateRelevanceScore(combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight }), relevanceType);
           if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) return [];
           return [{ ...result, semanticScore, semanticSignals: semantic.signals ?? [], finalScore, rankingMode: 'hybrid' as const, relevanceType, confidence: semantic.confidence ?? result.confidence, index }];
-        }).sort((a, b) => (a.relevanceType === b.relevanceType ? b.finalScore - a.finalScore || b.deterministicScore - a.deterministicScore || a.index - b.index : a.relevanceType === 'direct' ? -1 : 1)).slice(0, finalLimit).map(({ index: _index, ...result }) => result);
-        aiRerankUsed = true;
+        });
+        const aiRanked = aiRankedCandidates
+          .sort((a, b) => (a.relevanceType === b.relevanceType ? b.finalScore - a.finalScore || b.deterministicScore - a.deterministicScore || a.index - b.index : a.relevanceType === 'direct' ? -1 : 1))
+          .slice(0, finalLimit)
+          .map(({ index: _index, ...result }) => result);
+        aiFilteredCount = aiEligibleCount - aiRankedCandidates.length;
+        // A valid deterministic candidate set is always a safe fallback. A
+        // partial or over-aggressive semantic response must not turn a useful
+        // theme search into an empty result.
+        if (aiRanked.length > 0) {
+          ranked = aiRanked;
+          aiRerankUsed = true;
+        } else {
+          ranked = deterministicRanked.slice(0, finalLimit);
+        }
       } catch { /* deterministic ranking remains authoritative */ }
     } else {
       ranked = ranked.slice(0, finalLimit);
     }
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_output', { stage: 'ranking', deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, finalRecommendations: ranked.length });
-    return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed };
+    return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed };
   }
 
   private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, string>()): ReportRecommendation[] {
@@ -259,9 +284,10 @@ export class ReportGenerationService {
     if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
     const profile = profileForTheme(report.professionalProfile, theme);
     const excluded = new Set(report.recommendations.flatMap((recommendation) => articleIdentityKeys(recommendation.article)));
-    const ranking = await this.rankProfile(definition, report.publisherId, profile, excluded);
+    const ranking = await this.rankProfile(definition, report.publisherId, profile, excluded, undefined, true);
     const { ranked } = ranking;
-    this.logger?.info('theme_retrieval_diagnostics', { publisherId: report.publisherId, theme: safeLogText(theme, 160), catalogueCount: ranking.normalizedArticleCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, excludedCurrentReportCount: report.recommendations.length, deterministicEligibleCount: ranking.deterministicEligible, aiEligibleCount: ranking.aiEligibleCount, finalResultCount: ranked.length, excludedExistingCount: report.recommendations.length, eligibleCount: ranking.deterministicEligible });
+    const failureStage = ranked.length > 0 ? 'complete' : ranking.aiFilteredCount > 0 && ranking.deterministicEligible > 0 ? 'ai_filtered_all' : ranking.deterministicEligible > 0 ? 'final_filter' : 'deterministic_threshold';
+    this.logger?.info('theme_retrieval_diagnostics', { publisherId: report.publisherId, theme: safeLogText(theme, 160), catalogueCount: ranking.normalizedArticleCount, rawCandidateCount: ranking.rawCandidateCount, normalizedCandidateCount: ranking.normalizedCandidateCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, excludedCurrentReportCount: report.recommendations.length, excludedArticleCount: ranking.excludedArticleCount, uniqueCandidateCount: ranking.uniqueCandidateCount, thresholdInputCount: ranking.thresholdInputCount, deterministicEligibleCount: ranking.deterministicEligible, aiEligibleCount: ranking.aiEligibleCount, aiInputCount: ranking.aiInputCount, aiFilteredCount: ranking.aiFilteredCount, finalResultCount: ranked.length, excludedExistingCount: report.recommendations.length, eligibleCount: ranking.deterministicEligible, failureStage });
     return this.recommendationsFromRanked(profile, ranked);
   }
 

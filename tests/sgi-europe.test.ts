@@ -267,9 +267,26 @@ describe('SGI Europe RSS publisher', () => {
       expect(response.status, `${theme}: ${await response.clone().text()}`).toBe(200);
       const result = await response.json() as { recommendations: Array<{ article: { id: string; canonicalUrl?: string; url: string } }> };
       expect(result.recommendations.length).toBeGreaterThan(0);
+      expect(result.recommendations.some((recommendation) => recommendation.article.id.startsWith('theme-'))).toBe(true);
       expect(result.recommendations.every((recommendation) => ![recommendation.article.id, recommendation.article.canonicalUrl, recommendation.article.url].some((value) => value && currentIds.has(value)))).toBe(true);
       const diagnostic = logs.filter((entry) => entry.message === 'theme_retrieval_diagnostics' && entry.fields?.theme === theme).at(-1);
-      expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', catalogueCount: 135, preselectionInputCount: 135, preselectionOutputCount: 100, excludedCurrentReportCount: report.recommendations.length, finalResultCount: result.recommendations.length });
+      expect(diagnostic?.fields).toMatchObject({
+        publisherId: 'sgi-europe',
+        catalogueCount: 135,
+        rawCandidateCount: 135,
+        normalizedCandidateCount: 135,
+        preselectionInputCount: 135,
+        preselectionOutputCount: 100,
+        excludedCurrentReportCount: report.recommendations.length,
+        excludedArticleCount: report.recommendations.length,
+        thresholdInputCount: 100,
+        deterministicEligibleCount: expect.any(Number),
+        aiEligibleCount: 0,
+        aiInputCount: 0,
+        finalResultCount: result.recommendations.length,
+        failureStage: 'complete',
+      });
+      expect(diagnostic?.fields?.uniqueCandidateCount).toBeLessThanOrEqual(135);
     }
   });
 

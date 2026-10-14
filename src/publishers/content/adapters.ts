@@ -315,7 +315,14 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
     const records = feedRecords(xml, this.config.type, this.config.deriveCategoryFromUrl);
     if (!records.length) throw new ContentSourceError('empty-source', 'Feed did not contain any entries.');
     const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.feedUrl, this.config.feedUrl, this.config.sourceName, this.config.mappings, this.config.feedUrl));
-    const selected = archiveAwareFeedPreselection(result.articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100));
+    // RSS has no server-side search or pagination contract. For focused theme
+    // searches, return the complete normalized archive so the professional
+    // profile can preselect across every article instead of ranking an
+    // arbitrary first page. Normal report generation keeps the bounded
+    // archive-aware preselection path.
+    const selected = options.archiveWide
+      ? result.articles
+      : archiveAwareFeedPreselection(result.articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100));
     this.lastDiagnostics = result.diagnostics;
     this.lastDiagnostics.sourceStats = { feedItemsFetched: records.length, feedItemsSelected: selected.length, preselectionInputCount: result.articles.length, preselectionOutputCount: selected.length, normalizedArticles: result.articles.length };
     options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Date.now() - startedAt, pagesFetched: 1, rawCount: records.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });

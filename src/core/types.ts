@@ -108,6 +108,8 @@ export interface Intent {
 
 export interface SearchOptions {
   limit: number;
+  /** Ask archive-capable adapters to preselect across their complete normalized archive. */
+  archiveWide?: boolean;
   onProgress?: (stage: ProgressStage) => void;
   onDebug?: DebugSink;
 }

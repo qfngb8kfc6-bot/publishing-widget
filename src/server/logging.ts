@@ -33,6 +33,13 @@ export interface ServerLogFields {
   deterministicEligibleCount?: number;
   aiEligibleCount?: number;
   finalResultCount?: number;
+  rawCandidateCount?: number;
+  normalizedCandidateCount?: number;
+  excludedArticleCount?: number;
+  uniqueCandidateCount?: number;
+  thresholdInputCount?: number;
+  aiInputCount?: number;
+  aiFilteredCount?: number;
   theme?: string;
   registryMode?: string;
   sourceType?: string;

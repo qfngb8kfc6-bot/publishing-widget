@@ -12,6 +12,19 @@ function unique(values: string[]): string[] {
   });
 }
 
+/** Generic vocabulary expansion for focused professional themes. */
+const THEME_EXPANSIONS: Record<string, string[]> = {
+  stores: ['store', 'store openings', 'retail locations', 'physical retail', 'flagship', 'shop', 'retail footprint'],
+  omnichannel: ['online and store', 'digital retail', 'e-commerce', 'click and collect', 'DTC', 'channel strategy', 'digital commerce'],
+  distribution: ['distribution centre', 'logistics', 'supply chain', 'fulfilment', 'wholesale', 'dealer', 'channel distribution'],
+  'retail operations': ['stores', 'distribution', 'merchandising', 'sales', 'retail execution', 'customer experience', 'fulfilment', 'store performance'],
+};
+
+function expandedThemeTerms(theme: string): string[] {
+  const normalized = normalizeToken(theme);
+  return unique([theme, ...(THEME_EXPANSIONS[normalized] ?? [])]);
+}
+
 /** The same bounded theme list is used by the report UI and the focused-search API. */
 export function reportThemes(report: Pick<ReportRecord, 'professionalProfile'>): string[] {
   const profile = report.professionalProfile;
@@ -27,6 +40,7 @@ export function findReportTheme(report: Pick<ReportRecord, 'professionalProfile'
 export function profileForTheme(profile: ProfessionalProfile, theme: string): ProfessionalProfile {
   const add = (values: string[], value: string): string[] => unique([...values, value]);
   const retrieval = profile.retrieval;
+  const themeTerms = expandedThemeTerms(theme);
   const contextTerms = unique([
     ...profile.role.professionalThemes,
     ...profile.role.responsibilities,
@@ -34,12 +48,12 @@ export function profileForTheme(profile: ProfessionalProfile, theme: string): Pr
     ...profile.directInterests,
     ...profile.adjacentInterests,
   ]).filter((value) => normalizeToken(value) !== normalizeToken(theme));
-  const expandedTerms = unique([theme, ...contextTerms]).slice(0, 48);
-  const themeConcept = { concept: theme, weight: 1.25, relevanceType: 'direct' as const, source: 'role' as const };
+  const expandedTerms = unique([...themeTerms, ...contextTerms]).slice(0, 48);
+  const themeConcepts = themeTerms.map((concept, index) => ({ concept, weight: index === 0 ? 1.25 : 1.05, relevanceType: 'direct' as const, source: 'role' as const }));
   return {
     ...profile,
-    professionalInterests: add(profile.professionalInterests, theme),
-    directInterests: add(profile.directInterests, theme),
+    professionalInterests: unique([...profile.professionalInterests, ...themeTerms]),
+    directInterests: unique([...profile.directInterests, ...themeTerms]),
     likelyInformationNeeds: add(profile.likelyInformationNeeds, theme),
     searchTerms: unique([...profile.searchTerms, ...expandedTerms]),
     semanticQueries: add(profile.semanticQueries, theme),
@@ -47,10 +61,10 @@ export function profileForTheme(profile: ProfessionalProfile, theme: string): Pr
     retrieval: {
       ...retrieval,
       keywordQueries: unique([...retrieval.keywordQueries, ...expandedTerms]),
-      topicConcepts: add(retrieval.topicConcepts, theme),
+      topicConcepts: unique([...retrieval.topicConcepts, ...themeTerms]),
       semanticQueries: unique([...retrieval.semanticQueries, expandedTerms.join(' ')]),
-      roleTerms: add(retrieval.roleTerms, theme),
-      concepts: [themeConcept, ...retrieval.concepts.filter((concept) => normalizeToken(concept.concept) !== normalizeToken(theme))],
+      roleTerms: unique([...retrieval.roleTerms, ...themeTerms]),
+      concepts: [...themeConcepts, ...retrieval.concepts.filter((concept) => !themeTerms.some((term) => normalizeToken(concept.concept) === normalizeToken(term)))],
     },
   };
 }
