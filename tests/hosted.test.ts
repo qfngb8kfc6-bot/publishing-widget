@@ -85,6 +85,10 @@ describe('hosted professional experience', () => {
 
     document.querySelector<HTMLButtonElement>('[data-edit]')?.click();
     expect(document.querySelector<HTMLElement>('[data-edit-sheet]')?.hasAttribute('hidden')).toBe(false);
+    const editCompany = document.querySelector<HTMLInputElement>('#edit-company-url');
+    expect(editCompany?.type).toBe('text');
+    expect(editCompany?.placeholder).toBe('Nike or nike.com');
+    expect(editCompany?.getAttribute('autocomplete')).toBe('organization');
     document.querySelector<HTMLButtonElement>('[data-cancel]')?.click();
     expect(document.querySelector<HTMLElement>('[data-edit-sheet]')?.hasAttribute('hidden')).toBe(true);
 

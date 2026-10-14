@@ -63,8 +63,9 @@ describe('professional embed mode', () => {
     expect(widget.shadowRoot?.querySelector('.publisher-mark')).toBeNull();
     const companyInput = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]');
     expect(companyInput?.type).toBe('text');
-    expect(companyInput?.inputMode).toBe('url');
-    expect(companyInput?.getAttribute('autocomplete')).toBe('url');
+    expect(companyInput?.inputMode).toBe('text');
+    expect(companyInput?.getAttribute('autocomplete')).toBe('organization');
+    expect(companyInput?.placeholder).toBe('Nike or nike.com');
     expect(companyInput?.getAttribute('spellcheck')).toBe('false');
     expect(companyInput?.required).toBe(false);
 
@@ -80,29 +81,26 @@ describe('professional embed mode', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(request).toHaveBeenCalledOnce();
     expect(request.mock.calls[0]?.[0]).toBe('/api/reports/generate');
-    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({ companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer', publisherId: 'demo' });
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({ companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer', publisherId: 'demo' });
     expect(analytics.events.map((event) => event.name)).toEqual(expect.arrayContaining(['company_entered', 'role_entered', 'report_requested']));
     vi.unstubAllGlobals();
   });
 
-  it('uses widget validation for invalid company websites and leaves the request untouched', async () => {
+  it.each(['nike', 'Nike', 'nike.com', 'www.nike.com', 'https://www.nike.com', 'http://nike.com'])('submits %s to the backend without URL-only client validation', async (companyValue) => {
     const widget = mountWidget(createDemoRegistry(), 'demo', new MemoryAnalytics(), document);
     widget.openWidget();
-    const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({}), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ error: 'invalid_company_url' }), { status: 400, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', request);
     const form = widget.shadowRoot?.querySelector<HTMLFormElement>('form.briefing-bar');
     const company = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]');
     const role = widget.shadowRoot?.querySelector<HTMLInputElement>('[data-profile-field="jobTitle"]');
     if (!form || !company || !role) throw new Error('professional form not rendered');
+    company.value = companyValue;
     role.value = 'Software Engineer';
-
-    for (const input of ['hello', 'not a url', 'javascript:alert(1)', 'ftp://example.com']) {
-      company.value = input;
-      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-      await Promise.resolve();
-      expect(widget.shadowRoot?.querySelector('[data-profile-error]')?.textContent).toBe('Enter a valid company website');
-    }
-    expect(request).not.toHaveBeenCalled();
+    form.requestSubmit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(request).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body)).companyUrl).toBe(companyValue);
     vi.unstubAllGlobals();
   });
 
@@ -120,7 +118,7 @@ describe('professional embed mode', () => {
     form.requestSubmit();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(request).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body)).companyUrl).toBe('https://ldsystems.uk/');
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body)).companyUrl).toBe('ldsystems.uk');
     vi.unstubAllGlobals();
   });
 
