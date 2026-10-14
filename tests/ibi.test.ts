@@ -73,7 +73,7 @@ describe('IBI News publisher onboarding', () => {
     expect(new Set(ibiSectionIds).size).toBe(ibiSectionIds.length);
     expect(ibiSectionIds).not.toContain(ld?.recommendations[0]?.article.id);
 
-    const burgessResponse = await generate('burgessyachts.com', 'Product Manager');
+    const burgessResponse = await generate('burgessyachts.com', 'Unmatched role');
     expect(burgessResponse.status).toBe(201);
     const burgessPayload = await burgessResponse.json() as { reportId: string };
     const burgess = await app.reportStore.get(burgessPayload.reportId, 'ibi');

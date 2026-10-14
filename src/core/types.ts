@@ -100,6 +100,10 @@ export interface Intent {
   keywords: string[];
   interests: string[];
   personas: string[];
+  /** Optional professional signals used by archive-aware publisher retrieval. */
+  directInterests?: string[];
+  adjacentInterests?: string[];
+  excludedConcepts?: string[];
 }
 
 export interface SearchOptions {

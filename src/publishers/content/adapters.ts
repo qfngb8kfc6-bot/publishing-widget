@@ -1,4 +1,4 @@
-import type { ContentSourceHealth, Intent, PublisherArticle, SearchOptions } from '../../core';
+import { normalizeToken, tokenize, type ContentSourceHealth, type Intent, type NormalizedArticle, type PublisherArticle, type SearchOptions } from '../../core';
 import { getField, normalizeMappedArticle, normalizeRecords, type CanonicalNormalizationOptions } from './normalize';
 import { csvRecords } from './csv';
 import { assertSafePublicUrl, ContentSourceError, fetchText, safeSourceFetch } from './security';
@@ -36,6 +36,54 @@ function sourceOptions(publisherId: string, sourceType: string, sourceUrl: strin
 }
 
 function boundedLimit(options: SearchOptions, configured = 100): number { return Math.max(1, Math.min(options.limit, configured, 100)); }
+
+function uniqueTerms(values: string[]): string[] {
+  return [...new Set(values.flatMap((value) => tokenize(value)))];
+}
+
+function phraseOrTokenMatch(term: string, value: string): boolean {
+  const normalizedTerm = normalizeToken(term);
+  const normalizedValue = normalizeToken(value);
+  if (!normalizedTerm || !normalizedValue) return false;
+  if (normalizedTerm.includes(' ')) return normalizedValue.includes(normalizedTerm);
+  return tokenize(normalizedValue).some((token) => token === normalizedTerm || (normalizedTerm.length >= 6 && token.length >= 6 && token.slice(0, 5) === normalizedTerm.slice(0, 5)));
+}
+
+function articlePreselectionScore(article: NormalizedArticle, intent: Intent): number {
+  const title = article.title;
+  const metadata = [article.description ?? '', article.author ?? '', article.category ?? '', ...article.categories, ...article.tags].join(' ');
+  const body = [article.contentSnippet ?? '', article.summary ?? '', article.searchText ?? ''].join(' ');
+  const all = `${title} ${metadata} ${body}`;
+  const direct = uniqueTerms([...(intent.directInterests ?? []), ...intent.interests, ...intent.personas, ...intent.keywords]);
+  const adjacent = uniqueTerms(intent.adjacentInterests ?? []);
+  const query = uniqueTerms([intent.queryText]);
+  const answerValues = Object.entries(intent.answers ?? {}).flatMap(([key, value]) => {
+    const values = Array.isArray(value) ? value : [value];
+    return /company|domain|url/i.test(key) ? values : values.filter((candidate) => /\.[a-z]{2,}$/i.test(String(candidate)));
+  });
+  const company = uniqueTerms(answerValues.map(String));
+  const exclusions = uniqueTerms(intent.excludedConcepts ?? []);
+  let score = 0;
+  const addMatches = (terms: string[], weight: number) => {
+    for (const term of terms) {
+      if (phraseOrTokenMatch(term, title)) score += 7 * weight;
+      else if (phraseOrTokenMatch(term, metadata)) score += 3 * weight;
+      else if (phraseOrTokenMatch(term, body)) score += 1 * weight;
+    }
+  };
+  addMatches(direct, 1);
+  addMatches(adjacent, 0.65);
+  addMatches(query, 0.35);
+  addMatches(company, 1.25);
+  for (const term of exclusions) if (phraseOrTokenMatch(term, all)) score -= 6;
+  return score;
+}
+
+function archiveAwareFeedPreselection(articles: PublisherArticle[], intent: Intent, limit: number): PublisherArticle[] {
+  const scored = articles.map((article, index) => ({ article, index, score: articlePreselectionScore(article, intent) }));
+  const ordered = [...scored].sort((left, right) => right.score - left.score || compareFeedDates(left.article, right.article) || left.index - right.index);
+  return ordered.slice(0, limit).map(({ article }) => article);
+}
 
 function safeRequestDebug(url: URL): { url: string; query: Record<string, string> } {
   const safe = new URL(url.toString());
@@ -260,16 +308,15 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
     assertSafePublicUrl(config.feedUrl, config.allowedHostnames);
   }
 
-  async search(_intent: Intent, options: SearchOptions): Promise<unknown[]> {
+  async search(intent: Intent, options: SearchOptions): Promise<unknown[]> {
     const startedAt = Date.now();
     const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? 2_000_000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames });
     const records = feedRecords(xml, this.config.type, this.config.deriveCategoryFromUrl);
     if (!records.length) throw new ContentSourceError('empty-source', 'Feed did not contain any entries.');
     const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.feedUrl, this.config.feedUrl, this.config.sourceName, this.config.mappings, this.config.feedUrl));
-    const ordered = [...result.articles].sort(compareFeedDates);
-    const selected = ordered.slice(0, boundedLimit(options, this.config.candidateLimit ?? 100));
+    const selected = archiveAwareFeedPreselection(result.articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100));
     this.lastDiagnostics = result.diagnostics;
-    this.lastDiagnostics.sourceStats = { feedItemsFetched: records.length, feedItemsSelected: selected.length, normalizedArticles: result.articles.length };
+    this.lastDiagnostics.sourceStats = { feedItemsFetched: records.length, feedItemsSelected: selected.length, preselectionInputCount: result.articles.length, preselectionOutputCount: selected.length, normalizedArticles: result.articles.length };
     options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Date.now() - startedAt, pagesFetched: 1, rawCount: records.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
     options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: selected.length });
     return selected;

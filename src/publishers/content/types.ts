@@ -111,6 +111,8 @@ export interface ContentImportDiagnostics {
   sourceStats?: {
     feedItemsFetched?: number;
     feedItemsSelected?: number;
+    preselectionInputCount?: number;
+    preselectionOutputCount?: number;
     sitemapDocumentsFetched?: number;
     sitemapUrlsFound?: number;
     articleUrlsAccepted?: number;

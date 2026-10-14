@@ -1,6 +1,6 @@
 import { normalizeToken, tokenize } from './intent';
 
-export const PROFESSIONAL_PROFILE_VERSION = '1.2';
+export const PROFESSIONAL_PROFILE_VERSION = '1.3';
 export const RANKING_VERSION = '1.1';
 
 export interface CompanyContext {
@@ -93,6 +93,7 @@ const ROLE_RULES: RoleRule[] = [
   { test: /software|developer|engineering|architect|devops|platform|technical|technology/i, function: 'Engineering', responsibilities: ['software development', 'system architecture', 'technical implementation'], direct: ['software engineering', 'developer technology', 'APIs', 'infrastructure', 'cloud', 'security', 'AI', 'machine learning', 'language models', 'automation', 'integration', 'data systems', 'platforms', 'systems architecture'], adjacent: ['robotics', 'manufacturing automation', 'IoT', 'embedded systems', 'operational technology', 'sensors', 'digital twins'], exclusions: ['astronomy', 'observatories', 'ecology', 'marine transport'] },
   { test: /procurement|purchasing|supply|sourcing|buyer/i, function: 'Procurement', responsibilities: ['supplier evaluation', 'commercial planning', 'operational resilience'], direct: ['procurement', 'suppliers', 'sourcing', 'vendors', 'supply chains', 'materials', 'lifecycle', 'manufacturing', 'cost', 'resilience', 'risk'], adjacent: ['sustainability', 'logistics', 'automation', 'operations', 'regulation'], exclusions: ['astronomy', 'observatories', 'marine science'] },
   { test: /investment|investor|portfolio|finance|financial|bank|analyst|accounting|controller/i, function: 'Finance and investment', responsibilities: ['market analysis', 'risk assessment', 'capital allocation'], direct: ['finance', 'markets', 'investment', 'capital allocation', 'financial performance', 'financial technology', 'cost', 'risk', 'forecasting', 'regulation', 'accounting', 'data'], adjacent: ['AI', 'automation', 'operations', 'strategy', 'sustainability'], exclusions: ['astronomy', 'marine transport', 'ecology'] },
+  { test: /product manager|product management|product owner|head of product|vp product|chief product/i, function: 'Product management', responsibilities: ['product strategy', 'roadmap planning', 'product development', 'user and customer needs', 'product launches', 'category performance'], direct: ['product strategy', 'product development', 'roadmap', 'innovation', 'user needs', 'customer needs', 'product launches', 'product performance', 'competition', 'design', 'consumer products', 'merchandising', 'technology', 'materials', 'footwear', 'apparel'], adjacent: ['marketing', 'brand', 'sustainability', 'data', 'operations', 'manufacturing', 'retail'], exclusions: ['astronomy', 'marine engineering'] },
   { test: /marketing|brand|communications|audience/i, function: 'Marketing and communications', responsibilities: ['audience strategy', 'positioning', 'campaign planning'], direct: ['audiences', 'content', 'brands', 'communications', 'growth', 'customer research', 'digital marketing'], adjacent: ['technology', 'AI', 'culture', 'data', 'sustainability'], exclusions: ['astronomy', 'marine engineering'] },
   { test: /research|scientist|academic|laboratory|lab/i, function: 'Research', responsibilities: ['research design', 'evidence review', 'knowledge development'], direct: ['science', 'evidence', 'methodology', 'measurement', 'data', 'research'], adjacent: ['technology', 'climate', 'ecology', 'health', 'innovation'], exclusions: ['generic finance', 'generic marketing'] },
   { test: /operations|operational|delivery|process|supply chain/i, function: 'Operations', responsibilities: ['process improvement', 'delivery planning', 'operational resilience'], direct: ['operations', 'processes', 'delivery', 'systems', 'workflow', 'efficiency', 'supply chain'], adjacent: ['automation', 'manufacturing', 'logistics', 'technology', 'resilience'], exclusions: ['astronomy', 'observatories', 'marine science'] },
@@ -159,7 +160,8 @@ export function buildProfessionalProfile(company: CompanyContext, jobTitle: stri
   const rule = ruleFor(role);
   const companySignals = companyConcepts(company, rule, role.rawTitle);
   const titleSpecificDirect = /cto|technology officer|technical director|technology professional/i.test(role.rawTitle) ? ['technology'] : [];
-  const directInterests = unique([...specific(rule.direct), ...titleSpecificDirect, ...companySignals.direct]);
+  const roleSpecificDirect = [...specific(rule.direct), ...(role.function === 'Product management' ? ['innovation'] : [])];
+  const directInterests = unique([...roleSpecificDirect, ...titleSpecificDirect, ...companySignals.direct]);
   const adjacentInterests = unique([...specific(rule.adjacent), ...companySignals.adjacent]);
   const excludedConcepts = specific(rule.exclusions);
   const concepts = buildConcepts(role, company, directInterests, adjacentInterests, excludedConcepts);

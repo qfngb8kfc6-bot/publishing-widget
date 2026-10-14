@@ -8,6 +8,48 @@ import { ReportGenerationService } from '../src/reports';
 
 const intent = { publisherId: 'sgi-europe', answers: {}, queryText: '', keywords: [], interests: [], personas: [] };
 
+function archiveFixture(): string {
+  const newestNoise = Array.from({ length: 120 }, (_, index) => `
+    <item>
+      <guid>noise-${index}</guid>
+      <title>Daily market bulletin ${index}</title>
+      <link>https://www.sgieurope.com/market/daily-market-bulletin-${index}.article</link>
+      <description>General sporting goods market news and company updates.</description>
+      <pubDate>${new Date(Date.UTC(2026, 9, 13, 12, index % 60)).toUTCString()}</pubDate>
+    </item>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>${newestNoise}
+    <item>
+      <guid>adidas-product-platform</guid>
+      <title>Adidas product development launches a recycled footwear innovation platform</title>
+      <link>https://www.sgieurope.com/innovation/adidas-product-development-footwear-platform/120001.article</link>
+      <description>Adidas product strategy connects user needs, materials, design and consumer product launches for athletic apparel.</description>
+      <category>Innovation</category><category>Product Development</category>
+      <pubDate>Tue, 2 Jan 2024 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <guid>nike-retail-strategy</guid>
+      <title>Nike retail strategy brings product innovation closer to consumers</title>
+      <link>https://www.sgieurope.com/retail/nike-retail-strategy-product-innovation/120002.article</link>
+      <description>Nike expands retail operations and consumer product launches through a store and digital experience strategy.</description>
+      <category>Retail</category><category>Innovation</category>
+      <pubDate>Tue, 2 Jan 2024 08:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <guid>adidas-materials-research</guid>
+      <title>Adidas materials research advances footwear design and circular product development</title>
+      <link>https://www.sgieurope.com/materials/adidas-materials-footwear-design/120003.article</link>
+      <description>New materials support product development, design and sustainability across consumer footwear.</description>
+      <category>Materials</category><category>Product Development</category>
+      <pubDate>Tue, 2 Jan 2024 07:00:00 GMT</pubDate>
+    </item>
+  </channel></rss>`;
+}
+
+function archiveFixtureFetch(input: RequestInfo | URL): Promise<Response> {
+  expect(String(input)).toBe('https://www.sgieurope.com/9871.rss?adredir=1');
+  return Promise.resolve(new Response(archiveFixture(), { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }));
+}
+
 function fixtureFetch(input: RequestInfo | URL): Promise<Response> {
   expect(String(input)).toBe('https://www.sgieurope.com/9871.rss?adredir=1');
   return Promise.resolve(new Response(sgiEuropeRssFixture, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }));
@@ -73,6 +115,69 @@ describe('SGI Europe RSS publisher', () => {
       'Circular sportswear: matching construction to recovery',
     ]);
     expect(definition.adapter.lastDiagnostics?.sourceStats).toMatchObject({ feedItemsFetched: 8, feedItemsSelected: 3 });
+  });
+
+  it('preselects across the normalized archive instead of hiding older relevant stories behind the newest 100', async () => {
+    const definition = createSgiEuropeDefinition(archiveFixtureFetch);
+    const productManagerIntent = {
+      publisherId: 'sgi-europe',
+      answers: { companyUrl: 'https://adidas.com/', jobTitle: 'Product Manager' },
+      queryText: 'Product management product strategy product development innovation footwear apparel',
+      keywords: ['product', 'strategy', 'development', 'innovation', 'footwear', 'apparel'],
+      interests: ['product strategy', 'product development', 'innovation', 'footwear', 'apparel'],
+      personas: ['Product management'],
+      directInterests: ['product strategy', 'product development', 'innovation', 'design', 'footwear', 'apparel'],
+      adjacentInterests: ['marketing', 'sustainability', 'retail'],
+      excludedConcepts: ['astronomy'],
+    };
+    const records = await definition.adapter.search(productManagerIntent, { limit: 100 });
+    const articles = records.flatMap((record) => {
+      const article = definition.adapter.normalizeArticle(record);
+      return article ? [article] : [];
+    });
+    expect(articles).toHaveLength(100);
+    expect(articles.some((article) => article.id === 'adidas-product-platform')).toBe(true);
+    expect(articles.some((article) => article.id === 'nike-retail-strategy')).toBe(true);
+    expect(definition.adapter.lastDiagnostics?.sourceStats).toMatchObject({ feedItemsFetched: 123, normalizedArticles: 123, preselectionInputCount: 123, preselectionOutputCount: 100 });
+  });
+
+  it('generates an archive-aware Adidas Product Manager report while preserving a Nike Head of Retail path', async () => {
+    const logEvents: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    const logger = { info: (message: string, fields?: Record<string, unknown>) => logEvents.push({ message, fields }), error: () => undefined };
+    const adidasCompany = {
+      ...companyContext('adidas.com'),
+      name: 'Adidas',
+      industry: 'sportswear',
+      topics: ['athletic footwear', 'apparel', 'innovation'],
+      productsServices: ['consumer products', 'footwear', 'apparel'],
+      activities: ['product development', 'design'],
+    };
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' },
+      fetchImpl: archiveFixtureFetch,
+      publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
+      companyContextProvider: { getContext: async (domain: string) => domain === 'adidas.com' ? adidasCompany : { ...adidasCompany, domain, canonicalUrl: `https://${domain}/`, name: 'Nike', topics: ['retail', 'consumer products', 'innovation'], productsServices: ['consumer products'] } },
+      logger,
+    });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'adidas.com', jobTitle: 'Product Manager' }) }));
+    expect(generated.status, await generated.clone().text()).toBe(201);
+    const payload = await generated.json() as { reportId: string };
+    const adidasReport = await app.reportStore.get(payload.reportId, 'sgi-europe');
+    expect(adidasReport?.professionalProfile.role.function).toBe('Product management');
+    expect(adidasReport?.professionalProfile.directInterests).toEqual(expect.arrayContaining(['product strategy', 'product development', 'innovation']));
+    expect(adidasReport?.recommendations.some((recommendation) => recommendation.article.id === 'adidas-product-platform')).toBe(true);
+
+    const service = new ReportGenerationService(app.registry, { getContext: async (domain: string) => domain === 'adidas.com' ? adidasCompany : { ...adidasCompany, domain, canonicalUrl: `https://${domain}/`, name: 'Nike', topics: ['retail', 'consumer products', 'innovation'], productsServices: ['consumer products'] } }, app.reportStore, app.analyticsStore, undefined, logger);
+    if (!adidasReport) throw new Error('Adidas report was not persisted.');
+    const currentAdidas = adidasReport.recommendations.find((recommendation) => recommendation.article.id === 'adidas-product-platform');
+    if (!currentAdidas) throw new Error('Adidas product story was not recommended.');
+    const themeResults = await service.searchTheme({ ...adidasReport, recommendations: [currentAdidas] }, 'materials');
+    expect(themeResults.some((recommendation) => recommendation.article.id === 'adidas-materials-research')).toBe(true);
+    const nikeReport = await service.generate({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' });
+    expect(nikeReport.recommendations.some((recommendation) => recommendation.article.id === 'nike-retail-strategy')).toBe(true);
+    const diagnostics = logEvents.find((event) => event.message === 'report_retrieval_diagnostics');
+    expect(diagnostics?.fields).toMatchObject({ publisherId: 'sgi-europe', normalizedArticleCount: 123, preselectionInputCount: 123, preselectionOutputCount: 100, rankingCandidateCount: 100, retrievalCandidates: 100 });
   });
 
   it('runs content health, report generation, persistence and theme search through the production path', async () => {

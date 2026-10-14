@@ -39,6 +39,21 @@ describe('professional context', () => {
     expect(profile.retrieval.concepts.some((concept) => concept.concept === 'technology' && concept.relevanceType === 'direct')).toBe(true);
   });
 
+  it('treats Product Manager as product work rather than conflating it with marketing', async () => {
+    const company = await new SafeCompanyContextProvider().getContext('adidas.com');
+    const profile = buildProfessionalProfile({
+      ...company,
+      name: 'Adidas',
+      industry: 'sportswear',
+      topics: ['athletic footwear', 'apparel', 'innovation'],
+      productsServices: ['consumer products', 'footwear', 'apparel'],
+    }, 'Product Manager', new Date('2026-10-06T00:00:00.000Z'));
+    expect(profile.role.function).toBe('Product management');
+    expect(profile.directInterests).toEqual(expect.arrayContaining(['product strategy', 'product development', 'innovation', 'design']));
+    expect(profile.role.responsibilities).toEqual(expect.arrayContaining(['roadmap planning', 'product launches']));
+    expect(profile.directInterests).not.toContain('digital marketing');
+  });
+
   it('falls back to the submitted domain when company enrichment is unavailable', async () => {
     const provider = new SafeCompanyContextProvider(async () => new Response('upstream unavailable', { status: 503, headers: { 'Content-Type': 'text/plain' } }));
     await expect(provider.getContext('unavailable.example')).resolves.toMatchObject({ domain: 'unavailable.example', name: 'unavailable', source: 'submitted-domain', topics: [], entities: [] });

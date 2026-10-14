@@ -16,10 +16,20 @@ export interface ServerLogFields {
   articleUrlsSelected?: number;
   articlePagesFetched?: number;
   normalizedArticles?: number;
+  normalizedArticleCount?: number;
+  preselectionInputCount?: number;
+  preselectionOutputCount?: number;
+  preselectionCount?: number;
   retrievalCandidates?: number;
+  rankingCandidateCount?: number;
   deterministicEligible?: number;
+  finalRecommendationCount?: number;
   aiRerankSurvivors?: number;
   finalRecommendations?: number;
+  catalogueCount?: number;
+  excludedExistingCount?: number;
+  eligibleCount?: number;
+  theme?: string;
 }
 
 export interface StructuredLogger { info(message: string, fields?: ServerLogFields): void; error(message: string, fields?: ServerLogFields): void; }

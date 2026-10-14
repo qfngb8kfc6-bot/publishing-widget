@@ -41,11 +41,14 @@ function isProfessionalAIProvider(provider: AIRecommendationLayer['provider']): 
 function createIntent(profile: ReturnType<typeof buildProfessionalProfile>, publisherId: string): Intent {
   return {
     publisherId,
-    answers: { companyUrl: profile.companyUrl, jobTitle: profile.jobTitle },
+    answers: { companyUrl: profile.companyUrl, companyDomain: profile.companyDomain, companyName: profile.companyName ?? profile.company.name ?? '', jobTitle: profile.jobTitle },
     queryText: profile.semanticQueries.join(' '),
     keywords: profile.searchTerms,
     interests: profile.professionalInterests,
     personas: [profile.role.function, ...profile.role.professionalThemes],
+    directInterests: profile.directInterests,
+    adjacentInterests: profile.adjacentInterests,
+    excludedConcepts: profile.excludedConcepts,
   };
 }
 
@@ -123,7 +126,7 @@ export class ReportGenerationService {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; deterministicEligible: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; deterministicEligible: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     try {
@@ -131,7 +134,7 @@ export class ReportGenerationService {
         limit: Math.max(definition.config.content.candidateRetrievalLimit, 30),
         onDebug: (event) => {
           if (publisherId !== 'ibi' || event.type !== 'content_source') return;
-          const stats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { sitemapDocumentsFetched?: number; sitemapUrlsFound?: number; articleUrlsAccepted?: number; articleUrlsSelected?: number; articlePagesFetched?: number; normalizedArticles?: number } } }).lastDiagnostics?.sourceStats;
+          const stats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { sitemapDocumentsFetched?: number; sitemapUrlsFound?: number; articleUrlsAccepted?: number; articleUrlsSelected?: number; articlePagesFetched?: number; normalizedArticles?: number; preselectionInputCount?: number; preselectionOutputCount?: number } } }).lastDiagnostics?.sourceStats;
           this.logger?.info('ibi_generation_content_source', {
             requestId,
             publisherId,
@@ -142,6 +145,8 @@ export class ReportGenerationService {
             articleUrlsSelected: stats?.articleUrlsSelected,
             articlePagesFetched: stats?.articlePagesFetched,
             normalizedArticles: stats?.normalizedArticles ?? event.normalizedCount,
+            preselectionInputCount: stats?.preselectionInputCount,
+            preselectionOutputCount: stats?.preselectionOutputCount,
             retrievalCandidates: event.normalizedCount,
           });
         },
@@ -171,7 +176,11 @@ export class ReportGenerationService {
       .filter((item) => passesRelevanceThreshold(item.result))
       .sort((a, b) => (a.relevanceType === b.relevanceType ? b.deterministicScore - a.deterministicScore : a.relevanceType === 'direct' ? -1 : 1))
       .map(({ result: _result, ...item }) => item);
-    this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, normalizedArticles: unique.length, deterministicEligible: deterministicRanked.length });
+    const sourceStats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { normalizedArticles?: number; preselectionInputCount?: number; preselectionOutputCount?: number } } }).lastDiagnostics?.sourceStats;
+    const normalizedArticleCount = sourceStats?.normalizedArticles ?? candidates.length;
+    const preselectionInputCount = sourceStats?.preselectionInputCount ?? normalizedArticleCount;
+    const preselectionOutputCount = sourceStats?.preselectionOutputCount ?? candidates.length;
+    this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, rankingCandidateCount: candidates.length, normalizedArticles: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, eligibleCount: deterministicRanked.length });
     let ranked = deterministicRanked.slice(0, finalLimit);
     let aiRerankUsed = false;
     if (aiAvailable && deterministicRanked.length > 0) {
@@ -208,7 +217,7 @@ export class ReportGenerationService {
       ranked = ranked.slice(0, finalLimit);
     }
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_output', { stage: 'ranking', deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, finalRecommendations: ranked.length });
-    return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed };
+    return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed };
   }
 
   private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, string>()): ReportRecommendation[] {
@@ -238,7 +247,9 @@ export class ReportGenerationService {
     if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
     const profile = profileForTheme(report.professionalProfile, theme);
     const excluded = new Set(report.recommendations.flatMap((recommendation) => articleIdentityKeys(recommendation.article)));
-    const { ranked } = await this.rankProfile(definition, report.publisherId, profile, excluded);
+    const ranking = await this.rankProfile(definition, report.publisherId, profile, excluded);
+    this.logger?.info('theme_retrieval_diagnostics', { publisherId: report.publisherId, theme: safeLogText(theme, 160), catalogueCount: ranking.preselectionInputCount, preselectionCount: ranking.preselectionOutputCount, excludedExistingCount: report.recommendations.length, eligibleCount: ranking.deterministicEligible });
+    const { ranked } = ranking;
     return this.recommendationsFromRanked(profile, ranked);
   }
 
@@ -276,6 +287,7 @@ export class ReportGenerationService {
     const ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId);
     const ranked = ranking.ranked;
     const aiRerankUsed = ranking.aiRerankUsed;
+    this.logger?.info('report_retrieval_diagnostics', { requestId: input.requestId, publisherId: input.publisherId, normalizedArticles: ranking.normalizedCount, normalizedArticleCount: ranking.normalizedArticleCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, retrievalCandidates: ranking.retrievedCount, rankingCandidateCount: ranking.retrievedCount, deterministicEligible: ranking.deterministicEligible, eligibleCount: ranking.deterministicEligible, finalRecommendations: ranked.length, finalRecommendationCount: ranked.length });
     this.logIbi(input, 'ibi_generation_counts', { stage: 'ranking', retrievalCandidates: ranking.retrievedCount, normalizedArticles: ranking.normalizedCount, deterministicEligible: ranking.deterministicEligible, aiRerankSurvivors: ranking.aiRerankSurvivors, finalRecommendations: ranked.length });
     const aiAvailable = this.canUseAI(definition);
     await this.track('retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
