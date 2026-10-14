@@ -20,6 +20,20 @@ export interface PublisherRuntimeCapabilities {
   editAllowed: boolean;
 }
 
+export interface PublisherRuntimeDiagnostics {
+  publisherId: string;
+  runtimeSource?: string;
+  registryMode: PublisherRuntimeCapabilities['persistenceMode'];
+  sourceType?: string;
+  feedUrlPresent?: boolean;
+  maxBytes?: number;
+  candidateLimit?: number;
+  adapterResolved: boolean;
+  runtimeCacheHit: boolean;
+  runtimeVersion: number;
+  configVersion?: string;
+}
+
 /** Keep older RSS rows readable without mutating the persisted manifest. */
 function normalizePersistedManifest(manifest: PublisherManifest): PublisherManifest {
   const source = manifest.contentSource as (ContentSourceConfig & { feed?: unknown; url?: unknown }) | undefined;
@@ -35,6 +49,7 @@ export class PublisherRuntime {
   private loading?: Promise<void>;
   private readonly ttlMs: number;
   private readonly staticDefinitions = new Map<string, PublisherDefinition>();
+  private readonly runtimeVersions = new Map<string, number>();
 
   constructor(private readonly registry: PublisherRegistry, private readonly options: PublisherRuntimeOptions = {}) {
     this.ttlMs = Math.max(0, options.cacheTtlMs ?? 5_000);
@@ -66,6 +81,26 @@ export class PublisherRuntime {
     return this.registry.get(publisherId);
   }
 
+  describe(publisherId: string): PublisherRuntimeDiagnostics {
+    const definition = this.registry.get(publisherId);
+    const source = definition?.manifest?.contentSource as (ContentSourceConfig & { feed?: unknown; url?: unknown }) | undefined;
+    const feedUrlPresent = source?.type === 'rss' || source?.type === 'atom' ? typeof source.feedUrl === 'string' && source.feedUrl.length > 0 : undefined;
+    const mode = this.capabilities().persistenceMode;
+    return {
+      publisherId,
+      runtimeSource: source?.type,
+      registryMode: mode,
+      sourceType: source?.type ?? definition?.manifest?.content?.adapterId,
+      feedUrlPresent,
+      maxBytes: source?.type === 'rss' || source?.type === 'atom' ? source.maxBytes : undefined,
+      candidateLimit: source && 'candidateLimit' in source && typeof source.candidateLimit === 'number' ? source.candidateLimit : definition?.config?.content?.candidateRetrievalLimit,
+      adapterResolved: Boolean(definition?.adapter),
+      runtimeCacheHit: Boolean(this.options.store && this.loadedAt),
+      runtimeVersion: this.runtimeVersions.get(publisherId) ?? 0,
+      configVersion: definition?.manifest?.publisherConfigVersion,
+    };
+  }
+
   async list(): Promise<PublisherDefinition[]> {
     await this.ensureLoaded();
     return this.registry.list();
@@ -86,6 +121,7 @@ export class PublisherRuntime {
   async create(manifest: PublisherManifest): Promise<PublisherDefinition> {
     if (!this.options.store) throw new PublisherStoreError('unavailable', 'Publisher persistence is not configured.');
     const record = await this.options.store.create(manifest);
+    this.loadedAt = 0;
     this.apply(record);
     this.loadedAt = Date.now();
     return this.registry.get(manifest.publisherId)!;
@@ -100,6 +136,7 @@ export class PublisherRuntime {
       if (!(error instanceof PublisherStoreError) || error.code !== 'not_found') throw error;
       record = await this.options.store.create(manifest);
     }
+    this.loadedAt = 0;
     this.apply(record);
     this.loadedAt = Date.now();
     return this.registry.get(manifest.publisherId)!;
@@ -111,7 +148,9 @@ export class PublisherRuntime {
   }
 
   private apply(record: PublisherRecord): void {
-    this.registry.upsert(this.definition(record.manifest, this.staticDefinitions.get(record.manifest.publisherId) ?? this.registry.get(record.manifest.publisherId)));
+    const definition = this.definition(record.manifest, this.staticDefinitions.get(record.manifest.publisherId) ?? this.registry.get(record.manifest.publisherId));
+    this.registry.upsert(definition);
+    this.runtimeVersions.set(record.manifest.publisherId, (this.runtimeVersions.get(record.manifest.publisherId) ?? 0) + 1);
   }
 
   private definition(manifest: PublisherManifest, base?: PublisherDefinition): PublisherDefinition {

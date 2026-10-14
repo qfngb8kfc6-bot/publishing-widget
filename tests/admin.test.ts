@@ -6,6 +6,7 @@ import { createProductionApp } from '../src/server/production';
 import { MemoryPublisherStore, type PublisherStore } from '../src/publishers/store';
 import type { ServerLogFields, StructuredLogger } from '../src/server/logging';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
+import { sgiEuropeRssFixture } from '../src/publishers/sgi-europe/fixtures';
 
 function request(path: string, init: RequestInit = {}, cookie?: string): Request {
   const headers = new Headers(init.headers);
@@ -196,6 +197,52 @@ describe('internal publisher administration', () => {
     expect(JSON.stringify(diagnostic)).not.toContain('private upstream body');
   });
 
+  it('identifies unresolved company names separately from source availability', async () => {
+    const errors: Array<{ message: string; fields?: ServerLogFields }> = [];
+    const logger: StructuredLogger = { info: () => undefined, error: (message, fields) => errors.push({ message, fields }) };
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' },
+      publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
+      companyInputResolver: { resolve: async () => { throw new Error('company_resolution_failed'); } },
+      logger,
+    });
+    const cookie = await signIn(app);
+    const response = await app.handle(request('/api/admin/publishers/sgi-europe/test-report', { method: 'POST', body: JSON.stringify({ companyUrl: 'nike', jobTitle: 'Head of Retail' }) }, cookie));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'company_resolution_failed' });
+    const generationDiagnostic = errors.find((entry) => entry.message === 'generation_failed');
+    expect(generationDiagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', runtimeSource: 'rss', registryMode: 'memory', maxBytes: 20 * 1024 * 1024, companyInputType: 'company_name', companyResolutionAttempted: true, companyResolutionSucceeded: false, resolvedHostnamePresent: false, resolutionMethod: 'bounded_public_site', failureStage: 'company_resolution', errorMessage: 'company_resolution_failed' });
+    const diagnostic = errors.find((entry) => entry.message === 'admin_generation_unavailable');
+    expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', sourceType: 'rss', feedUrlPresent: true, maxBytes: 20 * 1024 * 1024, maxResponseBytes: 20 * 1024 * 1024, adapterResolved: true, companyInputType: 'company_name', companyResolutionAttempted: true, companyResolutionSucceeded: false, resolvedHostnamePresent: false, failureStage: 'company_resolution', errorMessage: 'company_resolution_failed' });
+  });
+
+  it('uses the updated persisted SGI source for health and generation without a restart', async () => {
+    const oldManifest = { ...sgiEuropeManifest, contentSource: { ...sgiEuropeManifest.contentSource!, maxBytes: 5_000_000 } };
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' },
+      publisherStore: new MemoryPublisherStore([oldManifest]),
+      fetchImpl: async (input) => {
+        expect(String(input)).toBe('https://www.sgieurope.com/9871.rss?adredir=1');
+        return new Response(sgiEuropeRssFixture, { status: 200, headers: { 'Content-Type': 'application/rss+xml', 'Content-Length': '11984097' } });
+      },
+      companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sportswear', description: 'A sportswear company.', topics: ['retail', 'innovation'], entities: ['Nike'], source: 'demo-fixture' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
+    });
+    await app.publisherRuntime.get('sgi-europe');
+    expect(app.publisherRuntime.describe('sgi-europe')).toMatchObject({ maxBytes: 5_000_000, runtimeCacheHit: true });
+    const cookie = await signIn(app);
+    const updatedManifest = { ...oldManifest, contentSource: { ...oldManifest.contentSource, maxBytes: 20 * 1024 * 1024 } };
+    const saved = await app.handle(request('/api/admin/publishers/sgi-europe/config', { method: 'PATCH', body: JSON.stringify(updatedManifest) }, cookie));
+    expect(saved.status).toBe(200);
+    expect(app.publisherRuntime.describe('sgi-europe')).toMatchObject({ maxBytes: 20 * 1024 * 1024, runtimeCacheHit: true });
+    const health = await app.handle(request('/api/admin/publishers/sgi-europe/content-check', { method: 'POST' }, cookie));
+    expect(health.status).toBe(200);
+    expect((await health.json()).reachable).toBe(true);
+    const report = await app.handle(request('/api/admin/publishers/sgi-europe/test-report', { method: 'POST', body: JSON.stringify({ companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }, cookie));
+    expect(report.status, await report.clone().text()).toBe(201);
+  });
+
   it('logs safe saved-source diagnostics when an SGI test report cannot reach RSS', async () => {
     const source = sgiEuropeManifest.contentSource!;
     const legacyManifest = { ...sgiEuropeManifest, contentSource: { type: 'rss', feed: source.type === 'rss' ? source.feedUrl : undefined } as never };
@@ -216,7 +263,7 @@ describe('internal publisher administration', () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: 'generation_unavailable' });
     const diagnostic = errors.find((entry) => entry.message === 'admin_generation_unavailable');
-    expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', registryMode: 'postgres', sourceType: 'rss', sourceConfigured: true, adapterResolved: true, failureStage: 'source_retrieval', errorName: 'ContentSourceError' });
+    expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', registryMode: 'postgres', sourceType: 'rss', sourceConfigured: true, adapterResolved: true, failureStage: 'source_fetch_failed', errorName: 'ContentSourceError' });
     expect(diagnostic?.fields?.errorMessage).toBe('Source returned HTTP 503.');
     expect(JSON.stringify(diagnostic)).not.toContain('upstream unavailable');
   });

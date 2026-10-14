@@ -35,6 +35,18 @@ export interface ServerLogFields {
   sourceConfigured?: boolean;
   adapterResolved?: boolean;
   failureStage?: string;
+  runtimeSource?: string;
+  feedUrlPresent?: boolean;
+  maxBytes?: number;
+  candidateLimit?: number;
+  runtimeCacheHit?: boolean;
+  runtimeVersion?: number;
+  configVersion?: string;
+  companyInputType?: 'domain' | 'company_name';
+  companyResolutionAttempted?: boolean;
+  companyResolutionSucceeded?: boolean;
+  resolvedHostnamePresent?: boolean;
+  resolutionMethod?: string;
   contentLength?: number;
   maxResponseBytes?: number;
 }

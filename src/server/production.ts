@@ -21,7 +21,7 @@ import { createRealPublisherProxy } from './real-publisher-proxy';
 import { safeRouteId } from './request-validation';
 import type { PublisherManifest } from '../publishers/manifest';
 import { MemoryReportStore, ReportGenerationService, type ReportStore } from '../reports';
-import { SafeCompanyContextProvider, type CompanyContextProvider } from './company';
+import { BoundedCompanyInputResolver, SafeCompanyContextProvider, type CompanyContextProvider, type CompanyInputResolver } from './company';
 import { createReportRoutes } from './report-routes';
 import { buildProfessionalProfile } from '../core';
 import { AdminAuth } from './admin-auth';
@@ -40,6 +40,7 @@ export interface ProductionServerOptions {
   analyticsStoreMode?: 'memory' | 'postgres';
   reportStore?: ReportStore;
   companyContextProvider?: CompanyContextProvider;
+  companyInputResolver?: CompanyInputResolver;
   publisherStore?: PublisherStore;
   publisherCacheTtlMs?: number;
 }
@@ -107,8 +108,9 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   });
   const aiRoute = aiProvider ? createAIProxy(aiProvider) : undefined;
   const companyContextProvider = options.companyContextProvider ?? new SafeCompanyContextProvider(options.fetchImpl ?? fetch);
+  const companyInputResolver = options.companyInputResolver ?? new BoundedCompanyInputResolver(options.fetchImpl ?? fetch);
   const reportAI = aiProvider ? { config: aiConfig, provider: aiProvider } : undefined;
-  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger);
+  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver);
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore);
   const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger });
 

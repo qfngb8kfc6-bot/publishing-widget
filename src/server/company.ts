@@ -1,5 +1,7 @@
 import type { CompanyContext } from '../core';
 export { isPrivateHostname, normalizeCompanyUrl } from '../core/company-url';
+export { BoundedCompanyInputResolver, classifyCompanyInput } from './company-resolver';
+export type { CompanyInputResolver, CompanyInputResolverOptions, CompanyInputType, ResolvedCompanyInput } from './company-resolver';
 
 export interface CompanyContextProvider {
   getContext(domain: string, signal?: AbortSignal): Promise<CompanyContext>;

@@ -24,7 +24,7 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
         return Response.json({ generationId: report.id, status: 'complete', statusUrl: `/api/generations/${report.id}/status?publisherId=${encodeURIComponent(publisherId)}`, generationUrl: `/p/${publisherId}/generate/${report.id}`, reportId: report.id, reportUrl: `/p/${publisherId}/${report.id}` }, { status: 201 });
       } catch (error) {
         const code = error instanceof Error ? error.message : 'generation_failed';
-        const safeCode = ['invalid_publisher', 'company_url_required', 'invalid_company_url', 'unsafe_company_url', 'company_url_credentials_not_allowed', 'job_title_required'].includes(code) ? code : 'generation_unavailable';
+        const safeCode = ['invalid_publisher', 'company_url_required', 'invalid_company_url', 'unsafe_company_url', 'company_url_credentials_not_allowed', 'company_resolution_failed', 'company_resolution_timeout', 'job_title_required'].includes(code) ? code : 'generation_unavailable';
         return Response.json({ error: safeCode }, { status: safeCode === 'generation_unavailable' ? 503 : 400 });
       }
     }

@@ -2,14 +2,14 @@ import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, 
 import { AIProviderError } from '../ai/provider';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
-import { normalizeCompanyUrl, type CompanyContextProvider } from '../server/company';
+import { BoundedCompanyInputResolver, classifyCompanyInput, type CompanyContextProvider, type CompanyInputResolver, type ResolvedCompanyInput } from '../server/company';
 import { WIDGET_VERSION } from '../version';
 import type { ReportRecord, ReportRecommendation, GenerateReportInput } from './types';
 import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
 import { profileForTheme } from './themes';
-import type { StructuredLogger } from '../server/logging';
+import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
 
@@ -98,22 +98,31 @@ interface RankedCandidate {
 }
 
 export class ReportGenerationService {
-  constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger) {}
+  private readonly companyResolver: CompanyInputResolver;
+
+  constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver) {
+    this.companyResolver = companyResolver ?? new BoundedCompanyInputResolver();
+  }
 
   private logIbi(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, message: string, fields: Parameters<StructuredLogger['info']>[1] = {}): void {
     if (input.publisherId !== 'ibi' || !this.logger) return;
     this.logger.info(message, { requestId: input.requestId, publisherId: input.publisherId, ...fields });
   }
 
-  private logIbiError(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, stage: string, error: unknown): void {
-    if (input.publisherId !== 'ibi' || !this.logger) return;
-    this.logger.error('ibi_generation_failed', {
+  private logIbiError(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, stage: string, error: unknown, diagnostics: Partial<ServerLogFields> = {}): void {
+    if (!this.logger) return;
+    const fields: ServerLogFields = {
+      ...this.runtimeDiagnostics?.(input.publisherId),
+      ...diagnostics,
       requestId: input.requestId,
       publisherId: input.publisherId,
       stage,
+      failureStage: stage,
       errorName: error instanceof Error ? error.name : 'unknown',
       errorMessage: safeLogText(error instanceof Error ? error.message : 'Unknown generation failure'),
-    });
+    };
+    this.logger.error('generation_failed', fields);
+    if (input.publisherId === 'ibi') this.logger.error('ibi_generation_failed', fields);
   }
 
   private async track(name: Parameters<typeof createEvent>[0], publisherId: string, sessionId: string, metadata?: Record<string, string | number | boolean>): Promise<void> {
@@ -265,12 +274,33 @@ export class ReportGenerationService {
     if (!jobTitle) throw new Error('job_title_required');
     const activeSession = input.sessionId ?? sessionId();
     await this.track('generation_started', input.publisherId, activeSession);
-    let normalized: ReturnType<typeof normalizeCompanyUrl>;
-    try { normalized = normalizeCompanyUrl(input.companyUrl); } catch (error) { this.logIbiError(input, 'company_normalization', error); throw error; }
+    const inputType = classifyCompanyInput(input.companyUrl);
+    const baseResolutionDiagnostics: Partial<ServerLogFields> = {
+      companyInputType: inputType,
+      companyResolutionAttempted: inputType === 'company_name',
+      companyResolutionSucceeded: false,
+      resolvedHostnamePresent: false,
+      resolutionMethod: inputType === 'domain' ? 'submitted_domain' : 'bounded_public_site',
+    };
+    let normalized: ResolvedCompanyInput;
+    try {
+      normalized = await this.companyResolver.resolve(input.companyUrl);
+    } catch (error) {
+      this.logIbiError(input, inputType === 'company_name' ? 'company_resolution' : 'company_normalization', error, baseResolutionDiagnostics);
+      throw error;
+    }
+    const resolutionDiagnostics: Partial<ServerLogFields> = {
+      companyInputType: normalized.inputType,
+      companyResolutionAttempted: normalized.inputType === 'company_name',
+      companyResolutionSucceeded: true,
+      resolvedHostnamePresent: Boolean(normalized.domain),
+      resolutionMethod: normalized.resolutionMethod,
+    };
     await this.track('company_analysis_started', input.publisherId, activeSession);
     let company: Awaited<ReturnType<CompanyContextProvider['getContext']>>;
     try { company = await this.companyProvider.getContext(normalized.domain); }
-    catch (error) { this.logIbiError(input, 'company_context', error); throw error; }
+    catch (error) { this.logIbiError(input, 'company_context', error, resolutionDiagnostics); throw error; }
+    if (normalized.displayName) company = { ...company, name: normalized.displayName };
     await this.track('company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
     let profile = buildProfessionalProfile(company, jobTitle);
     let aiProfileUsed = false;
