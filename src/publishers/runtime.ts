@@ -20,6 +20,15 @@ export interface PublisherRuntimeCapabilities {
   editAllowed: boolean;
 }
 
+/** Keep older RSS rows readable without mutating the persisted manifest. */
+function normalizePersistedManifest(manifest: PublisherManifest): PublisherManifest {
+  const source = manifest.contentSource as (ContentSourceConfig & { feed?: unknown; url?: unknown }) | undefined;
+  if (!source || (source.type !== 'rss' && source.type !== 'atom') || typeof source.feedUrl === 'string') return manifest;
+  const legacyUrl = typeof source.feed === 'string' ? source.feed : typeof source.url === 'string' ? source.url : undefined;
+  if (!legacyUrl) return manifest;
+  return { ...manifest, contentSource: { ...source, feedUrl: legacyUrl } as ContentSourceConfig };
+}
+
 /** Resolves persisted publisher manifests into the existing synchronous registry contract. */
 export class PublisherRuntime {
   private loadedAt = 0;
@@ -106,19 +115,20 @@ export class PublisherRuntime {
   }
 
   private definition(manifest: PublisherManifest, base?: PublisherDefinition): PublisherDefinition {
-    const source = manifest.contentSource;
+    const runtimeManifest = normalizePersistedManifest(manifest);
+    const source = runtimeManifest.contentSource;
     const keepBaseAdapter = Boolean(base && (!source || source.type === 'static-demo' || (source.type === 'rest-json' && source.baseUrl.startsWith('/api/'))));
     const adapter = keepBaseAdapter
       ? base!.adapter
       : source && source.type !== 'static-demo'
-      ? createContentAdapter(manifest.publisherId, source as ContentSourceConfig, { fetchImpl: this.options.fetchImpl, resolveSecret: this.options.resolveSecret })
+      ? createContentAdapter(runtimeManifest.publisherId, source as ContentSourceConfig, { fetchImpl: this.options.fetchImpl, resolveSecret: this.options.resolveSecret })
       : base?.adapter;
-    if (!adapter) throw new PublisherStoreError('invalid_record', `Publisher ${manifest.publisherId} has no compatible content adapter.`);
+    if (!adapter) throw new PublisherStoreError('invalid_record', `Publisher ${runtimeManifest.publisherId} has no compatible content adapter.`);
     return {
-      config: manifestToPublisherConfig(manifest),
+      config: manifestToPublisherConfig(runtimeManifest),
       adapter,
       explanationProvider: base?.explanationProvider ?? new DeterministicExplanationProvider(),
-      manifest,
+      manifest: runtimeManifest,
     };
   }
 }

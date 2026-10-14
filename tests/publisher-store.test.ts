@@ -3,6 +3,7 @@ import { demoManifest } from '../src/demo/config';
 import { PostgresPublisherStore, MemoryPublisherStore, PublisherStoreError } from '../src/publishers/store';
 import { createPublisherRegistry } from '../src/publishers/registry';
 import { PublisherRuntime } from '../src/publishers/runtime';
+import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 
 describe('publisher persistence', () => {
   it('keeps the memory fallback compatible with create, update and enable state', async () => {
@@ -47,5 +48,17 @@ describe('publisher persistence', () => {
     expect((await runtime.get('demo'))?.manifest?.name).toBe('Northstar Journal');
     await runtime.invalidate();
     expect((await runtime.get('demo'))?.manifest?.name).toBe('Northstar Updated');
+  });
+
+  it('reconstructs a legacy RSS feed alias without mutating the persisted row', async () => {
+    const source = sgiEuropeManifest.contentSource!;
+    const legacyManifest = { ...sgiEuropeManifest, contentSource: { type: 'rss', feed: source.type === 'rss' ? source.feedUrl : undefined } as never };
+    const store = new MemoryPublisherStore([legacyManifest]);
+    const runtime = new PublisherRuntime(createPublisherRegistry(), { store, fetchImpl: async () => new Response('<rss><channel><item><guid>legacy</guid><title>Legacy RSS story</title><link>https://www.sgieurope.com/legacy</link></item></channel></rss>', { status: 200 }) });
+    const definition = await runtime.get('sgi-europe');
+    expect(definition?.manifest?.contentSource).toMatchObject({ type: 'rss', feedUrl: 'https://www.sgieurope.com/9871.rss?adredir=1' });
+    expect(definition?.adapter).toBeTruthy();
+    expect((await store.get('sgi-europe'))?.manifest.contentSource).not.toHaveProperty('feedUrl');
+    expect((await store.get('sgi-europe'))?.manifest.contentSource).toHaveProperty('feed', 'https://www.sgieurope.com/9871.rss?adredir=1');
   });
 });

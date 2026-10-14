@@ -110,7 +110,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const reportAI = aiProvider ? { config: aiConfig, provider: aiProvider } : undefined;
   const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger);
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore);
-  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment });
+  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger });
 
   const trustedProxy = options.trustedProxy ?? false;
   const handle = async (request: Request): Promise<Response> => {

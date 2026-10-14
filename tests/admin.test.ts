@@ -5,6 +5,7 @@ import { demoManifest } from '../src/demo/config';
 import { createProductionApp } from '../src/server/production';
 import { MemoryPublisherStore, type PublisherStore } from '../src/publishers/store';
 import type { ServerLogFields, StructuredLogger } from '../src/server/logging';
+import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 
 function request(path: string, init: RequestInit = {}, cookie?: string): Request {
   const headers = new Headers(init.headers);
@@ -174,6 +175,50 @@ describe('internal publisher administration', () => {
     expect(result.accepted).toBeGreaterThan(0);
     expect(result.sampleTitles.length).toBeGreaterThan(0);
     expect(typeof result.coverage.image).toBe('number');
+  });
+
+  it('logs bounded source-size diagnostics without exposing upstream content', async () => {
+    const errors: Array<{ message: string; fields?: ServerLogFields }> = [];
+    const logger: StructuredLogger = { info: () => undefined, error: (message, fields) => errors.push({ message, fields }) };
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' },
+      fetchImpl: async () => new Response('private upstream body', { status: 200, headers: { 'Content-Length': String(20 * 1024 * 1024 + 1) } }),
+      publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
+      logger,
+    });
+    const cookie = await signIn(app);
+    const response = await app.handle(request('/api/admin/publishers/sgi-europe/content-check', { method: 'POST' }, cookie));
+    expect(response.status).toBe(502);
+    expect((await response.json()).error.code).toBe('source_response_too_large');
+    const diagnostic = errors.find((entry) => entry.message === 'content_check_failed');
+    expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', registryMode: 'memory', sourceType: 'rss', sourceConfigured: true, adapterResolved: true, failureStage: 'source_response_size', contentLength: 20 * 1024 * 1024 + 1, maxResponseBytes: 20 * 1024 * 1024 });
+    expect(JSON.stringify(diagnostic)).not.toContain('private upstream body');
+  });
+
+  it('logs safe saved-source diagnostics when an SGI test report cannot reach RSS', async () => {
+    const source = sgiEuropeManifest.contentSource!;
+    const legacyManifest = { ...sgiEuropeManifest, contentSource: { type: 'rss', feed: source.type === 'rss' ? source.feedUrl : undefined } as never };
+    const memory = new MemoryPublisherStore([legacyManifest]);
+    const store: PublisherStore = { mode: 'postgres', list: () => memory.list(), get: (publisherId) => memory.get(publisherId), create: (manifest) => memory.create(manifest), update: (manifest) => memory.update(manifest) };
+    const errors: Array<{ message: string; fields?: ServerLogFields }> = [];
+    const logger: StructuredLogger = { info: () => undefined, error: (message, fields) => errors.push({ message, fields }) };
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' },
+      publisherStore: store,
+      fetchImpl: async () => new Response('upstream unavailable', { status: 503 }),
+      companyContextProvider: { getContext: async () => ({ domain: 'ldsystems.uk', canonicalUrl: 'https://ldsystems.uk/', name: 'LD Systems', industry: 'technology', description: 'A software company.', topics: ['technology'], entities: ['LD Systems'], source: 'demo-fixture', fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
+      logger,
+    });
+    const cookie = await signIn(app);
+    const response = await app.handle(request('/api/admin/publishers/sgi-europe/test-report', { method: 'POST', body: JSON.stringify({ companyUrl: 'https://ldsystems.uk/', jobTitle: 'Technology professional' }) }, cookie));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'generation_unavailable' });
+    const diagnostic = errors.find((entry) => entry.message === 'admin_generation_unavailable');
+    expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', registryMode: 'postgres', sourceType: 'rss', sourceConfigured: true, adapterResolved: true, failureStage: 'source_retrieval', errorName: 'ContentSourceError' });
+    expect(diagnostic?.fields?.errorMessage).toBe('Source returned HTTP 503.');
+    expect(JSON.stringify(diagnostic)).not.toContain('upstream unavailable');
   });
 
   it('validates drafts, rejects credential-shaped public headers, and keeps configuration source-controlled', async () => {

@@ -3,6 +3,7 @@ import { getField, normalizeMappedArticle, normalizeRecords, type CanonicalNorma
 import { csvRecords } from './csv';
 import { assertSafePublicUrl, ContentSourceError, fetchText, safeSourceFetch } from './security';
 import { xmlAttribute, xmlBlocks, xmlFirstText, xmlText } from './xml';
+import { DEFAULT_FEED_MAX_BYTES } from './types';
 import type { ArticleFieldMappings, ContentAdapter, ContentAdapterFactoryOptions, ContentImportDiagnostics, FeedSourceConfig, PaginationConfig, RestJsonSourceConfig, SitemapSourceConfig, StaticJsonSourceConfig, CsvSourceConfig, ContentSourceConfig } from './types';
 
 type FetchLike = typeof fetch;
@@ -310,7 +311,7 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
 
   async search(intent: Intent, options: SearchOptions): Promise<unknown[]> {
     const startedAt = Date.now();
-    const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? 2_000_000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames });
+    const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? DEFAULT_FEED_MAX_BYTES, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames });
     const records = feedRecords(xml, this.config.type, this.config.deriveCategoryFromUrl);
     if (!records.length) throw new ContentSourceError('empty-source', 'Feed did not contain any entries.');
     const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.feedUrl, this.config.feedUrl, this.config.sourceName, this.config.mappings, this.config.feedUrl));

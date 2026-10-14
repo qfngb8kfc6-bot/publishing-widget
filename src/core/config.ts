@@ -1,6 +1,7 @@
 import type { PublisherConfig } from './types';
 import type { PublisherManifest } from '../publishers/manifest';
 import { DEFAULT_THEME } from './theme';
+import { MAX_CONFIGURED_FEED_MAX_BYTES } from '../publishers/content/types';
 
 export function isValidPublisherId(value: string): boolean {
   return /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value);
@@ -70,7 +71,7 @@ export function validatePublisherManifest(manifest: PublisherManifest, options: 
   if ((source?.type === 'rss' || source?.type === 'atom') && !source.feedUrl.trim()) throw new Error('Feed content source requires feedUrl.');
   if (source?.type === 'rss' || source?.type === 'atom') {
     if (source.candidateLimit !== undefined && (source.candidateLimit < 1 || source.candidateLimit > 100)) throw new Error('Feed candidateLimit must be between 1 and 100.');
-    if (source.maxBytes !== undefined && (source.maxBytes < 1 || source.maxBytes > 10_000_000)) throw new Error('Feed maxBytes must be between 1 and 10000000.');
+    if (source.maxBytes !== undefined && (source.maxBytes < 1 || source.maxBytes > MAX_CONFIGURED_FEED_MAX_BYTES)) throw new Error(`Feed maxBytes must be between 1 and ${MAX_CONFIGURED_FEED_MAX_BYTES}.`);
     validatePublicHeaders(source.headers);
   }
   if (source?.type === 'sitemap' && !source.sitemapUrl.trim()) throw new Error('Sitemap content source requires sitemapUrl.');

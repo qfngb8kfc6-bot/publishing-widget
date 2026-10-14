@@ -30,6 +30,13 @@ export interface ServerLogFields {
   excludedExistingCount?: number;
   eligibleCount?: number;
   theme?: string;
+  registryMode?: string;
+  sourceType?: string;
+  sourceConfigured?: boolean;
+  adapterResolved?: boolean;
+  failureStage?: string;
+  contentLength?: number;
+  maxResponseBytes?: number;
 }
 
 export interface StructuredLogger { info(message: string, fields?: ServerLogFields): void; error(message: string, fields?: ServerLogFields): void; }

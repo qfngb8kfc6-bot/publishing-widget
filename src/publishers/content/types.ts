@@ -1,5 +1,8 @@
 import type { ContentSourceHealth, PublisherContentAdapter, PublisherArticle } from '../../core';
 
+export const DEFAULT_FEED_MAX_BYTES = 5_000_000;
+export const MAX_CONFIGURED_FEED_MAX_BYTES = 20 * 1024 * 1024;
+
 export type ContentSourceType = 'rest-json' | 'rss' | 'atom' | 'sitemap' | 'json' | 'csv' | 'static-demo';
 
 export type FieldPath = string | string[];

@@ -10,6 +10,7 @@ import { ContentSourceError } from '../publishers/content/security';
 import type { ReportGenerationService } from '../reports/generate';
 import { AdminAuth, adminOriginAllowed } from './admin-auth';
 import { readJsonBody, safeRouteId } from './request-validation';
+import { safeLogText, type StructuredLogger } from './logging';
 
 interface AdminRoutesOptions {
   registry: PublisherRegistry;
@@ -18,6 +19,7 @@ interface AdminRoutesOptions {
   generation: ReportGenerationService;
   auth: AdminAuth;
   environment: 'development' | 'test' | 'production';
+  logger?: StructuredLogger;
 }
 
 interface ContentCheckResult {
@@ -85,6 +87,24 @@ function sourceType(definition: ReturnType<PublisherRegistry['get']>): string | 
   return typeof adapterId === 'string' && adapterId ? adapterId : null;
 }
 
+function sourceConfigured(manifest: PublisherManifest | undefined): boolean {
+  const source = manifest?.contentSource as (ContentSourceConfig & { feed?: unknown; url?: unknown }) | undefined;
+  if (!source || typeof source !== 'object' || typeof source.type !== 'string') return false;
+  if (source.type === 'rss' || source.type === 'atom') return [source.feedUrl, source.feed, source.url].some((value) => typeof value === 'string' && value.trim().length > 0);
+  if (source.type === 'sitemap') return typeof source.sitemapUrl === 'string' && source.sitemapUrl.trim().length > 0;
+  if (source.type === 'rest-json') return typeof source.baseUrl === 'string' && typeof source.endpoint === 'string' && Boolean(source.baseUrl.trim() && source.endpoint.trim());
+  return source.type === 'json' || source.type === 'csv' || source.type === 'static-demo';
+}
+
+function generationFailureStage(error: unknown): string {
+  if (error instanceof ContentSourceError && error.code === 'source_response_too_large') return 'source_response_size';
+  if (error instanceof ContentSourceError) return 'source_retrieval';
+  if (error instanceof PublisherStoreError) return 'publisher_runtime';
+  if (error instanceof Error && error.message === 'invalid_publisher') return 'publisher_resolution';
+  if (error instanceof Error && /company|domain/i.test(error.message)) return 'company_context';
+  return 'generation';
+}
+
 function safeBrandingSummary(definition: ReturnType<PublisherRegistry['get']>): { primaryColor: string | null; logo: string | null } | null {
   const branding = definition?.manifest?.branding ?? definition?.config?.branding;
   if (!branding || typeof branding !== 'object') return null;
@@ -119,7 +139,7 @@ function checkIntent(publisherId: string) {
   return { publisherId, answers: { companyUrl: 'https://ldsystems.uk/', jobTitle: 'Technology professional' }, queryText: 'technology professional company developments', keywords: ['technology', 'professional', 'company', 'developments'], interests: ['technology', 'business'], personas: ['professional'] };
 }
 
-async function runContentCheck(definition: NonNullable<ReturnType<PublisherRegistry['get']>>): Promise<ContentCheckResult> {
+async function runContentCheck(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, logger?: StructuredLogger, registryMode?: string): Promise<ContentCheckResult> {
   const started = Date.now();
   const adapter = definition.adapter;
   try {
@@ -138,6 +158,20 @@ async function runContentCheck(definition: NonNullable<ReturnType<PublisherRegis
       },
     };
   } catch (error) {
+    const sourceError = error instanceof ContentSourceError ? error : undefined;
+    logger?.error('content_check_failed', {
+      publisherId: definition.config.publisherId,
+      registryMode,
+      sourceType: sourceType(definition) ?? undefined,
+      sourceConfigured: sourceConfigured(definition.manifest),
+      adapterResolved: Boolean(definition.adapter),
+      failureStage: generationFailureStage(error),
+      errorName: error instanceof Error ? error.name : 'unknown',
+      errorMessage: safeLogText(error instanceof Error ? error.message : 'Content source check failed.'),
+      errorStack: safeLogText(error instanceof Error ? error.stack : undefined, 6_000),
+      contentLength: sourceError?.contentLength,
+      maxResponseBytes: sourceError?.maxBytes,
+    });
     return { checkedAt: new Date().toISOString(), sourceType: sourceType(definition) ?? 'unknown', reachable: false, recordsFetched: 0, accepted: 0, rejected: 0, duplicates: 0, warnings: [], elapsedMs: Date.now() - started, sampleTitles: [], coverage: { image: 0, publishedAt: 0, description: 0 }, error: safeError(error) };
   }
 }
@@ -231,9 +265,30 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
     if (!match) return Response.json({ error: 'not_found' }, { status: 404 });
     const publisherId = safeRouteId(match[1]);
     if (!publisherId) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
-    const definition = publisherId ? await options.publisherRuntime.get(publisherId) : undefined;
-    if (!definition) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
     const action = match[2];
+    let definition: ReturnType<PublisherRegistry['get']> | undefined;
+    try {
+      definition = publisherId ? await options.publisherRuntime.get(publisherId) : undefined;
+    } catch (error) {
+      if (action === 'test-report') {
+        const fallback = options.registry.get(publisherId);
+        const current = capabilities();
+        options.logger?.error('admin_generation_unavailable', {
+          publisherId,
+          registryMode: current.persistenceMode,
+          sourceType: sourceType(fallback) ?? undefined,
+          sourceConfigured: sourceConfigured(fallback?.manifest),
+          adapterResolved: false,
+          failureStage: 'publisher_runtime',
+          errorName: error instanceof Error ? error.name : 'unknown',
+          errorMessage: safeLogText(error instanceof Error ? error.message : 'Publisher runtime could not be resolved.'),
+          errorStack: safeLogText(error instanceof Error ? error.stack : undefined, 6_000),
+        });
+        return Response.json({ error: 'generation_unavailable' }, { status: 503 });
+      }
+      throw error;
+    }
+    if (!definition) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
     const manifest = definition.manifest ?? manifestFromDefinition(definition);
     if (!action && request.method === 'GET') {
       const events = await options.analyticsStore.query({ publisherId });
@@ -252,7 +307,7 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
           if (draft.publisherId !== publisherId) return Response.json({ error: 'publisher_id_mismatch' }, { status: 400 });
           checkDefinition = options.publisherRuntime.draft(draft);
         }
-        const result = await runContentCheck(checkDefinition);
+        const result = await runContentCheck(checkDefinition, options.logger, capabilities().persistenceMode);
         lastContentChecks.set(publisherId, result);
         return Response.json(result, { status: result.reachable ? 200 : 502 });
       } catch (error) {
@@ -275,7 +330,21 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
         if (!companyUrl.trim() || !jobTitle.trim() || companyUrl.length > 253 || jobTitle.length > 160) return Response.json({ error: 'invalid_generation_input' }, { status: 400 });
         const report = await options.generation.generate({ publisherId, companyUrl, jobTitle });
         return Response.json({ generationId: report.id, status: 'complete', generationUrl: `/p/${publisherId}/generate/${report.id}`, reportUrl: `/p/${publisherId}/${report.id}`, reportId: report.id }, { status: 201 });
-      } catch { return Response.json({ error: 'generation_unavailable' }, { status: 503 }); }
+      } catch (error) {
+        const current = capabilities();
+        options.logger?.error('admin_generation_unavailable', {
+          publisherId,
+          registryMode: current.persistenceMode,
+          sourceType: sourceType(definition) ?? undefined,
+          sourceConfigured: sourceConfigured(definition.manifest),
+          adapterResolved: Boolean(definition.adapter),
+          failureStage: generationFailureStage(error),
+          errorName: error instanceof Error ? error.name : 'unknown',
+          errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation failed.'),
+          errorStack: safeLogText(error instanceof Error ? error.stack : undefined, 6_000),
+        });
+        return Response.json({ error: 'generation_unavailable' }, { status: 503 });
+      }
     }
     if (action === 'config' && (request.method === 'POST' || request.method === 'PATCH' || request.method === 'PUT')) {
       try {

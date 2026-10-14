@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RecommendationService, DeterministicExplanationProvider, type Intent } from '../src/core';
 import { manifestToPublisherConfig } from '../src/publishers/manifest';
-import { CsvContentAdapter, FeedContentAdapter, RestJsonContentAdapter, SitemapContentAdapter, StaticJsonContentAdapter, assertSafePublicUrl, ContentSourceError, deduplicateArticles, normalizeMappedArticle, stableArticleId } from '../src/publishers/content';
+import { CsvContentAdapter, FeedContentAdapter, RestJsonContentAdapter, SitemapContentAdapter, StaticJsonContentAdapter, assertSafePublicUrl, ContentSourceError, deduplicateArticles, fetchText, normalizeMappedArticle, stableArticleId } from '../src/publishers/content';
 import { demoManifest } from '../src/demo/config';
 
 const intent: Intent = { publisherId: 'fixture-publisher', answers: {}, queryText: 'energy engineering', keywords: ['energy', 'engineering'], interests: [], personas: [] };
@@ -120,6 +120,22 @@ describe('RSS, Atom and sitemap adapters', () => {
 });
 
 describe('content source security and operational errors', () => {
+  it('keeps the 5 MB default for RSS and rejects oversized Content-Length values before reading', async () => {
+    const adapter = new FeedContentAdapter('publisher', { type: 'rss', feedUrl: 'https://publisher.example.test/feed.xml' }, async () => new Response('<rss />', { status: 200, headers: { 'Content-Length': '5000001' } }));
+    await expect(adapter.search(intent, { limit: 1 })).rejects.toMatchObject({ code: 'source_response_too_large', contentLength: 5_000_001, maxBytes: 5_000_000 });
+  });
+
+  it('keeps a missing Content-Length response bounded while reading', async () => {
+    const chunk = new Uint8Array(1024 * 1024);
+    const fetchImpl = async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let index = 0; index < 6; index += 1) controller.enqueue(chunk);
+        controller.close();
+      },
+    }), { status: 200 });
+    await expect(fetchText('https://publisher.example.test/feed.xml', {}, { maxBytes: 5_000_000, fetchImpl })).rejects.toMatchObject({ code: 'source_response_too_large', maxBytes: 5_000_000 });
+  });
+
   it('rejects private, unsafe and redirected-private URLs', async () => {
     expect(() => assertSafePublicUrl('http://127.0.0.1/private')).toThrow('Private');
     expect(() => assertSafePublicUrl('ftp://publisher.example.test/archive')).toThrow('public HTTP(S)');

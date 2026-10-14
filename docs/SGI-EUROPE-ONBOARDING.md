@@ -14,7 +14,7 @@ SGI Europe uses its public RSS feed as the primary source:
 https://www.sgieurope.com/9871.rss?adredir=1
 ```
 
-The source is restricted to the SGI Europe hostnames, accepts a maximum 5 MB
+The source is restricted to the SGI Europe hostnames, accepts a maximum 20 MiB
 feed document, parses all valid feed items, removes duplicate GUIDs/canonical
 URLs, sorts the normalized articles newest-first, and bounds downstream
 candidate retrieval at 100 articles before the existing ranking pipeline runs.

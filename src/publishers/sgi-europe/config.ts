@@ -11,7 +11,7 @@ export const sgiEuropeContentSource: FeedSourceConfig = {
   deriveCategoryFromUrl: true,
   candidateLimit: 100,
   timeoutMs: 8000,
-  maxBytes: 5_000_000,
+  maxBytes: 20 * 1024 * 1024,
   sourceName: 'SGI Europe RSS feed',
 };
 

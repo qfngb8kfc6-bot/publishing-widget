@@ -1,14 +1,18 @@
 import type { ContentFetchOptions } from './types';
 
-export type ContentSourceErrorCode = 'timeout' | 'authentication-failure' | 'rate-limit' | 'unavailable' | 'invalid-response' | 'unsafe-url' | 'empty-source';
+export type ContentSourceErrorCode = 'timeout' | 'authentication-failure' | 'rate-limit' | 'unavailable' | 'invalid-response' | 'source_response_too_large' | 'unsafe-url' | 'empty-source';
 
 export class ContentSourceError extends Error {
   readonly code: ContentSourceErrorCode;
   readonly status?: number;
-  constructor(code: ContentSourceErrorCode, message?: string, status?: number) {
+  readonly contentLength?: number;
+  readonly maxBytes?: number;
+  constructor(code: ContentSourceErrorCode, message?: string, status?: number, details: { contentLength?: number; maxBytes?: number } = {}) {
     super(message ?? code);
     this.code = code;
     this.status = status;
+    this.contentLength = details.contentLength;
+    this.maxBytes = details.maxBytes;
     this.name = 'ContentSourceError';
   }
 }
@@ -63,6 +67,12 @@ export async function safeSourceFetch(input: string | URL, init: RequestInit = {
         }
         throw new ContentSourceError('unavailable', `Source returned HTTP ${response.status}.`, response.status);
       }
+      const maxBytes = options.maxBytes;
+      const contentLengthHeader = response.headers.get('content-length');
+      const contentLength = contentLengthHeader && /^\d+$/.test(contentLengthHeader.trim()) ? Number(contentLengthHeader.trim()) : undefined;
+      if (maxBytes !== undefined && contentLength !== undefined && (!Number.isSafeInteger(contentLength) || contentLength > maxBytes)) {
+        throw new ContentSourceError('source_response_too_large', 'Source response exceeds the configured safety limit.', response.status, { contentLength, maxBytes });
+      }
       return response;
     } catch (error) {
       if (error instanceof ContentSourceError) throw error;
@@ -74,11 +84,29 @@ export async function safeSourceFetch(input: string | URL, init: RequestInit = {
 }
 
 export async function fetchText(input: string | URL, init: RequestInit = {}, options: ContentFetchOptions = {}): Promise<string> {
-  const response = await safeSourceFetch(input, init, options);
+  const maxBytes = options.maxBytes ?? 2_000_000;
+  const response = await safeSourceFetch(input, init, { ...options, maxBytes });
   try {
-    const value = await response.text();
-    if (value.length > (options.maxBytes ?? 2_000_000)) throw new ContentSourceError('invalid-response', 'Source response exceeded the safety limit.');
-    return value;
+    if (!response.body) return '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let totalBytes = 0;
+    let value = '';
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        totalBytes += chunk.value.byteLength;
+        if (totalBytes > maxBytes) {
+          await reader.cancel();
+          throw new ContentSourceError('source_response_too_large', 'Source response exceeds the configured safety limit.', response.status, { contentLength: totalBytes, maxBytes });
+        }
+        value += decoder.decode(chunk.value, { stream: true });
+      }
+      return value + decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
   } catch (error) {
     if (error instanceof ContentSourceError) throw error;
     throw new ContentSourceError('invalid-response', 'Source response could not be read.');

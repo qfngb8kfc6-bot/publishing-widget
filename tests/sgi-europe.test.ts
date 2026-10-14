@@ -55,6 +55,16 @@ function fixtureFetch(input: RequestInfo | URL): Promise<Response> {
   return Promise.resolve(new Response(sgiEuropeRssFixture, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }));
 }
 
+function sizedFixtureFetch(input: RequestInfo | URL): Promise<Response> {
+  expect(String(input)).toBe('https://www.sgieurope.com/9871.rss?adredir=1');
+  return Promise.resolve(new Response(sgiEuropeRssFixture, { status: 200, headers: { 'Content-Type': 'application/rss+xml', 'Content-Length': '11984097' } }));
+}
+
+function oversizedSgiFetch(input: RequestInfo | URL): Promise<Response> {
+  expect(String(input)).toBe('https://www.sgieurope.com/9871.rss?adredir=1');
+  return Promise.resolve(new Response('<rss />', { status: 200, headers: { 'Content-Type': 'application/rss+xml', 'Content-Length': String(20 * 1024 * 1024 + 1) } }));
+}
+
 function companyContext(domain: string) {
   return {
     domain,
@@ -72,6 +82,14 @@ function companyContext(domain: string) {
 }
 
 describe('SGI Europe RSS publisher', () => {
+  it('configures the live feed for a bounded 20 MiB response and rejects larger responses', async () => {
+    expect(sgiEuropeManifest.contentSource).toMatchObject({ type: 'rss', feedUrl: 'https://www.sgieurope.com/9871.rss?adredir=1', maxBytes: 20 * 1024 * 1024 });
+    const allowed = createSgiEuropeDefinition(sizedFixtureFetch);
+    await expect(allowed.adapter.search(intent, { limit: 1 })).resolves.toHaveLength(1);
+    const oversized = createSgiEuropeDefinition(oversizedSgiFetch);
+    await expect(oversized.adapter.search(intent, { limit: 1 })).rejects.toMatchObject({ code: 'source_response_too_large', contentLength: 20 * 1024 * 1024 + 1, maxBytes: 20 * 1024 * 1024 });
+  });
+
   it('normalizes the actual RSS structure and keeps useful searchable metadata', async () => {
     const definition = createSgiEuropeDefinition(fixtureFetch);
     const records = await definition.adapter.search(intent, { limit: 100 });
@@ -213,6 +231,20 @@ describe('SGI Europe RSS publisher', () => {
     const overview = await app.handle(new Request('https://product.example/api/analytics/sgi-europe/overview'));
     expect(overview.status).toBe(200);
     expect((await overview.json()).publisherId).toBe('sgi-europe');
+  });
+
+  it('reports content health success for a live-sized SGI response', async () => {
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' },
+      fetchImpl: sizedFixtureFetch,
+      publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
+    });
+    const login = await app.handle(new Request('https://admin.example/api/admin/login', { method: 'POST', headers: { Origin: 'https://admin.example', 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'test-admin-password' }) }));
+    const cookie = login.headers.get('Set-Cookie')!.split(';', 1)[0];
+    const health = await app.handle(new Request('https://admin.example/api/admin/publishers/sgi-europe/content-check', { method: 'POST', headers: { Origin: 'https://admin.example', Cookie: cookie } }));
+    expect(health.status).toBe(200);
+    expect((await health.json()).reachable).toBe(true);
   });
 
   it('persists an empty SGI report when bounded retrieval has no eligible matches', async () => {
