@@ -6,6 +6,7 @@ export interface ServerLogFields {
   durationMs?: number;
   status?: number;
   errorType?: string;
+  errorCode?: string;
   errorName?: string;
   errorMessage?: string;
   errorStack?: string;

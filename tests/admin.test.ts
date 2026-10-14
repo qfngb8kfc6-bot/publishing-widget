@@ -7,6 +7,7 @@ import { MemoryPublisherStore, type PublisherStore } from '../src/publishers/sto
 import type { ServerLogFields, StructuredLogger } from '../src/server/logging';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import { sgiEuropeRssFixture } from '../src/publishers/sgi-europe/fixtures';
+import { MockAIProvider } from '../src/ai/providers/mock';
 
 function request(path: string, init: RequestInit = {}, cookie?: string): Request {
   const headers = new Headers(init.headers);
@@ -210,11 +211,57 @@ describe('internal publisher administration', () => {
     const cookie = await signIn(app);
     const response = await app.handle(request('/api/admin/publishers/sgi-europe/test-report', { method: 'POST', body: JSON.stringify({ companyUrl: 'nike', jobTitle: 'Head of Retail' }) }, cookie));
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: 'company_resolution_failed' });
+    expect(await response.json()).toMatchObject({ error: 'company_resolution_failed', code: 'company_resolution_failed', requestId: expect.any(String) });
     const generationDiagnostic = errors.find((entry) => entry.message === 'generation_failed');
     expect(generationDiagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', runtimeSource: 'rss', registryMode: 'memory', maxBytes: 20 * 1024 * 1024, companyInputType: 'company_name', companyResolutionAttempted: true, companyResolutionSucceeded: false, resolvedHostnamePresent: false, resolutionMethod: 'bounded_public_site', failureStage: 'company_resolution', errorMessage: 'company_resolution_failed' });
     const diagnostic = errors.find((entry) => entry.message === 'admin_generation_unavailable');
     expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', sourceType: 'rss', feedUrlPresent: true, maxBytes: 20 * 1024 * 1024, maxResponseBytes: 20 * 1024 * 1024, adapterResolved: true, companyInputType: 'company_name', companyResolutionAttempted: true, companyResolutionSucceeded: false, resolvedHostnamePresent: false, failureStage: 'company_resolution', errorMessage: 'company_resolution_failed' });
+  });
+
+  it('generates SGI admin test reports for both Nike input forms through normal generation', async () => {
+    const logs: Array<{ message: string; fields?: ServerLogFields }> = [];
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password', AI_ENABLED: 'true', AI_PROVIDER: 'mock', AI_MODEL: 'test-model' },
+      publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
+      aiProvider: new MockAIProvider(),
+      fetchImpl: async () => new Response(sgiEuropeRssFixture, { status: 200, headers: { 'Content-Type': 'application/rss+xml', 'Content-Length': '11984097' } }),
+      companyInputResolver: { resolve: async (value: string) => ({ inputType: value === 'nike' ? 'company_name' as const : 'domain' as const, displayName: 'Nike', domain: 'nike.com', canonicalUrl: 'https://nike.com/', resolutionMethod: value === 'nike' ? 'bounded_public_site' as const : 'submitted_domain' as const }) },
+      companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sportswear', description: 'A sportswear company.', topics: ['retail', 'innovation'], entities: ['Nike'], source: 'demo-fixture' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
+      logger: { info: (message, fields) => logs.push({ message, fields }), error: () => undefined },
+    });
+    const cookie = await signIn(app);
+    for (const [index, companyUrl] of ['nike', 'nike.com'].entries()) {
+      const response = await app.handle(request('/api/admin/publishers/sgi-europe/test-report', { method: 'POST', headers: { 'X-Request-ID': `sgi-nike-regression-${index}` }, body: JSON.stringify({ companyUrl, jobTitle: 'Head of Retail' }) }, cookie));
+      expect(response.status, await response.clone().text()).toBe(201);
+      const body = await response.json() as { reportUrl: string; reportId: string };
+      expect(body.reportUrl).toContain(`/p/sgi-europe/${body.reportId}`);
+      expect(await app.reportStore.get(body.reportId, 'sgi-europe')).toMatchObject({ id: body.reportId, publisherId: 'sgi-europe', companyDomain: 'nike.com', jobTitle: 'Head of Retail' });
+      const stages = logs.filter((entry) => entry.message === 'generation_stage' && entry.fields?.requestId === `sgi-nike-regression-${index}`).map((entry) => entry.fields?.stage);
+      expect(stages).toEqual(expect.arrayContaining(['company_resolved', 'profile_built', 'content_retrieved', 'preselection_complete', 'ranking_complete', 'ai_complete', 'report_persisted']));
+    }
+  });
+
+  it('returns a safe ranking diagnostic when normal generation throws a TypeError', async () => {
+    const errors: Array<{ message: string; fields?: ServerLogFields }> = [];
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: { ADMIN_PASSWORD: 'test-admin-password' },
+      publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
+      fetchImpl: async () => new Response(sgiEuropeRssFixture, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }),
+      companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sportswear', description: 'A sportswear company.', topics: ['retail'], entities: ['Nike'], source: 'demo-fixture' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
+      logger: { info: () => undefined, error: (message, fields) => errors.push({ message, fields }) },
+    });
+    await app.publisherRuntime.get('sgi-europe');
+    const definition = app.registry.get('sgi-europe');
+    if (!definition) throw new Error('SGI definition missing');
+    definition.adapter.normalizeArticle = () => { throw new TypeError('ranking article shape mismatch'); };
+    const cookie = await signIn(app);
+    const response = await app.handle(request('/api/admin/publishers/sgi-europe/test-report', { method: 'POST', headers: { 'X-Request-ID': 'sgi-ranking-failure' }, body: JSON.stringify({ companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }, cookie));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: 'generation_unavailable', code: 'ranking_failed', requestId: 'sgi-ranking-failure' });
+    const diagnostic = errors.find((entry) => entry.message === 'admin_generation_unavailable');
+    expect(diagnostic?.fields).toMatchObject({ requestId: 'sgi-ranking-failure', publisherId: 'sgi-europe', failureStage: 'ranking', errorCode: 'ranking_failed', errorName: 'TypeError', errorMessage: 'ranking article shape mismatch' });
   });
 
   it('uses the updated persisted SGI source for health and generation without a restart', async () => {
@@ -261,7 +308,7 @@ describe('internal publisher administration', () => {
     const cookie = await signIn(app);
     const response = await app.handle(request('/api/admin/publishers/sgi-europe/test-report', { method: 'POST', body: JSON.stringify({ companyUrl: 'https://ldsystems.uk/', jobTitle: 'Technology professional' }) }, cookie));
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: 'generation_unavailable' });
+    expect(await response.json()).toMatchObject({ error: 'generation_unavailable', code: 'unavailable', requestId: expect.any(String) });
     const diagnostic = errors.find((entry) => entry.message === 'admin_generation_unavailable');
     expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', registryMode: 'postgres', sourceType: 'rss', sourceConfigured: true, adapterResolved: true, failureStage: 'source_fetch_failed', errorName: 'ContentSourceError' });
     expect(diagnostic?.fields?.errorMessage).toBe('Source returned HTTP 503.');

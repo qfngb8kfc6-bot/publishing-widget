@@ -101,12 +101,24 @@ function generationFailureStage(error: unknown): string {
   if (error instanceof ContentSourceError && error.code === 'source_response_too_large') return 'source_response_size';
   if (error instanceof ContentSourceError && (error.code === 'invalid-response' || error.code === 'empty-source')) return 'source_parse_failed';
   if (error instanceof ContentSourceError) return 'source_fetch_failed';
+  const annotated = error instanceof Error && typeof (error as Error & { generationStage?: unknown }).generationStage === 'string'
+    ? (error as Error & { generationStage: string }).generationStage
+    : undefined;
+  if (annotated) return annotated;
   if (error instanceof PublisherStoreError) return 'runtime_adapter_missing';
   if (error instanceof Error && error.message === 'invalid_publisher') return 'publisher_resolution';
   if (error instanceof Error && error.message.startsWith('company_resolution')) return 'company_resolution';
   if (error instanceof Error && /company_url|company.*normal/i.test(error.message)) return 'company_normalization';
   if (error instanceof Error && /company|domain/i.test(error.message)) return 'company_context';
   return 'generation';
+}
+
+function generationErrorCode(error: unknown): string {
+  if (error instanceof ContentSourceError) return error.code;
+  if (error instanceof PublisherStoreError) return 'publisher_store_failed';
+  if (error instanceof Error && ['company_resolution_failed', 'company_resolution_timeout', 'company_url_required', 'invalid_company_url', 'unsafe_company_url', 'company_url_credentials_not_allowed'].includes(error.message)) return error.message;
+  const stage = generationFailureStage(error);
+  return stage === 'generation' ? 'generation_failed' : `${stage}_failed`;
 }
 
 function runtimeLogFields(runtime: PublisherRuntime, publisherId: string): Partial<ServerLogFields> {
@@ -225,7 +237,7 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
     return undefined;
   };
 
-  return async function handle(request: Request): Promise<Response> {
+  return async function handle(request: Request, requestId?: string): Promise<Response> {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/admin/')) return Response.json({ error: 'not_found' }, { status: 404 });
     if (url.pathname === '/api/admin/session' && request.method === 'GET') return Response.json({ authenticated: options.auth.isAuthenticated(request), configured: options.auth.configured });
@@ -283,6 +295,7 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
         const fallback = options.registry.get(publisherId);
         const current = capabilities();
         options.logger?.error('admin_generation_unavailable', {
+          requestId: requestId ?? request.headers.get('X-Request-ID') ?? undefined,
           ...runtimeLogFields(options.publisherRuntime, publisherId),
           publisherId,
           registryMode: current.persistenceMode,
@@ -290,11 +303,12 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
           sourceConfigured: sourceConfigured(fallback?.manifest),
           adapterResolved: false,
           failureStage: 'publisher_runtime',
+          errorCode: generationErrorCode(error),
           errorName: error instanceof Error ? error.name : 'unknown',
           errorMessage: safeLogText(error instanceof Error ? error.message : 'Publisher runtime could not be resolved.'),
           errorStack: safeLogText(error instanceof Error ? error.stack : undefined, 6_000),
         });
-        return Response.json({ error: 'generation_unavailable' }, { status: 503 });
+        return Response.json({ error: 'generation_unavailable', code: generationErrorCode(error), requestId: requestId ?? request.headers.get('X-Request-ID') ?? undefined }, { status: 503 });
       }
       throw error;
     }
@@ -340,12 +354,13 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
         submittedCompanyInput = companyUrl;
         const jobTitle = typeof body.jobTitle === 'string' ? body.jobTitle : '';
         if (!companyUrl.trim() || !jobTitle.trim() || companyUrl.length > 253 || jobTitle.length > 160) return Response.json({ error: 'invalid_generation_input' }, { status: 400 });
-        const report = await options.generation.generate({ publisherId, companyUrl, jobTitle });
+        const report = await options.generation.generate({ publisherId, companyUrl, jobTitle, requestId: requestId ?? request.headers.get('X-Request-ID') ?? undefined });
         return Response.json({ generationId: report.id, status: 'complete', generationUrl: `/p/${publisherId}/generate/${report.id}`, reportUrl: `/p/${publisherId}/${report.id}`, reportId: report.id }, { status: 201 });
       } catch (error) {
         const code = error instanceof Error ? error.message : '';
         const current = capabilities();
         options.logger?.error('admin_generation_unavailable', {
+          requestId: requestId ?? request.headers.get('X-Request-ID') ?? undefined,
           ...runtimeLogFields(options.publisherRuntime, publisherId),
           publisherId,
           registryMode: current.persistenceMode,
@@ -358,12 +373,14 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
           resolvedHostnamePresent: false,
           resolutionMethod: classifyCompanyInput(submittedCompanyInput) === 'domain' ? 'submitted_domain' : 'bounded_public_site',
           failureStage: generationFailureStage(error),
+          errorCode: generationErrorCode(error),
           errorName: error instanceof Error ? error.name : 'unknown',
           errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation failed.'),
           errorStack: safeLogText(error instanceof Error ? error.stack : undefined, 6_000),
         });
-        if (['company_resolution_failed', 'company_resolution_timeout', 'company_url_required', 'invalid_company_url', 'unsafe_company_url', 'company_url_credentials_not_allowed'].includes(code)) return Response.json({ error: code }, { status: 400 });
-        return Response.json({ error: 'generation_unavailable' }, { status: 503 });
+        const responseRequestId = requestId ?? request.headers.get('X-Request-ID') ?? undefined;
+        if (['company_resolution_failed', 'company_resolution_timeout', 'company_url_required', 'invalid_company_url', 'unsafe_company_url', 'company_url_credentials_not_allowed'].includes(code)) return Response.json({ error: code, code, requestId: responseRequestId }, { status: 400 });
+        return Response.json({ error: 'generation_unavailable', code: generationErrorCode(error), requestId: responseRequestId }, { status: 503 });
       }
     }
     if (action === 'config' && (request.method === 'POST' || request.method === 'PATCH' || request.method === 'PUT')) {

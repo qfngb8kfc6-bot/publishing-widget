@@ -83,6 +83,12 @@ function reportSummary(profile: ReturnType<typeof buildProfessionalProfile>, sel
   return `Based on your role in ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}, this briefing focuses on ${focus} and includes ${selectedCount} selected ${selectedCount === 1 ? 'story' : 'stories'} with a clear connection to your work.`;
 }
 
+type GenerationFailure = Error & { generationStage?: string };
+
+function annotateGenerationFailure(error: unknown, stage: string): void {
+  if (error instanceof Error && !(error as GenerationFailure).generationStage) (error as GenerationFailure).generationStage = stage;
+}
+
 interface RankedCandidate {
   article: NormalizedArticle;
   relevanceSignals: string[];
@@ -119,11 +125,16 @@ export class ReportGenerationService {
       publisherId: input.publisherId,
       stage,
       failureStage: stage,
+      errorCode: safeLogText(error instanceof Error ? error.message : undefined, 160),
       errorName: error instanceof Error ? error.name : 'unknown',
       errorMessage: safeLogText(error instanceof Error ? error.message : 'Unknown generation failure'),
     };
     this.logger.error('generation_failed', fields);
     if (input.publisherId === 'ibi') this.logger.error('ibi_generation_failed', fields);
+  }
+
+  private markStage(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, stage: string): void {
+    this.logger?.info('generation_stage', { requestId: input.requestId, publisherId: input.publisherId, stage });
   }
 
   private async track(name: Parameters<typeof createEvent>[0], publisherId: string, sessionId: string, metadata?: Record<string, string | number | boolean>): Promise<void> {
@@ -136,7 +147,7 @@ export class ReportGenerationService {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string) => void): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     try {
@@ -163,9 +174,11 @@ export class ReportGenerationService {
         },
       });
     } catch (error) {
+      annotateGenerationFailure(error, 'content_retrieval');
       this.logIbiError({ publisherId, requestId }, 'retrieval', error);
       throw error;
     }
+    onStage?.('content_retrieved');
     const normalizedCandidates = candidates.flatMap((raw) => {
       const article = definition.adapter.normalizeArticle(raw);
       return article ? [article] : [];
@@ -191,6 +204,7 @@ export class ReportGenerationService {
         .map(({ article }) => article)
       : unique;
     const preselectionOutputCount = archiveWide ? preselected.length : sourceStats?.preselectionOutputCount ?? preselected.length;
+    onStage?.('preselection_complete');
     const finalLimit = Math.min(definition.config.results.maximumRecommendations, definition.config.content.resultLimit);
     const aiAvailable = this.canUseAI(definition);
     const deterministicRanked: RankedCandidate[] = preselected
@@ -252,6 +266,7 @@ export class ReportGenerationService {
     } else {
       ranked = ranked.slice(0, finalLimit);
     }
+    onStage?.('ranking_complete');
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_output', { stage: 'ranking', deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, finalRecommendations: ranked.length });
     return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed };
   }
@@ -315,9 +330,11 @@ export class ReportGenerationService {
     try {
       normalized = await this.companyResolver.resolve(input.companyUrl);
     } catch (error) {
+      annotateGenerationFailure(error, inputType === 'company_name' ? 'company_resolution' : 'company_normalization');
       this.logIbiError(input, inputType === 'company_name' ? 'company_resolution' : 'company_normalization', error, baseResolutionDiagnostics);
       throw error;
     }
+    this.markStage(input, 'company_resolved');
     const resolutionDiagnostics: Partial<ServerLogFields> = {
       companyInputType: normalized.inputType,
       companyResolutionAttempted: normalized.inputType === 'company_name',
@@ -328,10 +345,17 @@ export class ReportGenerationService {
     await this.track('company_analysis_started', input.publisherId, activeSession);
     let company: Awaited<ReturnType<CompanyContextProvider['getContext']>>;
     try { company = await this.companyProvider.getContext(normalized.domain); }
-    catch (error) { this.logIbiError(input, 'company_context', error, resolutionDiagnostics); throw error; }
+    catch (error) { annotateGenerationFailure(error, 'company_context'); this.logIbiError(input, 'company_context', error, resolutionDiagnostics); throw error; }
     if (normalized.displayName) company = { ...company, name: normalized.displayName };
     await this.track('company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
-    let profile = buildProfessionalProfile(company, jobTitle);
+    let profile: ReturnType<typeof buildProfessionalProfile>;
+    try {
+      profile = buildProfessionalProfile(company, jobTitle);
+    } catch (error) {
+      annotateGenerationFailure(error, 'profile');
+      this.logIbiError(input, 'profile', error, resolutionDiagnostics);
+      throw error;
+    }
     let aiProfileUsed = false;
     if (this.canUseAI(definition)) {
       try {
@@ -340,10 +364,19 @@ export class ReportGenerationService {
         if (merged) { profile = merged; aiProfileUsed = true; }
       } catch { /* deterministic profile remains authoritative */ }
     }
+    this.markStage(input, 'profile_built');
     await this.track('role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
     await this.track('profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
     await this.track('retrieval_started', input.publisherId, activeSession);
-    const ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId);
+    let ranking: Awaited<ReturnType<ReportGenerationService['rankProfile']>>;
+    try {
+      ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, false, (stage) => this.markStage(input, stage));
+    } catch (error) {
+      const stage = (error as GenerationFailure).generationStage ?? 'ranking';
+      annotateGenerationFailure(error, stage);
+      this.logIbiError(input, stage, error, resolutionDiagnostics);
+      throw error;
+    }
     const ranked = ranking.ranked;
     const aiRerankUsed = ranking.aiRerankUsed;
     this.logger?.info('report_retrieval_diagnostics', { requestId: input.requestId, publisherId: input.publisherId, normalizedArticles: ranking.normalizedCount, normalizedArticleCount: ranking.normalizedArticleCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, retrievalCandidates: ranking.retrievedCount, rankingCandidateCount: ranking.retrievedCount, deterministicEligible: ranking.deterministicEligible, eligibleCount: ranking.deterministicEligible, finalRecommendations: ranked.length, finalRecommendationCount: ranked.length });
@@ -373,6 +406,7 @@ export class ReportGenerationService {
         }
       } catch { /* deterministic summary and explanations remain authoritative */ }
     }
+    this.markStage(input, 'ai_complete');
     const rawRecommendations = this.recommendationsFromRanked(profile, ranked, explanationById).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
@@ -385,8 +419,15 @@ export class ReportGenerationService {
     const report: ReportRecord = {
       id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, recommendations, sections: allocation.sections, generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
-    try { await this.reports.save(report); } catch (error) { this.logIbiError(input, 'report_persistence', error); throw error; }
-    await this.track('report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });
+    try { await this.reports.save(report); } catch (error) { annotateGenerationFailure(error, 'report_persistence'); this.logIbiError(input, 'report_persistence', error); throw error; }
+    this.markStage(input, 'report_persisted');
+    try {
+      await this.track('report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });
+    } catch (error) {
+      annotateGenerationFailure(error, 'analytics');
+      this.logIbiError(input, 'analytics', error);
+      throw error;
+    }
     this.logIbi(input, 'ibi_generation_completed', { stage: 'complete', finalRecommendations: recommendations.length });
     return report;
   }
