@@ -1,6 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 import type { Intent, NormalizedArticle, RelevanceResult } from './types';
 import type { ProfessionalProfile, RetrievalConcept } from './professional';
+import type { RelevanceScoreComponents } from './types';
 
 const STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'from', 'your', 'you', 'that', 'what', 'best', 'describes']);
 
@@ -19,15 +20,17 @@ export const RELEVANCE_THRESHOLDS = {
 
 /** Interpretable evidence weights: title/metadata outrank body-only matches. */
 export const PROFESSIONAL_SCORE_WEIGHTS = {
-  directTitle: 24,
-  directMetadata: 14,
-  directBody: 8,
-  adjacentTitle: 13,
-  adjacentMetadata: 8,
-  adjacentBody: 5,
+  directTitle: 22,
+  directMetadata: 12,
+  directBody: 7,
+  adjacentTitle: 12,
+  adjacentMetadata: 7,
+  adjacentBody: 4,
   roleBonus: 2,
-  companyBonus: 2,
-  freshnessMax: 4,
+  companyTitle: 8,
+  companyMetadata: 4,
+  companyBody: 2,
+  freshnessMax: 6,
 } as const;
 
 export function combineHybridScore(deterministicScore: number, semanticScore: number, weights: { deterministic: number; semantic: number } = HYBRID_SCORE_WEIGHTS): number {
@@ -131,8 +134,34 @@ function professionalFields(article: NormalizedArticle): { title: string; metada
   return { title, metadata, body, all: `${title} ${metadata} ${body}` };
 }
 
-function cappedContribution(matches: RetrievalConcept[], field: string, amount: number, cap: number): number {
-  return Math.min(cap, matches.reduce((sum, match) => sum + amount * match.weight, 0) * (field ? 1 : 0));
+function evidenceContribution(matches: RetrievalConcept[], fields: { title: string; metadata: string; body: string }, amounts: { title: number; metadata: number; body: number }, cap: number): { score: number; matches: RetrievalConcept[] } {
+  const seen = new Set<string>();
+  const selected: RetrievalConcept[] = [];
+  let score = 0;
+  for (const match of matches) {
+    const key = normalizeToken(match.concept);
+    if (!key || seen.has(key)) continue;
+    const field = phraseMatches(match.concept, fields.title) ? 'title' : phraseMatches(match.concept, fields.metadata) ? 'metadata' : phraseMatches(match.concept, fields.body) ? 'body' : undefined;
+    if (!field) continue;
+    seen.add(key);
+    selected.push(match);
+    score += amounts[field] * Math.max(0.65, Math.min(1.25, match.weight));
+  }
+  return { score: Math.min(cap, score), matches: selected };
+}
+
+function companyEvidence(terms: string[], fields: { title: string; metadata: string; body: string }): { score: number; matches: string[] } {
+  const seen = new Set<string>();
+  let score = 0;
+  for (const term of terms) {
+    const key = normalizeToken(term);
+    if (!key || seen.has(key)) continue;
+    const amount = phraseMatches(term, fields.title) ? PROFESSIONAL_SCORE_WEIGHTS.companyTitle : phraseMatches(term, fields.metadata) ? PROFESSIONAL_SCORE_WEIGHTS.companyMetadata : phraseMatches(term, fields.body) ? PROFESSIONAL_SCORE_WEIGHTS.companyBody : 0;
+    if (!amount) continue;
+    seen.add(key);
+    score += amount;
+  }
+  return { score: Math.min(14, score), matches: [...seen] };
 }
 
 /** Version-independent deterministic professional score used by persisted reports. */
@@ -141,47 +170,49 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
   const directConcepts = concepts.filter((concept) => concept.relevanceType === 'direct');
   const adjacentConcepts = concepts.filter((concept) => concept.relevanceType === 'adjacent');
   const fields = professionalFields(article);
-  const directTitle = matchingConcepts(directConcepts, fields.title);
-  const directMetadata = matchingConcepts(directConcepts, fields.metadata);
-  const directBody = matchingConcepts(directConcepts, fields.body);
-  const adjacentTitle = matchingConcepts(adjacentConcepts, fields.title);
-  const adjacentMetadata = matchingConcepts(adjacentConcepts, fields.metadata);
-  const adjacentBody = matchingConcepts(adjacentConcepts, fields.body);
-  const directMatches = unique([...directTitle, ...directMetadata, ...directBody].map((item) => item.concept));
-  const adjacentMatches = unique([...adjacentTitle, ...adjacentMetadata, ...adjacentBody].map((item) => item.concept));
+  const directEvidence = evidenceContribution(directConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.directTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.directMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.directBody }, 58);
+  const adjacentEvidence = evidenceContribution(adjacentConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.adjacentTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.adjacentMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.adjacentBody }, 28);
+  const directMatches = unique(directEvidence.matches.map((item) => item.concept));
+  const adjacentMatches = unique(adjacentEvidence.matches.map((item) => item.concept));
   const exclusions = profile.excludedConcepts?.length ? profile.excludedConcepts : profile.retrieval?.exclusions ?? [];
   const negativeTitle = exclusions.filter((concept) => phraseMatches(concept, fields.title));
   const negativeMetadata = exclusions.filter((concept) => phraseMatches(concept, fields.metadata));
   const negativeBody = exclusions.filter((concept) => phraseMatches(concept, fields.body));
   const negativeMatches = unique([...negativeTitle, ...negativeMetadata, ...negativeBody]);
   const roleConcepts = concepts.filter((concept) => concept.source === 'role');
-  const roleMatchCount = [...directTitle, ...directMetadata, ...directBody, ...adjacentTitle, ...adjacentMetadata, ...adjacentBody].filter((match) => roleConcepts.includes(match)).length;
+  const roleMatches = unique([...directEvidence.matches, ...adjacentEvidence.matches].filter((match) => roleConcepts.includes(match)).map((match) => match.concept));
   const companyTerms = tokenize(`${profile.companyName ?? ''} ${profile.companyDomain}`);
-  const companyMatches = companyTerms.filter((term) => phraseMatches(term, fields.all));
+  const company = companyEvidence(companyTerms, fields);
   const ageDays = article.publishedAt ? Math.max(0, (Date.now() - Date.parse(article.publishedAt)) / 86_400_000) : 365;
   const freshness = Number.isFinite(ageDays) ? Math.max(0, PROFESSIONAL_SCORE_WEIGHTS.freshnessMax - Math.min(ageDays / 90, PROFESSIONAL_SCORE_WEIGHTS.freshnessMax)) : 0;
-  const directScore = cappedContribution(directTitle, fields.title, PROFESSIONAL_SCORE_WEIGHTS.directTitle, 58) + cappedContribution(directMetadata, fields.metadata, PROFESSIONAL_SCORE_WEIGHTS.directMetadata, 30) + cappedContribution(directBody, fields.body, PROFESSIONAL_SCORE_WEIGHTS.directBody, 18);
-  const adjacentScore = cappedContribution(adjacentTitle, fields.title, PROFESSIONAL_SCORE_WEIGHTS.adjacentTitle, 28) + cappedContribution(adjacentMetadata, fields.metadata, PROFESSIONAL_SCORE_WEIGHTS.adjacentMetadata, 20) + cappedContribution(adjacentBody, fields.body, PROFESSIONAL_SCORE_WEIGHTS.adjacentBody, 12);
-  const roleBonus = Math.min(10, roleMatchCount * PROFESSIONAL_SCORE_WEIGHTS.roleBonus);
-  const companyBonus = Math.min(6, companyMatches.length * PROFESSIONAL_SCORE_WEIGHTS.companyBonus);
+  const directScore = directEvidence.score;
+  const adjacentScore = adjacentEvidence.score;
+  const roleBonus = Math.min(10, roleMatches.length * PROFESSIONAL_SCORE_WEIGHTS.roleBonus);
+  const companyBonus = company.score;
   const negativePenalty = Math.min(45, negativeTitle.length * 28 + negativeMetadata.length * 18 + negativeBody.length * 10);
-  const rawScore = Math.max(0, Math.min(100, Math.round(directScore + adjacentScore + roleBonus + companyBonus + freshness - negativePenalty)));
-  const meaningfulDirect = directMatches.length > 0 && directScore >= 12 && (directTitle.length > 0 || directMatches.length >= 2 || directMetadata.some((match) => match.source === 'company'));
-  const meaningfulAdjacent = adjacentMatches.length > 0 && adjacentScore >= 12;
+  const exceptionalBonus = company.matches.length > 0 && directEvidence.matches.filter((match) => match.source === 'role').length >= 3 && phraseMatches(profile.companyName ?? profile.companyDomain, fields.title) ? 26 : 0;
+  const recencyMultiplier = 0.72 + (freshness / PROFESSIONAL_SCORE_WEIGHTS.freshnessMax) * 0.28;
+  const adjacentWeight = 1;
+  const rawScore = Math.max(0, Math.round((directScore + adjacentScore * adjacentWeight + roleBonus + companyBonus + exceptionalBonus) * recencyMultiplier + freshness - negativePenalty));
+  const meaningfulDirect = directMatches.length > 0 && directScore >= 8 && (directEvidence.matches.some((match) => phraseMatches(match.concept, fields.title)) || directMatches.length >= 2 || directEvidence.matches.some((match) => match.source === 'company'));
+  const meaningfulAdjacent = adjacentMatches.length > 0 && adjacentScore >= 8;
   const relevanceType: RelevanceResult['relevanceType'] = meaningfulDirect ? 'direct' : meaningfulAdjacent ? 'adjacent' : rawScore > 0 ? 'weak' : 'none';
   const score = calibrateRelevanceScore(rawScore, relevanceType);
   const signals: string[] = [];
   if (meaningfulDirect) signals.push(`directly matches ${directMatches.slice(0, 2).join(' and ')}`);
   if (!meaningfulDirect && meaningfulAdjacent) signals.push(`connects with adjacent themes: ${adjacentMatches.slice(0, 2).join(' and ')}`);
-  if (companyMatches.length) signals.push(`connects to ${profile.companyName ?? profile.companyDomain}`);
+  if (company.matches.length) signals.push(`connects to ${profile.companyName ?? profile.companyDomain}`);
   if (negativeMatches.length) signals.push(`conflicts with excluded topic ${negativeMatches[0]}`);
   if (freshness >= 3 && (meaningfulDirect || meaningfulAdjacent)) signals.push('is recent coverage');
   const confidence = Math.max(0, Math.min(100, Math.round(score * 0.82 + (meaningfulDirect ? 12 : meaningfulAdjacent ? 3 : 0) - negativePenalty * 0.2)));
-  return { score, relevanceSignals: unique(signals), relevanceType, confidence, directMatches, adjacentMatches, negativeMatches };
+  const scoreComponents: RelevanceScoreComponents = { direct: Math.round(directScore), adjacent: Math.round(adjacentScore), role: Math.round(roleBonus), company: Math.round(companyBonus), freshness: Math.round(freshness), negative: Math.round(negativePenalty), recencyMultiplier: Number(recencyMultiplier.toFixed(3)), raw: rawScore, calibrated: score };
+  return { score, relevanceSignals: unique(signals), scoreComponents, relevanceType, confidence, directMatches, adjacentMatches, negativeMatches };
 }
 
 export function calibrateRelevanceScore(score: number, relevanceType?: RelevanceResult['relevanceType']): number {
-  const bounded = Math.max(0, Math.min(100, Math.round(score)));
+  const raw = Math.max(0, Math.round(score));
+  const calibrated = raw <= 72 ? raw : raw <= 105 ? 72 + Math.round((raw - 72) * 0.62) : 92 + Math.min(8, Math.round((raw - 105) * 0.5));
+  const bounded = Math.min(100, calibrated);
   return relevanceType === 'adjacent' ? Math.min(bounded, RELEVANCE_THRESHOLDS.adjacentMaximum) : bounded;
 }
 

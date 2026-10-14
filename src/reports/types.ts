@@ -1,4 +1,4 @@
-import type { ProfessionalProfile, RankedArticle } from '../core';
+import type { ProfessionalProfile, RankedArticle, RelevanceScoreComponents } from '../core';
 import type { EditorialSection, EditorialSectionId } from './sections';
 
 export interface ReportRecommendation {
@@ -17,6 +17,7 @@ export interface ReportRecommendation {
     semanticSignals?: string[];
     relevanceType?: 'direct' | 'adjacent';
     confidence?: number;
+    scoreComponents?: RelevanceScoreComponents;
     aiProvider?: string;
     editorialSection?: EditorialSectionId;
   };

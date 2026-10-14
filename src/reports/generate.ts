@@ -1,4 +1,4 @@
-import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult } from '../core';
+import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { AIProviderError } from '../ai/provider';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
@@ -95,6 +95,7 @@ interface RankedCandidate {
   confidence?: number;
   directMatches: string[];
   adjacentMatches: string[];
+  scoreComponents?: RelevanceScoreComponents;
 }
 
 export class ReportGenerationService {
@@ -135,7 +136,7 @@ export class ReportGenerationService {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; deterministicEligible: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; deterministicEligible: number; aiEligibleCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     try {
@@ -180,11 +181,12 @@ export class ReportGenerationService {
     const deterministicRanked: RankedCandidate[] = unique
       .map((article) => {
         const result = scoreProfessionalArticle(article, profile);
-        return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], result };
+        return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
       })
       .filter((item) => passesRelevanceThreshold(item.result))
       .sort((a, b) => (a.relevanceType === b.relevanceType ? b.deterministicScore - a.deterministicScore : a.relevanceType === 'direct' ? -1 : 1))
       .map(({ result: _result, ...item }) => item);
+    const aiEligibleCount = aiAvailable ? Math.min(deterministicRanked.length, this.ai!.config.rerankLimit) : 0;
     const sourceStats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { normalizedArticles?: number; preselectionInputCount?: number; preselectionOutputCount?: number } } }).lastDiagnostics?.sourceStats;
     const normalizedArticleCount = sourceStats?.normalizedArticles ?? candidates.length;
     const preselectionInputCount = sourceStats?.preselectionInputCount ?? normalizedArticleCount;
@@ -194,7 +196,7 @@ export class ReportGenerationService {
     let aiRerankUsed = false;
     if (aiAvailable && deterministicRanked.length > 0) {
       try {
-        const semanticCandidates: SemanticCandidate[] = deterministicRanked.slice(0, this.ai!.config.rerankLimit).map((result) => ({
+        const semanticCandidates: SemanticCandidate[] = deterministicRanked.slice(0, aiEligibleCount).map((result) => ({
           articleId: result.article.id,
           title: result.article.title,
           description: result.article.description,
@@ -226,7 +228,7 @@ export class ReportGenerationService {
       ranked = ranked.slice(0, finalLimit);
     }
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_output', { stage: 'ranking', deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, finalRecommendations: ranked.length });
-    return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed };
+    return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed };
   }
 
   private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, string>()): ReportRecommendation[] {
@@ -246,6 +248,7 @@ export class ReportGenerationService {
         semanticSignals: item.semanticSignals,
         relevanceType: item.relevanceType,
         confidence: item.confidence,
+        scoreComponents: item.scoreComponents,
         aiProvider: item.rankingMode === 'hybrid' ? this.ai?.provider.providerName : undefined,
       },
     }));
@@ -257,8 +260,8 @@ export class ReportGenerationService {
     const profile = profileForTheme(report.professionalProfile, theme);
     const excluded = new Set(report.recommendations.flatMap((recommendation) => articleIdentityKeys(recommendation.article)));
     const ranking = await this.rankProfile(definition, report.publisherId, profile, excluded);
-    this.logger?.info('theme_retrieval_diagnostics', { publisherId: report.publisherId, theme: safeLogText(theme, 160), catalogueCount: ranking.preselectionInputCount, preselectionCount: ranking.preselectionOutputCount, excludedExistingCount: report.recommendations.length, eligibleCount: ranking.deterministicEligible });
     const { ranked } = ranking;
+    this.logger?.info('theme_retrieval_diagnostics', { publisherId: report.publisherId, theme: safeLogText(theme, 160), catalogueCount: ranking.normalizedArticleCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, excludedCurrentReportCount: report.recommendations.length, deterministicEligibleCount: ranking.deterministicEligible, aiEligibleCount: ranking.aiEligibleCount, finalResultCount: ranked.length, excludedExistingCount: report.recommendations.length, eligibleCount: ranking.deterministicEligible });
     return this.recommendationsFromRanked(profile, ranked);
   }
 

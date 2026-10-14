@@ -4,7 +4,7 @@ import { sgiEuropeRssFixture } from '../src/publishers/sgi-europe/fixtures';
 import { createProductionApp } from '../src/server/production';
 import { MemoryPublisherStore } from '../src/publishers/store';
 import { createEvent } from '../src/core';
-import { ReportGenerationService } from '../src/reports';
+import { ReportGenerationService, reportThemes } from '../src/reports';
 
 const intent = { publisherId: 'sgi-europe', answers: {}, queryText: '', keywords: [], interests: [], personas: [] };
 
@@ -79,6 +79,17 @@ function companyContext(domain: string) {
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
     analysisVersion: 'test',
   };
+}
+
+function themeArchiveFixture(): string {
+  const themes = ['retail operations', 'stores', 'omnichannel', 'distribution', 'merchandising', 'sales performance', 'consumer behavior', 'markets', 'expansion', 'category performance', 'retail strategy', 'regulation'];
+  const items = themes.map((theme, index) => `<item><guid>theme-${index}</guid><title>Nike ${theme} update ${index}</title><link>https://www.sgieurope.com/retail/nike-${index}.article</link><description>Nike coverage on ${theme}, retail strategy, market expansion, distribution and consumer behavior.</description><category>Retail</category><pubDate>${new Date(Date.UTC(2026, 9, 12, 10, index)).toUTCString()}</pubDate></item>`).join('');
+  return archiveFixture().replace('</channel></rss>', `${items}</channel></rss>`);
+}
+
+function themeArchiveFetch(input: RequestInfo | URL): Promise<Response> {
+  expect(String(input)).toBe('https://www.sgieurope.com/9871.rss?adredir=1');
+  return Promise.resolve(new Response(themeArchiveFixture(), { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }));
 }
 
 describe('SGI Europe RSS publisher', () => {
@@ -231,6 +242,35 @@ describe('SGI Europe RSS publisher', () => {
     const overview = await app.handle(new Request('https://product.example/api/analytics/sgi-europe/overview'));
     expect(overview.status).toBe(200);
     expect((await overview.json()).publisherId).toBe('sgi-europe');
+  });
+
+  it('returns unseen archive-wide results for broad Nike retail themes and logs retrieval counts', async () => {
+    const logs: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    const logger = { info: (message: string, fields?: Record<string, unknown>) => logs.push({ message, fields }), error: () => undefined };
+    const app = createProductionApp({
+      environment: 'test',
+      fetchImpl: themeArchiveFetch,
+      publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
+      companyContextProvider: { getContext: async (domain: string) => ({ ...companyContext(domain), name: 'Nike', topics: ['retail', 'consumer products', 'innovation'], productsServices: ['consumer products'], activities: ['retail operations'] }) },
+      logger,
+    });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
+    expect(generated.status, await generated.clone().text()).toBe(201);
+    const payload = await generated.json() as { reportId: string };
+    const report = await app.reportStore.get(payload.reportId, 'sgi-europe');
+    if (!report) throw new Error('Nike report was not persisted.');
+    const currentIds = new Set(report.recommendations.flatMap((recommendation) => [recommendation.article.id, recommendation.article.canonicalUrl, recommendation.article.url].filter((value): value is string => Boolean(value))));
+    const themes = reportThemes(report);
+    expect(themes.length).toBeGreaterThan(0);
+    for (const theme of themes) {
+      const response = await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=sgi-europe`, { method: 'POST' }));
+      expect(response.status, `${theme}: ${await response.clone().text()}`).toBe(200);
+      const result = await response.json() as { recommendations: Array<{ article: { id: string; canonicalUrl?: string; url: string } }> };
+      expect(result.recommendations.length).toBeGreaterThan(0);
+      expect(result.recommendations.every((recommendation) => ![recommendation.article.id, recommendation.article.canonicalUrl, recommendation.article.url].some((value) => value && currentIds.has(value)))).toBe(true);
+      const diagnostic = logs.filter((entry) => entry.message === 'theme_retrieval_diagnostics' && entry.fields?.theme === theme).at(-1);
+      expect(diagnostic?.fields).toMatchObject({ publisherId: 'sgi-europe', catalogueCount: 135, preselectionInputCount: 135, preselectionOutputCount: 100, excludedCurrentReportCount: report.recommendations.length, finalResultCount: result.recommendations.length });
+    }
   });
 
   it('reports content health success for a live-sized SGI response', async () => {

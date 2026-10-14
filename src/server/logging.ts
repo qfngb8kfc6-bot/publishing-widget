@@ -29,6 +29,10 @@ export interface ServerLogFields {
   catalogueCount?: number;
   excludedExistingCount?: number;
   eligibleCount?: number;
+  excludedCurrentReportCount?: number;
+  deterministicEligibleCount?: number;
+  aiEligibleCount?: number;
+  finalResultCount?: number;
   theme?: string;
   registryMode?: string;
   sourceType?: string;

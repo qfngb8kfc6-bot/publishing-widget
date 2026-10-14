@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildProfessionalProfile, passesRelevanceThreshold, scoreProfessionalArticle } from '../src/core';
+import { buildProfessionalProfile, passesRelevanceThreshold, scoreProfessionalArticle, type NormalizedArticle } from '../src/core';
 import { demoArticles } from '../src/demo/articles';
 import { DemoPublisherAdapter } from '../src/demo/adapter';
 import { SafeCompanyContextProvider } from '../src/server/company';
 
 describe('professional recommendation quality', () => {
+  function article(id: string, title: string, description: string, publishedAt: string): NormalizedArticle {
+    return { id, title, description, url: `https://sgi.example/${id}`, publishedAt, categories: ['Retail'], tags: ['sporting goods'], contentSnippet: description, publisherId: 'sgi-europe' };
+  }
+
   it('keeps direct engineering stories ahead of adjacent or excluded coverage', async () => {
     const company = await new SafeCompanyContextProvider().getContext('ldsystems.uk');
     const profile = buildProfessionalProfile(company, 'Software Engineer', new Date('2026-10-06T00:00:00.000Z'));
@@ -57,5 +61,26 @@ describe('professional recommendation quality', () => {
     }).sort((a, b) => b.score - a.score);
     expect(profile.directInterests).toEqual(expect.arrayContaining(['procurement', 'vendors', 'supply chains']));
     expect(scored.filter((item) => item.type === 'adjacent').every((item) => item.score <= 59)).toBe(true);
+  });
+
+  it('keeps Nike retail evidence differentiated from competitor, generic and older coverage', async () => {
+    const profile = buildProfessionalProfile({
+      domain: 'nike.com', canonicalUrl: 'https://nike.com/', name: 'Nike', industry: 'sportswear',
+      description: 'A sportswear company.', topics: ['retail', 'consumer products', 'innovation'], entities: ['Nike'],
+      source: 'demo-fixture', fetchedAt: '2026-10-14T00:00:00.000Z', expiresAt: '2026-11-14T00:00:00.000Z', analysisVersion: 'test',
+    }, 'Head of Retail', new Date('2026-10-14T00:00:00.000Z'));
+    const direct = scoreProfessionalArticle(article('nike-direct', 'Nike retail operations improve omnichannel store performance', 'Nike expands distribution, merchandising and consumer behavior analysis across its retail strategy.', '2026-10-12T00:00:00.000Z'), profile);
+    const competitor = scoreProfessionalArticle(article('lululemon-competitor', 'Lululemon international growth strategy expands stores', 'The sports brand is investing in market expansion and retail channels.', '2026-10-12T00:00:00.000Z'), profile);
+    const generic = scoreProfessionalArticle(article('allbirds-generic', 'Allbirds financing strategy and growth plans', 'The company discusses financing, leadership and general business strategy.', '2026-10-12T00:00:00.000Z'), profile);
+    const older = scoreProfessionalArticle(article('nike-old', 'Nike retail strategy and international expansion', 'Nike discussed stores and retail growth in an earlier market cycle.', '2013-01-10T00:00:00.000Z'), profile);
+    const exceptional = scoreProfessionalArticle(article('nike-exceptional', 'Nike retail operations stores omnichannel distribution merchandising sales performance consumer behavior markets expansion category performance retail strategy', 'Nike retail operations, stores, omnichannel distribution, merchandising, sales performance, consumer behavior, markets, expansion, category performance and retail strategy.', '2026-10-13T00:00:00.000Z'), profile);
+    expect(direct.score, JSON.stringify({ direct, competitor, generic, older })).toBeGreaterThan(competitor.score + 5);
+    expect(competitor.score).toBeGreaterThan(generic.score);
+    expect(direct.score, JSON.stringify({ direct, older, competitor, generic })).toBeGreaterThan(older.score);
+    expect(exceptional.score).toBe(100);
+    expect([competitor.score, generic.score, older.score].filter((score) => score === 100)).toHaveLength(0);
+    expect(direct.scoreComponents?.raw).toBeGreaterThan(direct.score);
+    expect(direct.scoreComponents?.company).toBeGreaterThan(competitor.scoreComponents?.company ?? 0);
+    expect(direct.scoreComponents?.freshness).toBeGreaterThan(older.scoreComponents?.freshness ?? 0);
   });
 });

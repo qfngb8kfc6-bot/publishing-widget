@@ -117,11 +117,24 @@ export type ProgressStage = 'understanding' | 'searching' | 'comparing' | 'prepa
 export interface RelevanceResult {
   score: number;
   relevanceSignals: string[];
+  scoreComponents?: RelevanceScoreComponents;
   relevanceType?: 'direct' | 'adjacent' | 'weak' | 'none';
   confidence?: number;
   directMatches?: string[];
   adjacentMatches?: string[];
   negativeMatches?: string[];
+}
+
+export interface RelevanceScoreComponents {
+  direct: number;
+  adjacent: number;
+  role: number;
+  company: number;
+  freshness: number;
+  negative: number;
+  recencyMultiplier?: number;
+  raw: number;
+  calibrated: number;
 }
 
 export interface RankedArticle extends RelevanceResult {

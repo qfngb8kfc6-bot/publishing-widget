@@ -27,20 +27,28 @@ export function findReportTheme(report: Pick<ReportRecord, 'professionalProfile'
 export function profileForTheme(profile: ProfessionalProfile, theme: string): ProfessionalProfile {
   const add = (values: string[], value: string): string[] => unique([...values, value]);
   const retrieval = profile.retrieval;
+  const contextTerms = unique([
+    ...profile.role.professionalThemes,
+    ...profile.role.responsibilities,
+    ...retrieval.roleTerms,
+    ...profile.directInterests,
+    ...profile.adjacentInterests,
+  ]).filter((value) => normalizeToken(value) !== normalizeToken(theme));
+  const expandedTerms = unique([theme, ...contextTerms]).slice(0, 48);
   const themeConcept = { concept: theme, weight: 1.25, relevanceType: 'direct' as const, source: 'role' as const };
   return {
     ...profile,
     professionalInterests: add(profile.professionalInterests, theme),
     directInterests: add(profile.directInterests, theme),
     likelyInformationNeeds: add(profile.likelyInformationNeeds, theme),
-    searchTerms: add(profile.searchTerms, theme),
+    searchTerms: unique([...profile.searchTerms, ...expandedTerms]),
     semanticQueries: add(profile.semanticQueries, theme),
     role: { ...profile.role, professionalThemes: add(profile.role.professionalThemes, theme) },
     retrieval: {
       ...retrieval,
-      keywordQueries: add(retrieval.keywordQueries, theme),
+      keywordQueries: unique([...retrieval.keywordQueries, ...expandedTerms]),
       topicConcepts: add(retrieval.topicConcepts, theme),
-      semanticQueries: add(retrieval.semanticQueries, theme),
+      semanticQueries: unique([...retrieval.semanticQueries, expandedTerms.join(' ')]),
       roleTerms: add(retrieval.roleTerms, theme),
       concepts: [themeConcept, ...retrieval.concepts.filter((concept) => normalizeToken(concept.concept) !== normalizeToken(theme))],
     },
