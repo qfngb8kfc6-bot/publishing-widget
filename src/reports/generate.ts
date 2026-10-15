@@ -213,7 +213,10 @@ export class ReportGenerationService {
         return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
       })
       .filter((item) => passesRelevanceThreshold(item.result))
-      .sort((a, b) => (a.relevanceType === b.relevanceType ? b.deterministicScore - a.deterministicScore : a.relevanceType === 'direct' ? -1 : 1))
+      .sort((a, b) => (a.relevanceType === b.relevanceType
+        ? b.deterministicScore - a.deterministicScore
+          || (b.scoreComponents?.postRecencyScore ?? b.deterministicScore) - (a.scoreComponents?.postRecencyScore ?? a.deterministicScore)
+        : a.relevanceType === 'direct' ? -1 : 1))
       .map(({ result: _result, ...item }) => item);
     const aiEligibleCount = aiAvailable ? Math.min(deterministicRanked.length, this.ai!.config.rerankLimit) : 0;
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, rankingCandidateCount: preselected.length, normalizedArticles: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, eligibleCount: deterministicRanked.length });
@@ -249,7 +252,12 @@ export class ReportGenerationService {
           return [{ ...result, semanticScore, semanticSignals: semantic.signals ?? [], finalScore, rankingMode: 'hybrid' as const, relevanceType, confidence: semantic.confidence ?? result.confidence, index }];
         });
         const aiRanked = aiRankedCandidates
-          .sort((a, b) => (a.relevanceType === b.relevanceType ? b.finalScore - a.finalScore || b.deterministicScore - a.deterministicScore || a.index - b.index : a.relevanceType === 'direct' ? -1 : 1))
+          .sort((a, b) => (a.relevanceType === b.relevanceType
+            ? b.finalScore - a.finalScore
+              || b.deterministicScore - a.deterministicScore
+              || (b.scoreComponents?.postRecencyScore ?? b.deterministicScore) - (a.scoreComponents?.postRecencyScore ?? a.deterministicScore)
+              || a.index - b.index
+            : a.relevanceType === 'direct' ? -1 : 1))
           .slice(0, finalLimit)
           .map(({ index: _index, ...result }) => result);
         aiFilteredCount = aiEligibleCount - aiRankedCandidates.length;

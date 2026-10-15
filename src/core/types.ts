@@ -134,7 +134,10 @@ export interface RelevanceScoreComponents {
   company: number;
   freshness: number;
   negative: number;
+  articleAgeDays?: number;
   recencyMultiplier?: number;
+  preRecencyScore?: number;
+  postRecencyScore?: number;
   raw: number;
   calibrated: number;
 }

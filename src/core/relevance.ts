@@ -33,6 +33,36 @@ export const PROFESSIONAL_SCORE_WEIGHTS = {
   freshnessMax: 6,
 } as const;
 
+/**
+ * Freshness preference is intentionally bounded and interpolated between
+ * age bands. Relevance remains the primary signal; age only changes how
+ * equally relevant coverage is ordered.
+ */
+const RECENCY_CURVE = [
+  { ageDays: 0, multiplier: 1 },
+  { ageDays: 90, multiplier: 1 },
+  { ageDays: 365, multiplier: 0.95 },
+  { ageDays: 730, multiplier: 0.84 },
+  { ageDays: 1_825, multiplier: 0.68 },
+  { ageDays: 3_650, multiplier: 0.50 },
+  { ageDays: 7_300, multiplier: 0.38 },
+] as const;
+const UNKNOWN_DATE_RECENCY_MULTIPLIER = 0.80;
+
+export function recencyMultiplierForAge(ageDays: number): number {
+  if (!Number.isFinite(ageDays)) return UNKNOWN_DATE_RECENCY_MULTIPLIER;
+  const age = Math.max(0, ageDays);
+  for (let index = 1; index < RECENCY_CURVE.length; index += 1) {
+    const previous = RECENCY_CURVE[index - 1];
+    const current = RECENCY_CURVE[index];
+    if (age <= current.ageDays) {
+      const progress = (age - previous.ageDays) / (current.ageDays - previous.ageDays);
+      return previous.multiplier + (current.multiplier - previous.multiplier) * progress;
+    }
+  }
+  return RECENCY_CURVE[RECENCY_CURVE.length - 1].multiplier - 0.04;
+}
+
 export function combineHybridScore(deterministicScore: number, semanticScore: number, weights: { deterministic: number; semantic: number } = HYBRID_SCORE_WEIGHTS): number {
   const deterministic = Math.max(0, Math.min(100, deterministicScore));
   const semantic = Math.max(0, Math.min(100, semanticScore));
@@ -183,17 +213,22 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
   const roleMatches = unique([...directEvidence.matches, ...adjacentEvidence.matches].filter((match) => roleConcepts.includes(match)).map((match) => match.concept));
   const companyTerms = tokenize(`${profile.companyName ?? ''} ${profile.companyDomain}`);
   const company = companyEvidence(companyTerms, fields);
-  const ageDays = article.publishedAt ? Math.max(0, (Date.now() - Date.parse(article.publishedAt)) / 86_400_000) : 365;
-  const freshness = Number.isFinite(ageDays) ? Math.max(0, PROFESSIONAL_SCORE_WEIGHTS.freshnessMax - Math.min(ageDays / 90, PROFESSIONAL_SCORE_WEIGHTS.freshnessMax)) : 0;
+  const parsedPublishedAt = article.publishedAt ? Date.parse(article.publishedAt) : Number.NaN;
+  const hasValidPublishedAt = Number.isFinite(parsedPublishedAt);
+  const ageDays = hasValidPublishedAt ? Math.max(0, (Date.now() - parsedPublishedAt) / 86_400_000) : 365;
+  const freshness = hasValidPublishedAt ? Math.max(0, PROFESSIONAL_SCORE_WEIGHTS.freshnessMax - Math.min(ageDays / 90, PROFESSIONAL_SCORE_WEIGHTS.freshnessMax)) : 0;
   const directScore = directEvidence.score;
   const adjacentScore = adjacentEvidence.score;
   const roleBonus = Math.min(10, roleMatches.length * PROFESSIONAL_SCORE_WEIGHTS.roleBonus);
   const companyBonus = company.score;
   const negativePenalty = Math.min(45, negativeTitle.length * 28 + negativeMetadata.length * 18 + negativeBody.length * 10);
   const exceptionalBonus = company.matches.length > 0 && directEvidence.matches.filter((match) => match.source === 'role').length >= 3 && phraseMatches(profile.companyName ?? profile.companyDomain, fields.title) ? 26 : 0;
-  const recencyMultiplier = 0.72 + (freshness / PROFESSIONAL_SCORE_WEIGHTS.freshnessMax) * 0.28;
+  const recencyMultiplier = hasValidPublishedAt ? recencyMultiplierForAge(ageDays) : UNKNOWN_DATE_RECENCY_MULTIPLIER;
   const adjacentWeight = 1;
-  const rawScore = Math.max(0, Math.round((directScore + adjacentScore * adjacentWeight + roleBonus + companyBonus + exceptionalBonus) * recencyMultiplier + freshness - negativePenalty));
+  const baseScore = directScore + adjacentScore * adjacentWeight + roleBonus + companyBonus + exceptionalBonus;
+  const preRecencyScore = Math.max(0, Math.round(baseScore - negativePenalty));
+  const postRecencyScore = Math.max(0, Math.round(baseScore * recencyMultiplier + freshness - negativePenalty));
+  const rawScore = postRecencyScore;
   const meaningfulDirect = directMatches.length > 0 && directScore >= 8 && (directEvidence.matches.some((match) => phraseMatches(match.concept, fields.title)) || directMatches.length >= 2 || directEvidence.matches.some((match) => match.source === 'company'));
   const meaningfulAdjacent = adjacentMatches.length > 0 && adjacentScore >= 8;
   const relevanceType: RelevanceResult['relevanceType'] = meaningfulDirect ? 'direct' : meaningfulAdjacent ? 'adjacent' : rawScore > 0 ? 'weak' : 'none';
@@ -205,7 +240,7 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
   if (negativeMatches.length) signals.push(`conflicts with excluded topic ${negativeMatches[0]}`);
   if (freshness >= 3 && (meaningfulDirect || meaningfulAdjacent)) signals.push('is recent coverage');
   const confidence = Math.max(0, Math.min(100, Math.round(score * 0.82 + (meaningfulDirect ? 12 : meaningfulAdjacent ? 3 : 0) - negativePenalty * 0.2)));
-  const scoreComponents: RelevanceScoreComponents = { direct: Math.round(directScore), adjacent: Math.round(adjacentScore), role: Math.round(roleBonus), company: Math.round(companyBonus), freshness: Math.round(freshness), negative: Math.round(negativePenalty), recencyMultiplier: Number(recencyMultiplier.toFixed(3)), raw: rawScore, calibrated: score };
+  const scoreComponents: RelevanceScoreComponents = { direct: Math.round(directScore), adjacent: Math.round(adjacentScore), role: Math.round(roleBonus), company: Math.round(companyBonus), freshness: Math.round(freshness), negative: Math.round(negativePenalty), articleAgeDays: hasValidPublishedAt ? Number(ageDays.toFixed(1)) : undefined, recencyMultiplier: Number(recencyMultiplier.toFixed(3)), preRecencyScore, postRecencyScore, raw: rawScore, calibrated: score };
   return { score, relevanceSignals: unique(signals), scoreComponents, relevanceType, confidence, directMatches, adjacentMatches, negativeMatches };
 }
 

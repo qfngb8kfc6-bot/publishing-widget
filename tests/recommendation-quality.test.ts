@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildProfessionalProfile, passesRelevanceThreshold, scoreProfessionalArticle, type NormalizedArticle } from '../src/core';
+import { buildProfessionalProfile, passesRelevanceThreshold, recencyMultiplierForAge, scoreProfessionalArticle, type NormalizedArticle } from '../src/core';
 import { demoArticles } from '../src/demo/articles';
 import { DemoPublisherAdapter } from '../src/demo/adapter';
 import { SafeCompanyContextProvider } from '../src/server/company';
+import { profileForTheme } from '../src/reports/themes';
 
 describe('professional recommendation quality', () => {
   function article(id: string, title: string, description: string, publishedAt: string): NormalizedArticle {
@@ -83,4 +84,42 @@ describe('professional recommendation quality', () => {
     expect(direct.scoreComponents?.company).toBeGreaterThan(competitor.scoreComponents?.company ?? 0);
     expect(direct.scoreComponents?.freshness).toBeGreaterThan(older.scoreComponents?.freshness ?? 0);
   });
+
+  it('prefers recent Nike retail coverage while retaining exceptionally specific old coverage', async () => {
+    const profile = buildProfessionalProfile({
+      domain: 'nike.com', canonicalUrl: 'https://nike.com/', name: 'Nike', industry: 'sportswear',
+      description: 'A sportswear company.', topics: ['retail', 'consumer products', 'innovation'], entities: ['Nike'],
+      source: 'demo-fixture', fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(), analysisVersion: 'test',
+    }, 'Head of Retail');
+    const dateDaysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
+    const recent = scoreProfessionalArticle(article('nike-2026', 'Nike retail strategy expands stores for omnichannel growth', 'Nike stores, retail operations, distribution, merchandising, sales performance and consumer behavior are changing across its retail strategy.', dateDaysAgo(30)), profile);
+    const oldSpecific = scoreProfessionalArticle(article('nike-2006', 'Nike retail operations stores omnichannel distribution merchandising sales performance consumer behavior markets expansion category performance retail strategy', 'Nike retail operations, stores, omnichannel distribution, merchandising, sales performance, consumer behavior, markets, expansion, category performance and retail strategy.', dateDaysAgo(7_300)), profile);
+    const old2009 = scoreProfessionalArticle(article('nike-2009', 'Nike retail strategy expands stores for omnichannel growth', 'Nike stores, retail operations, distribution, merchandising, sales performance and consumer behavior are changing across its retail strategy.', dateDaysAgo(6_200)), profile);
+    const old2016 = scoreProfessionalArticle(article('nike-2016', 'Nike retail strategy expands stores for omnichannel growth', 'Nike stores, retail operations, distribution, merchandising, sales performance and consumer behavior are changing across its retail strategy.', dateDaysAgo(3_650)), profile);
+    const oldBroad = scoreProfessionalArticle(article('retail-2009', 'Retail industry outlook and market expansion', 'Markets and growth across retail companies.', dateDaysAgo(6_200)), profile);
+    const themeProfile = profileForTheme(profile, 'stores');
+    const themeRecent = scoreProfessionalArticle(recentArticle('theme-recent', 'Nike stores improve omnichannel retail operations', dateDaysAgo(30)), themeProfile);
+    const themeOld = scoreProfessionalArticle(recentArticle('theme-old', 'Nike stores and retail expansion history', dateDaysAgo(6_200)), themeProfile);
+
+    expect(recencyMultiplierForAge(30)).toBe(1);
+    expect(recencyMultiplierForAge(180)).toBeGreaterThan(recencyMultiplierForAge(540));
+    expect(recencyMultiplierForAge(540)).toBeGreaterThan(recencyMultiplierForAge(1_200));
+    expect(recencyMultiplierForAge(1_200)).toBeGreaterThan(recencyMultiplierForAge(2_600));
+    expect(recencyMultiplierForAge(2_600)).toBeGreaterThan(recencyMultiplierForAge(6_200));
+    expect(recent.score).toBeGreaterThan(oldSpecific.score);
+    expect(recent.score).toBeGreaterThan(old2009.score);
+    expect(recent.score).toBeGreaterThan(old2016.score);
+    expect(passesRelevanceThreshold(oldSpecific)).toBe(true);
+    expect(oldBroad.score).toBeLessThan(recent.score);
+    expect(oldBroad.scoreComponents?.recencyMultiplier).toBeLessThan(0.5);
+    expect(recent.scoreComponents).toMatchObject({ articleAgeDays: expect.any(Number), preRecencyScore: expect.any(Number), postRecencyScore: expect.any(Number), recencyMultiplier: 1 });
+    expect(recent.scoreComponents?.postRecencyScore).toBe(recent.scoreComponents?.raw);
+    expect(recent.scoreComponents?.preRecencyScore).toBeLessThanOrEqual(recent.scoreComponents?.postRecencyScore ?? 0);
+    expect(themeRecent.score).toBeGreaterThan(themeOld.score);
+    expect(themeRecent.scoreComponents?.recencyMultiplier).toBe(recent.scoreComponents?.recencyMultiplier);
+  });
 });
+
+function recentArticle(id: string, title: string, publishedAt: string): NormalizedArticle {
+  return { id, title, description: 'Nike retail operations, stores and omnichannel strategy.', url: `https://sgi.example/${id}`, publishedAt, categories: ['Retail'], tags: ['sporting goods'], contentSnippet: 'Nike retail operations, stores and omnichannel strategy.', publisherId: 'sgi-europe' };
+}

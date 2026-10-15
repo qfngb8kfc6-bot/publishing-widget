@@ -1,7 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 
 export const PROFESSIONAL_PROFILE_VERSION = '1.3';
-export const RANKING_VERSION = '1.1';
+export const RANKING_VERSION = '1.2';
 
 export interface CompanyContext {
   domain: string;
