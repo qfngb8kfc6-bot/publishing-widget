@@ -11,7 +11,7 @@ import { PublisherRuntime } from '../publishers/runtime';
 import { createRealPublisherApiConfig } from '../publishers/real-publisher/config';
 import { createAIProxy } from './ai-proxy';
 import { createAnalyticsIngestionRoute } from './analytics-route';
-import { corsHeaders, corsPreflight, originAllowed } from './cors';
+import { corsHeaders, corsPreflight, DEFAULT_PLATFORM_ORIGIN, originAllowed, type OriginPolicyOptions } from './cors';
 import { createGlobalHealthResponse, createPublisherHealthResponse } from './health';
 import { createReadinessResponse } from './health';
 import { createStructuredLogger, createRequestId, safeLogText, type StructuredLogger } from './logging';
@@ -53,9 +53,9 @@ function jsonError(error: string, status: number, requestId: string): Response {
   return Response.json({ error, requestId }, { status, headers: { 'X-Request-ID': requestId } });
 }
 
-function withHeaders(response: Response, request: Request, manifest: PublisherManifest | undefined, environment: 'development' | 'test' | 'production', requestId: string): Response {
+function withHeaders(response: Response, request: Request, manifest: PublisherManifest | undefined, environment: 'development' | 'test' | 'production', requestId: string, originPolicy?: OriginPolicyOptions): Response {
   const headers = new Headers(response.headers);
-  for (const [key, value] of corsHeaders(manifest, request, environment).entries()) headers.set(key, value);
+  for (const [key, value] of corsHeaders(manifest, request, environment, originPolicy).entries()) headers.set(key, value);
   headers.set('X-Request-ID', requestId);
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -73,6 +73,8 @@ function allowedOriginsFor(manifest: PublisherManifest | undefined, environment:
 export function createProductionApp(options: ProductionServerOptions = {}) {
   const environment = options.environment ?? 'development';
   const serverEnvironment = options.serverEnvironment ?? {};
+  const platformOrigin = serverEnvironment.PLATFORM_ORIGIN ?? DEFAULT_PLATFORM_ORIGIN;
+  const hostedOriginPolicy: OriginPolicyOptions = { platformOrigin, allowPlatformOrigin: true };
   const serverRealToken = serverEnvironment.REAL_PUBLISHER_API_TOKEN ?? serverEnvironment.PUBLISHER_REAL_PUBLISHER_API_KEY;
   const serverRealUpstream = serverEnvironment.REAL_PUBLISHER_UPSTREAM_BASE_URL ?? serverEnvironment.REAL_PUBLISHER_API_BASE_URL;
   const realServerConfig = serverRealToken && serverRealUpstream ? { ...createRealPublisherApiConfig(serverEnvironment), baseUrl: serverRealUpstream, requestHeaders: { Accept: 'application/json', Authorization: `Bearer ${serverRealToken}` } } : undefined;
@@ -127,7 +129,13 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       const runtimeDefinition = publisherId ? await publisherRuntime.get(publisherId) : undefined;
       manifest = allowedOriginsFor(runtimeDefinition?.manifest, serverEnvironment);
       if (url.pathname.startsWith('/api/admin/')) return await adminRoutes(request, requestId);
-      if (url.pathname.startsWith('/api/') && request.method === 'OPTIONS') return withHeaders(corsPreflight(manifest, request, environment), request, manifest, environment, requestId);
+      if (url.pathname.startsWith('/api/') && request.method === 'OPTIONS') {
+        const hostedApiRoute = url.pathname === '/api/analytics/events' || url.pathname.startsWith('/api/analytics/') || url.pathname.startsWith('/api/reports/') || url.pathname.startsWith('/api/generations/') || url.pathname === '/api/reports/generate';
+        const preflightManifest = hostedApiRoute && !manifest && request.headers.get('Origin')
+          ? registry.list().map((definition) => allowedOriginsFor(definition.manifest, serverEnvironment)).find((candidate) => originAllowed(candidate, request.headers.get('Origin'), environment))
+          : manifest;
+        return withHeaders(corsPreflight(preflightManifest, request, environment, hostedApiRoute ? hostedOriginPolicy : undefined), request, preflightManifest, environment, requestId, hostedApiRoute ? hostedOriginPolicy : undefined);
+      }
       if (url.pathname === '/health' && request.method === 'GET') return withHeaders(createGlobalHealthResponse(environment, options.commitSha), request, undefined, environment, requestId);
       if ((url.pathname === '/ready' || url.pathname === '/readiness') && request.method === 'GET') return withHeaders(createReadinessResponse(environment, analyticsStoreMode, options.commitSha), request, undefined, environment, requestId);
       if (url.pathname.match(/^\/api\/publishers\/[^/]+\/health$/) && request.method === 'GET' && publisherId) {
@@ -146,16 +154,18 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
         const decision = analyticsLimiter.check(requestRateLimitKey(request, 'analytics', 'global', trustedProxy));
         if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, undefined, environment, requestId);
         const raw = request.clone();
+        let analyticsManifest: PublisherManifest | undefined;
         if (environment === 'production' && request.headers.get('Origin')) {
           const origin = request.headers.get('Origin');
-          if (!registry.list().some((definition) => originAllowed(allowedOriginsFor(definition.manifest, serverEnvironment), origin, environment))) return jsonError('origin_not_allowed', 403, requestId);
+          if (!registry.list().some((definition) => originAllowed(allowedOriginsFor(definition.manifest, serverEnvironment), origin, environment, hostedOriginPolicy))) return jsonError('origin_not_allowed', 403, requestId);
           try {
             const body = await raw.json() as { events?: Array<{ publisherId?: string }> };
             const ids = Array.isArray(body.events) ? [...new Set(body.events.map((event) => event.publisherId).filter((id): id is string => Boolean(id)))] : [];
-            if (ids.length === 0 || ids.some((id) => !originAllowed(allowedOriginsFor(registry.get(id)?.manifest, serverEnvironment), request.headers.get('Origin'), environment))) return jsonError('origin_not_allowed', 403, requestId);
+            if (ids.length === 0 || ids.some((id) => !originAllowed(allowedOriginsFor(registry.get(id)?.manifest, serverEnvironment), request.headers.get('Origin'), environment, hostedOriginPolicy))) return jsonError('origin_not_allowed', 403, requestId);
+            analyticsManifest = ids[0] ? allowedOriginsFor(registry.get(ids[0])?.manifest, serverEnvironment) : undefined;
           } catch { return jsonError('invalid_json', 400, requestId); }
         }
-        return withHeaders(await analyticsRoute(request), request, undefined, environment, requestId);
+        return withHeaders(await analyticsRoute(request), request, analyticsManifest, environment, requestId, hostedOriginPolicy);
       }
       if (url.pathname === '/api/reports/generate' || url.pathname.startsWith('/api/reports/') || url.pathname.startsWith('/api/generations/')) {
         let reportManifest = manifest;
@@ -165,25 +175,25 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
             const requestedPublisher = typeof body.publisherId === 'string' ? safeRouteId(body.publisherId) : null;
             reportManifest = requestedPublisher ? allowedOriginsFor(registry.get(requestedPublisher)?.manifest, serverEnvironment) : undefined;
           } catch { reportManifest = undefined; }
-          if (!reportManifest || !originAllowed(reportManifest, request.headers.get('Origin'), environment)) return jsonError('origin_not_allowed', 403, requestId);
+          if (!reportManifest || !originAllowed(reportManifest, request.headers.get('Origin'), environment, hostedOriginPolicy)) return jsonError('origin_not_allowed', 403, requestId);
           const decision = generationLimiter.check(requestRateLimitKey(request, 'report-generation', reportManifest.publisherId, trustedProxy));
           if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, reportManifest, environment, requestId);
         } else {
           const requestedPublisher = safeRouteId(url.searchParams.get('publisherId') ?? undefined);
           reportManifest = requestedPublisher ? allowedOriginsFor(registry.get(requestedPublisher)?.manifest, serverEnvironment) : undefined;
-          if (request.headers.get('Origin') && (!reportManifest || !originAllowed(reportManifest, request.headers.get('Origin'), environment))) return jsonError('origin_not_allowed', 403, requestId);
+          if (request.headers.get('Origin') && (!reportManifest || !originAllowed(reportManifest, request.headers.get('Origin'), environment, hostedOriginPolicy))) return jsonError('origin_not_allowed', 403, requestId);
         }
-        return withHeaders(await reportRoutes(request, requestId), request, reportManifest, environment, requestId);
+        return withHeaders(await reportRoutes(request, requestId), request, reportManifest, environment, requestId, hostedOriginPolicy);
       }
       const overviewMatch = url.pathname.match(/^\/api\/analytics\/([^/]+)\/overview$/);
       if (overviewMatch && request.method === 'GET' && publisherId) {
-        if (!manifest || !originAllowed(manifest, request.headers.get('Origin'), environment)) return jsonError('origin_not_allowed', 403, requestId);
+        if (!manifest || !originAllowed(manifest, request.headers.get('Origin'), environment, hostedOriginPolicy)) return jsonError('origin_not_allowed', 403, requestId);
         if (registry.get(publisherId)?.manifest?.enabled === false) return jsonError('publisher_not_found', 404, requestId);
         const from = url.searchParams.get('from'); const to = url.searchParams.get('to');
         const range = from && to ? { from, to } : undefined;
         const events = await analyticsStore.query({ publisherId, range });
         const report = buildAnalyticsReport(Array.isArray(events) ? events : [], publisherId, range);
-        return withHeaders(Response.json({ ...report, publisherName: manifest.name }), request, manifest, environment, requestId);
+        return withHeaders(Response.json({ ...report, publisherName: manifest.name }), request, manifest, environment, requestId, hostedOriginPolicy);
       }
       if (url.pathname.startsWith('/api/ai/')) {
         const decision = aiLimiter.check(requestRateLimitKey(request, 'ai', 'global', trustedProxy));
