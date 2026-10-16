@@ -61,6 +61,29 @@ export interface ServerLogFields {
   resolutionMethod?: string;
   contentLength?: number;
   maxResponseBytes?: number;
+  companyResolutionMs?: number;
+  professionalProfileMs?: number;
+  sourceFetchMs?: number;
+  sourceParseMs?: number;
+  normalizationMs?: number;
+  cataloguePreparationMs?: number;
+  currentReportExclusionMs?: number;
+  preselectionMs?: number;
+  deterministicRankingMs?: number;
+  aiRerankMs?: number;
+  aiExplanationMs?: number;
+  sectionAllocationMs?: number;
+  finalFormattingMs?: number;
+  persistenceMs?: number;
+  totalGenerationMs?: number;
+  sourceRefreshMs?: number;
+  totalThemeSearchMs?: number;
+  catalogueItemCount?: number;
+  candidateCount?: number;
+  catalogueCacheHit?: boolean;
+  catalogueCacheAgeMs?: number;
+  catalogueRefreshMs?: number;
+  catalogueRefreshReason?: string;
 }
 
 export interface StructuredLogger { info(message: string, fields?: ServerLogFields): void; error(message: string, fields?: ServerLogFields): void; }

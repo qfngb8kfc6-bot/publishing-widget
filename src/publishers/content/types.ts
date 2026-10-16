@@ -1,4 +1,4 @@
-import type { ContentSourceHealth, PublisherContentAdapter, PublisherArticle } from '../../core';
+import type { ContentSourceHealth, DebugSink, NormalizedArticle, PublisherContentAdapter, PublisherArticle, Intent } from '../../core';
 
 export const DEFAULT_FEED_MAX_BYTES = 5_000_000;
 export const MAX_CONFIGURED_FEED_MAX_BYTES = 20 * 1024 * 1024;
@@ -123,6 +123,14 @@ export interface ContentImportDiagnostics {
     articlePagesFetched?: number;
     normalizedArticles?: number;
   };
+  timings?: ContentTimingDiagnostics;
+}
+
+export interface ContentTimingDiagnostics {
+  sourceFetchMs?: number;
+  sourceParseMs?: number;
+  normalizationMs?: number;
+  cataloguePreparationMs?: number;
 }
 
 export interface ContentImportResult {
@@ -134,6 +142,11 @@ export interface ContentAdapter<RawArticle = unknown> extends PublisherContentAd
   readonly sourceType: ContentSourceType;
   readonly supportsPagination: boolean;
   lastDiagnostics?: ContentImportDiagnostics;
+  /** Loads the complete source catalogue for archive-capable sources. */
+  loadCatalogue?(options?: { limit?: number; onDebug?: DebugSink }): Promise<RawArticle[]>;
+  /** Applies the source's existing candidate-selection semantics to a cached catalogue. */
+  selectCatalogue?(articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean }): NormalizedArticle[];
+  sourceTimings?: ContentTimingDiagnostics;
   healthCheck(): Promise<ContentSourceHealth>;
 }
 

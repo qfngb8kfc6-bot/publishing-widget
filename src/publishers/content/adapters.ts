@@ -4,7 +4,7 @@ import { csvRecords } from './csv';
 import { assertSafePublicUrl, ContentSourceError, fetchText, safeSourceFetch } from './security';
 import { xmlAttribute, xmlBlocks, xmlFirstText, xmlText } from './xml';
 import { DEFAULT_FEED_MAX_BYTES } from './types';
-import type { ArticleFieldMappings, ContentAdapter, ContentAdapterFactoryOptions, ContentImportDiagnostics, FeedSourceConfig, PaginationConfig, RestJsonSourceConfig, SitemapSourceConfig, StaticJsonSourceConfig, CsvSourceConfig, ContentSourceConfig } from './types';
+import type { ArticleFieldMappings, ContentAdapter, ContentAdapterFactoryOptions, ContentImportDiagnostics, ContentTimingDiagnostics, FeedSourceConfig, PaginationConfig, RestJsonSourceConfig, SitemapSourceConfig, StaticJsonSourceConfig, CsvSourceConfig, ContentSourceConfig } from './types';
 
 type FetchLike = typeof fetch;
 type RawRecord = Record<string, unknown>;
@@ -12,6 +12,8 @@ type RawRecord = Record<string, unknown>;
 const restPayloadCache = new Map<string, { expiresAt: number; payload: unknown }>();
 
 const emptyIntent: Intent = { publisherId: '', answers: {}, queryText: '', keywords: [], interests: [], personas: [] };
+
+function clockMs(): number { return typeof performance !== 'undefined' ? performance.now() : Date.now(); }
 
 function asRecord(value: unknown): RawRecord | null { return value && typeof value === 'object' && !Array.isArray(value) ? value as RawRecord : null; }
 
@@ -300,6 +302,7 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
   readonly sourceType: 'rss' | 'atom';
   readonly supportsPagination = false;
   lastDiagnostics?: ContentImportDiagnostics;
+  sourceTimings?: ContentTimingDiagnostics;
   private readonly fetchImpl: FetchLike;
 
   constructor(readonly publisherId: string, private readonly config: FeedSourceConfig, fetchImpl?: FetchLike) {
@@ -310,11 +313,12 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
   }
 
   async search(intent: Intent, options: SearchOptions): Promise<unknown[]> {
-    const startedAt = Date.now();
-    const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? DEFAULT_FEED_MAX_BYTES, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames });
-    const records = feedRecords(xml, this.config.type, this.config.deriveCategoryFromUrl);
-    if (!records.length) throw new ContentSourceError('empty-source', 'Feed did not contain any entries.');
+    const startedAt = clockMs();
+    const records = await this.loadCatalogue({ onDebug: options.onDebug });
+    const normalizationStartedAt = clockMs();
     const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.feedUrl, this.config.feedUrl, this.config.sourceName, this.config.mappings, this.config.feedUrl));
+    const normalizationMs = clockMs() - normalizationStartedAt;
+    this.sourceTimings = { ...this.sourceTimings, normalizationMs, cataloguePreparationMs: clockMs() - startedAt };
     // RSS has no server-side search or pagination contract. For focused theme
     // searches, return the complete normalized archive so the professional
     // profile can preselect across every article instead of ranking an
@@ -325,9 +329,27 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
       : archiveAwareFeedPreselection(result.articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100));
     this.lastDiagnostics = result.diagnostics;
     this.lastDiagnostics.sourceStats = { feedItemsFetched: records.length, feedItemsSelected: selected.length, preselectionInputCount: result.articles.length, preselectionOutputCount: selected.length, normalizedArticles: result.articles.length };
-    options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Date.now() - startedAt, pagesFetched: 1, rawCount: records.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
+    this.lastDiagnostics.timings = this.sourceTimings;
+    options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Math.round(clockMs() - startedAt), pagesFetched: 1, rawCount: records.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
     options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: selected.length });
     return selected;
+  }
+
+  async loadCatalogue(options: { limit?: number; onDebug?: import('../../core').DebugSink } = {}): Promise<unknown[]> {
+    const startedAt = clockMs();
+    const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? DEFAULT_FEED_MAX_BYTES, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames });
+    const fetchMs = clockMs() - startedAt;
+    const parseStartedAt = clockMs();
+    const records = feedRecords(xml, this.config.type, this.config.deriveCategoryFromUrl);
+    const parseMs = clockMs() - parseStartedAt;
+    if (!records.length) throw new ContentSourceError('empty-source', 'Feed did not contain any entries.');
+    this.sourceTimings = { sourceFetchMs: fetchMs, sourceParseMs: parseMs, cataloguePreparationMs: clockMs() - startedAt };
+    options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: records.length });
+    return records;
+  }
+
+  selectCatalogue(articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean }): NormalizedArticle[] {
+    return options.archiveWide ? articles : archiveAwareFeedPreselection(articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100));
   }
 
   fetch(intent: Intent, options: SearchOptions): Promise<unknown[]> { return this.search(intent, options); }
@@ -360,6 +382,7 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
   readonly sourceType = 'sitemap' as const;
   readonly supportsPagination = true;
   lastDiagnostics?: ContentImportDiagnostics;
+  sourceTimings?: ContentTimingDiagnostics;
   private readonly fetchImpl: FetchLike;
 
   constructor(readonly publisherId: string, private readonly config: SitemapSourceConfig, fetchImpl?: FetchLike) {
@@ -369,14 +392,31 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
   }
 
   async search(_intent: Intent, options: SearchOptions): Promise<unknown[]> {
-    const startedAt = Date.now();
+    const startedAt = clockMs();
+    const records = await this.loadCatalogue({ limit: Math.min(options.limit, this.config.maxUrls ?? 30), onDebug: options.onDebug });
+    const normalizationStartedAt = clockMs();
+    const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.sitemapUrl, this.config.sitemapUrl, this.config.sourceName, undefined));
+    this.sourceTimings = { ...this.sourceTimings, normalizationMs: clockMs() - normalizationStartedAt, cataloguePreparationMs: clockMs() - startedAt };
+    this.lastDiagnostics = result.diagnostics;
+    this.lastDiagnostics.sourceStats = { ...(this.lastDiagnostics.sourceStats ?? {}), normalizedArticles: result.articles.length };
+    this.lastDiagnostics.timings = this.sourceTimings;
+    if (!result.articles.length) throw new ContentSourceError('empty-source', 'Sitemap did not yield any normalizable articles.');
+    options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Math.round(clockMs() - startedAt), pagesFetched: this.lastDiagnostics.sourceStats?.sitemapDocumentsFetched ?? 0 + (this.lastDiagnostics.sourceStats?.articlePagesFetched ?? 0), rawCount: records.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
+    options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: result.articles.length });
+    return result.articles;
+  }
+
+  async loadCatalogue(options: { limit?: number; onDebug?: import('../../core').DebugSink } = {}): Promise<unknown[]> {
+    const startedAt = clockMs();
     const sitemapUrl = assertSafePublicUrl(this.config.sitemapUrl, this.config.allowedHostnames);
+    const fetchStartedAt = clockMs();
     const discovery = await this.discoverUrls(sitemapUrl, this.config.maxSitemaps ?? 5);
+    const discoveryMs = clockMs() - fetchStartedAt;
     const pattern = this.config.urlPattern ? new RegExp(this.config.urlPattern) : undefined;
     const articleUrls = discovery.entries
       .filter((entry) => !pattern || pattern.test(entry.url))
       .sort((left, right) => compareSitemapDates(right.lastmod, left.lastmod));
-    const pages = articleUrls.slice(0, Math.min(options.limit, this.config.maxUrls ?? 30));
+    const pages = articleUrls.slice(0, Math.min(options.limit ?? this.config.maxUrls ?? 30, this.config.maxUrls ?? 30));
     const records: RawRecord[] = [];
     let articlePagesFetched = 0;
     for (const page of pages) {
@@ -384,13 +424,14 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
       catch (error) { this.lastDiagnostics = this.lastDiagnostics ?? { accepted: 0, rejected: 0, duplicates: 0, warnings: 0, issues: [] }; this.lastDiagnostics.warnings += 1; this.lastDiagnostics.issues.push({ status: 'warning', message: error instanceof Error ? error.message : 'Article page could not be fetched.' }); }
     }
     if (!pages.length) throw new ContentSourceError('empty-source', 'Sitemap did not contain any matching article URLs.');
-    const result = normalizeRecords(records, sourceOptions(this.publisherId, this.sourceType, this.config.sitemapUrl, this.config.sitemapUrl, this.config.sourceName, undefined));
-    this.lastDiagnostics = result.diagnostics;
-    this.lastDiagnostics.sourceStats = { sitemapDocumentsFetched: discovery.documentsFetched, sitemapUrlsFound: discovery.entries.length, articleUrlsAccepted: articleUrls.length, articleUrlsSelected: pages.length, articlePagesFetched, normalizedArticles: result.articles.length };
-    if (!result.articles.length) throw new ContentSourceError('empty-source', 'Sitemap did not yield any normalizable articles.');
-    options.onDebug?.({ type: 'content_source', publisherId: this.publisherId, sourceType: this.sourceType, durationMs: Date.now() - startedAt, pagesFetched: discovery.documentsFetched + articlePagesFetched, rawCount: articleUrls.length, normalizedCount: result.articles.length, rejectedCount: result.diagnostics.rejected, duplicateCount: result.diagnostics.duplicates });
-    options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: result.articles.length });
-    return result.articles;
+    this.sourceTimings = { sourceFetchMs: clockMs() - fetchStartedAt, sourceParseMs: discoveryMs, cataloguePreparationMs: clockMs() - startedAt };
+    this.lastDiagnostics = { accepted: 0, rejected: 0, duplicates: 0, warnings: 0, issues: [], sourceStats: { sitemapDocumentsFetched: discovery.documentsFetched, sitemapUrlsFound: discovery.entries.length, articleUrlsAccepted: articleUrls.length, articleUrlsSelected: pages.length, articlePagesFetched } };
+    options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: records.length });
+    return records;
+  }
+
+  selectCatalogue(articles: NormalizedArticle[], _intent: Intent, options: { limit: number; archiveWide?: boolean }): NormalizedArticle[] {
+    return articles.slice(0, Math.min(options.limit, this.config.maxUrls ?? 30));
   }
 
   fetch(intent: Intent, options: SearchOptions): Promise<unknown[]> { return this.search(intent, options); }

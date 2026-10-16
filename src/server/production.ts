@@ -26,6 +26,7 @@ import { createReportRoutes } from './report-routes';
 import { buildProfessionalProfile } from '../core';
 import { AdminAuth } from './admin-auth';
 import { createAdminRoutes } from './admin-routes';
+import { PublisherCatalogueCache } from '../reports/catalogue-cache';
 
 export interface ProductionServerOptions {
   environment?: 'development' | 'test' | 'production';
@@ -43,6 +44,7 @@ export interface ProductionServerOptions {
   companyInputResolver?: CompanyInputResolver;
   publisherStore?: PublisherStore;
   publisherCacheTtlMs?: number;
+  catalogueCacheTtlMs?: number;
 }
 
 export { PostgresAnalyticsStore } from '../analytics/postgres-store';
@@ -112,7 +114,8 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const companyContextProvider = options.companyContextProvider ?? new SafeCompanyContextProvider(options.fetchImpl ?? fetch);
   const companyInputResolver = options.companyInputResolver ?? new BoundedCompanyInputResolver(options.fetchImpl ?? fetch);
   const reportAI = aiProvider ? { config: aiConfig, provider: aiProvider } : undefined;
-  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver);
+  const catalogueCache = new PublisherCatalogueCache({ ttlMs: options.catalogueCacheTtlMs ?? Number(serverEnvironment.PUBLISHER_CATALOGUE_CACHE_TTL_MS ?? 5 * 60 * 1000) });
+  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache);
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore);
   const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger });
 
