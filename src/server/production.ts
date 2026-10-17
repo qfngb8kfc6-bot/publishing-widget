@@ -20,7 +20,7 @@ import { createPublisherSearchRoute } from './publisher-routes';
 import { createRealPublisherProxy } from './real-publisher-proxy';
 import { safeRouteId } from './request-validation';
 import type { PublisherManifest } from '../publishers/manifest';
-import { MemoryReportStore, ReportGenerationService, type ReportStore } from '../reports';
+import { MemoryReportStore, PostgresCatalogueSnapshotStore, ReportGenerationService, type CatalogueSnapshotStore, type ReportStore } from '../reports';
 import { BoundedCompanyInputResolver, SafeCompanyContextProvider, type CompanyContextProvider, type CompanyInputResolver } from './company';
 import { createReportRoutes } from './report-routes';
 import { buildProfessionalProfile } from '../core';
@@ -45,11 +45,14 @@ export interface ProductionServerOptions {
   publisherStore?: PublisherStore;
   publisherCacheTtlMs?: number;
   catalogueCacheTtlMs?: number;
+  catalogueCacheMaxStaleMs?: number;
+  catalogueSnapshotStore?: CatalogueSnapshotStore;
 }
 
 export { PostgresAnalyticsStore } from '../analytics/postgres-store';
 export { PostgresReportStore } from '../reports/store';
 export { PostgresPublisherStore } from '../publishers/store';
+export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 
 function jsonError(error: string, status: number, requestId: string): Response {
   return Response.json({ error, requestId }, { status, headers: { 'X-Request-ID': requestId } });
@@ -114,7 +117,18 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const companyContextProvider = options.companyContextProvider ?? new SafeCompanyContextProvider(options.fetchImpl ?? fetch);
   const companyInputResolver = options.companyInputResolver ?? new BoundedCompanyInputResolver(options.fetchImpl ?? fetch);
   const reportAI = aiProvider ? { config: aiConfig, provider: aiProvider } : undefined;
-  const catalogueCache = new PublisherCatalogueCache({ ttlMs: options.catalogueCacheTtlMs ?? Number(serverEnvironment.PUBLISHER_CATALOGUE_CACHE_TTL_MS ?? 5 * 60 * 1000) });
+  const catalogueCache = new PublisherCatalogueCache({
+    ttlMs: options.catalogueCacheTtlMs ?? Number(serverEnvironment.PUBLISHER_CATALOGUE_CACHE_TTL_MS ?? 5 * 60 * 1000),
+    maxStaleMs: options.catalogueCacheMaxStaleMs ?? Number(serverEnvironment.PUBLISHER_CATALOGUE_MAX_STALE_MS ?? 24 * 60 * 60 * 1000),
+    snapshotStore: options.catalogueSnapshotStore,
+    onRefreshError: (publisherId, error, background) => logger.error('catalogue_refresh_failed', {
+      publisherId,
+      stage: 'catalogue_refresh',
+      errorName: error instanceof Error ? error.name : 'unknown',
+      errorMessage: safeLogText(error instanceof Error ? error.message : 'Catalogue refresh failed.'),
+      operation: background ? 'background' : 'foreground',
+    }),
+  });
   const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache);
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore);
   const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger });
@@ -122,6 +136,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const trustedProxy = options.trustedProxy ?? false;
   const handle = async (request: Request): Promise<Response> => {
     const started = Date.now();
+    const runtimeStarted = Date.now();
     const requestId = request.headers.get('X-Request-ID') || createRequestId();
     const url = new URL(request.url);
     let publisherId: string | null = null;
@@ -186,7 +201,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
           reportManifest = requestedPublisher ? allowedOriginsFor(registry.get(requestedPublisher)?.manifest, serverEnvironment) : undefined;
           if (request.headers.get('Origin') && (!reportManifest || !originAllowed(reportManifest, request.headers.get('Origin'), environment, hostedOriginPolicy))) return jsonError('origin_not_allowed', 403, requestId);
         }
-        return withHeaders(await reportRoutes(request, requestId), request, reportManifest, environment, requestId, hostedOriginPolicy);
+        return withHeaders(await reportRoutes(request, requestId, { runtimeMs: Date.now() - runtimeStarted }), request, reportManifest, environment, requestId, hostedOriginPolicy);
       }
       const overviewMatch = url.pathname.match(/^\/api\/analytics\/([^/]+)\/overview$/);
       if (overviewMatch && request.method === 'GET' && publisherId) {

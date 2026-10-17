@@ -77,6 +77,26 @@ describe('RSS, Atom and sitemap adapters', () => {
     expect(atom.normalizeArticle(atomRows[0])).toMatchObject({ id: 'tag:publisher.example.test,2026:atom-1', title: 'Atom story', author: 'Author' });
   });
 
+  it('records source fetch and body-read timing separately', async () => {
+    const adapter = new FeedContentAdapter('timed-rss', { type: 'rss', feedUrl: 'https://publisher.example.test/feed.xml' }, async () => new Response('<rss><channel><item><guid>timed-1</guid><title>Timed story</title><link>https://publisher.example.test/timed</link></item></channel></rss>', { status: 200 }));
+    await adapter.loadCatalogue();
+    expect(adapter.sourceTimings?.sourceFetchMs).toEqual(expect.any(Number));
+    expect(adapter.sourceTimings?.sourceReadMs).toEqual(expect.any(Number));
+    expect(adapter.sourceTimings?.sourceParseMs).toEqual(expect.any(Number));
+  });
+
+  it('keeps content health as a real upstream check rather than a catalogue-cache read', async () => {
+    let fetches = 0;
+    const adapter = new FeedContentAdapter('health-rss', { type: 'rss', feedUrl: 'https://publisher.example.test/feed.xml' }, async () => {
+      fetches += 1;
+      return new Response('<rss><channel><item><guid>health-1</guid><title>Health story</title><link>https://publisher.example.test/health</link></item></channel></rss>', { status: 200 });
+    });
+    await adapter.loadCatalogue();
+    const health = await adapter.healthCheck();
+    expect(health.reachable).toBe(true);
+    expect(fetches).toBe(2);
+  });
+
   it('discovers bounded sitemap pages and extracts JSON-LD/OpenGraph metadata', async () => {
     const adapter = new SitemapContentAdapter('sitemap-publisher', { type: 'sitemap', sitemapUrl: 'https://publisher.example.test/sitemap.xml', maxUrls: 2 }, async (input) => {
       if (String(input).endsWith('sitemap.xml')) return new Response('<urlset><url><loc>https://publisher.example.test/story</loc></url></urlset>', { status: 200 });

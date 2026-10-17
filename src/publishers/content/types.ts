@@ -128,6 +128,7 @@ export interface ContentImportDiagnostics {
 
 export interface ContentTimingDiagnostics {
   sourceFetchMs?: number;
+  sourceReadMs?: number;
   sourceParseMs?: number;
   normalizationMs?: number;
   cataloguePreparationMs?: number;
@@ -157,6 +158,7 @@ export interface ContentFetchOptions {
   fetchImpl?: typeof fetch;
   allowedHostnames?: string[];
   maxBytes?: number;
+  timings?: { sourceFetchMs?: number; sourceReadMs?: number };
 }
 
 export interface ContentAdapterFactoryOptions {

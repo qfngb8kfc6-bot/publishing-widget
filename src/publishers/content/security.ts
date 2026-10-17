@@ -1,5 +1,7 @@
 import type { ContentFetchOptions } from './types';
 
+function clockMs(): number { return typeof performance !== 'undefined' ? performance.now() : Date.now(); }
+
 export type ContentSourceErrorCode = 'timeout' | 'authentication-failure' | 'rate-limit' | 'unavailable' | 'invalid-response' | 'source_response_too_large' | 'unsafe-url' | 'empty-source';
 
 export class ContentSourceError extends Error {
@@ -48,11 +50,13 @@ export async function safeSourceFetch(input: string | URL, init: RequestInit = {
   let current = assertSafePublicUrl(input, options.allowedHostnames);
   const maxRedirects = options.maxRedirects ?? 3;
   for (let redirect = 0; redirect <= maxRedirects; redirect += 1) {
+    const fetchStartedAt = clockMs();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     try {
       const response = await fetchImpl(current, { ...init, redirect: 'manual', signal });
+      options.timings && (options.timings.sourceFetchMs = (options.timings.sourceFetchMs ?? 0) + Math.max(0, clockMs() - fetchStartedAt));
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get('Location');
         if (!location || redirect === maxRedirects) throw new ContentSourceError('unavailable', 'Source redirected too many times.');
@@ -88,6 +92,7 @@ export async function fetchText(input: string | URL, init: RequestInit = {}, opt
   const response = await safeSourceFetch(input, init, { ...options, maxBytes });
   try {
     if (!response.body) return '';
+    const readStartedAt = clockMs();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let totalBytes = 0;
@@ -105,6 +110,7 @@ export async function fetchText(input: string | URL, init: RequestInit = {}, opt
       }
       return value + decoder.decode();
     } finally {
+      options.timings && (options.timings.sourceReadMs = (options.timings.sourceReadMs ?? 0) + Math.max(0, clockMs() - readStartedAt));
       reader.releaseLock();
     }
   } catch (error) {

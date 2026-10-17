@@ -337,13 +337,13 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
 
   async loadCatalogue(options: { limit?: number; onDebug?: import('../../core').DebugSink } = {}): Promise<unknown[]> {
     const startedAt = clockMs();
-    const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? DEFAULT_FEED_MAX_BYTES, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames });
-    const fetchMs = clockMs() - startedAt;
+    const sourceTimings: ContentTimingDiagnostics = {};
+    const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? DEFAULT_FEED_MAX_BYTES, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames, timings: sourceTimings });
     const parseStartedAt = clockMs();
     const records = feedRecords(xml, this.config.type, this.config.deriveCategoryFromUrl);
     const parseMs = clockMs() - parseStartedAt;
     if (!records.length) throw new ContentSourceError('empty-source', 'Feed did not contain any entries.');
-    this.sourceTimings = { sourceFetchMs: fetchMs, sourceParseMs: parseMs, cataloguePreparationMs: clockMs() - startedAt };
+    this.sourceTimings = { ...sourceTimings, sourceParseMs: parseMs, cataloguePreparationMs: clockMs() - startedAt };
     options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: records.length });
     return records;
   }
@@ -410,7 +410,8 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
     const startedAt = clockMs();
     const sitemapUrl = assertSafePublicUrl(this.config.sitemapUrl, this.config.allowedHostnames);
     const fetchStartedAt = clockMs();
-    const discovery = await this.discoverUrls(sitemapUrl, this.config.maxSitemaps ?? 5);
+    const sourceTimings: ContentTimingDiagnostics = {};
+    const discovery = await this.discoverUrls(sitemapUrl, this.config.maxSitemaps ?? 5, sourceTimings);
     const discoveryMs = clockMs() - fetchStartedAt;
     const pattern = this.config.urlPattern ? new RegExp(this.config.urlPattern) : undefined;
     const articleUrls = discovery.entries
@@ -420,11 +421,11 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
     const records: RawRecord[] = [];
     let articlePagesFetched = 0;
     for (const page of pages) {
-      try { const html = await fetchText(page.url, { headers: { Accept: 'text/html,application/xhtml+xml' } }, { timeoutMs: this.config.pageTimeoutMs ?? 8000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames ?? [sitemapUrl.hostname] }); records.push(pageMetadata(html, page.url)); articlePagesFetched += 1; }
+      try { const html = await fetchText(page.url, { headers: { Accept: 'text/html,application/xhtml+xml' } }, { timeoutMs: this.config.pageTimeoutMs ?? 8000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames ?? [sitemapUrl.hostname], timings: sourceTimings }); records.push(pageMetadata(html, page.url)); articlePagesFetched += 1; }
       catch (error) { this.lastDiagnostics = this.lastDiagnostics ?? { accepted: 0, rejected: 0, duplicates: 0, warnings: 0, issues: [] }; this.lastDiagnostics.warnings += 1; this.lastDiagnostics.issues.push({ status: 'warning', message: error instanceof Error ? error.message : 'Article page could not be fetched.' }); }
     }
     if (!pages.length) throw new ContentSourceError('empty-source', 'Sitemap did not contain any matching article URLs.');
-    this.sourceTimings = { sourceFetchMs: clockMs() - fetchStartedAt, sourceParseMs: discoveryMs, cataloguePreparationMs: clockMs() - startedAt };
+    this.sourceTimings = { ...sourceTimings, sourceParseMs: discoveryMs, cataloguePreparationMs: clockMs() - startedAt };
     this.lastDiagnostics = { accepted: 0, rejected: 0, duplicates: 0, warnings: 0, issues: [], sourceStats: { sitemapDocumentsFetched: discovery.documentsFetched, sitemapUrlsFound: discovery.entries.length, articleUrlsAccepted: articleUrls.length, articleUrlsSelected: pages.length, articlePagesFetched } };
     options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: records.length });
     return records;
@@ -439,11 +440,11 @@ export class SitemapContentAdapter implements ContentAdapter<unknown> {
   normalizeArticle(raw: unknown): PublisherArticle | null { return isCanonical(raw) ? raw : normalizeMappedArticle(raw, sourceOptions(this.publisherId, this.sourceType, this.config.sitemapUrl, this.config.sitemapUrl, this.config.sourceName, undefined)); }
   async healthCheck(): Promise<ContentSourceHealth> { try { const records = await this.search(emptyIntent, { limit: 1 }); return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: true, recordsChecked: records.length, normalized: records.length, warnings: this.lastDiagnostics?.issues.filter((issue) => issue.status === 'warning').map((issue) => issue.message) ?? [] }; } catch (error) { return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: false, recordsChecked: 0, normalized: 0, warnings: [error instanceof Error ? error.message : 'Source check failed.'] }; } }
 
-  private async discoverUrls(root: URL, maxSitemaps: number): Promise<{ entries: SitemapEntry[]; documentsFetched: number }> {
+  private async discoverUrls(root: URL, maxSitemaps: number, timings?: ContentTimingDiagnostics): Promise<{ entries: SitemapEntry[]; documentsFetched: number }> {
     const queue = [root.toString()]; const visited = new Set<string>(); const entries: SitemapEntry[] = [];
     while (queue.length && visited.size < maxSitemaps) {
       const current = queue.shift()!; if (visited.has(current)) continue; visited.add(current);
-      const xml = await fetchText(current, { headers: { Accept: 'application/xml,text/xml' } }, { timeoutMs: this.config.pageTimeoutMs ?? 8000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames ?? [root.hostname] });
+      const xml = await fetchText(current, { headers: { Accept: 'application/xml,text/xml' } }, { timeoutMs: this.config.pageTimeoutMs ?? 8000, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames ?? [root.hostname], timings });
       const isIndex = /<sitemapindex\b/i.test(xml);
       const blocks = xmlBlocks(xml, isIndex ? 'sitemap' : 'url');
       const locations = blocks.flatMap((block) => {

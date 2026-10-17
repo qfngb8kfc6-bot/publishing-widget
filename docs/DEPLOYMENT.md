@@ -35,7 +35,7 @@ NODE_ENV=production HOST=0.0.0.0 PORT=8787 node server-entry.mjs
 
 `npm run build` typechecks the project, builds the demo frontend, admin frontend, widget bundle and `dist/server.mjs`, then asserts that the production artifacts exist. `npm start` performs the same build and starts `server-entry.mjs`.
 
-Before starting a production instance, run `npm run db:migrate`, then `npm run analytics:check`. Migration `003_publishers.sql` creates the persistent publisher control-plane table. The server uses `DB_POOL_MAX`, `DB_CONNECTION_TIMEOUT_MS`, `DB_IDLE_TIMEOUT_MS` and `DB_STATEMENT_TIMEOUT_MS`; SIGTERM/SIGINT close the HTTP server and database pool cleanly. Set `TRUSTED_PROXY=true` only when a known reverse proxy overwrites `x-forwarded-for`; otherwise forwarding headers are not used for rate-limit identity.
+Before starting a production instance, run `npm run db:migrate`, then `npm run analytics:check`. Migration `003_publishers.sql` creates the persistent publisher control-plane table and `004_publisher_catalogue_snapshots.sql` stores normalized catalogue snapshots used across restarts. The server uses `DB_POOL_MAX`, `DB_CONNECTION_TIMEOUT_MS`, `DB_IDLE_TIMEOUT_MS` and `DB_STATEMENT_TIMEOUT_MS`; SIGTERM/SIGINT close the HTTP server and database pool cleanly. Set `TRUSTED_PROXY=true` only when a known reverse proxy overwrites `x-forwarded-for`; otherwise forwarding headers are not used for rate-limit identity.
 
 ## Environment
 
@@ -65,7 +65,7 @@ All public API requests receive request IDs, security headers and route-class ra
 
 ## Database and retention
 
-Apply migrations in order before enabling production analytics, reports and publisher administration. Migration `002_reports.sql` adds tenant-scoped reports and recommendations with JSONB versioned profile/retrieval data. Migration `003_publishers.sql` stores the public publisher manifest and secret references; it never stores secret values. The event table is indexed by publisher/time, publisher/event and publisher/article. Raw events and derived daily/article/topic aggregates should receive separate retention policies later; no automated deletion job is included in this phase.
+Apply migrations in order before enabling production analytics, reports and publisher administration. Migration `002_reports.sql` adds tenant-scoped reports and recommendations with JSONB versioned profile/retrieval data. Migration `003_publishers.sql` stores the public publisher manifest and secret references; it never stores secret values. Migration `004_publisher_catalogue_snapshots.sql` stores normalized, tenant-scoped catalogue snapshots; it contains article metadata only and is bounded by the runtime catalogue limit. The event table is indexed by publisher/time, publisher/event and publisher/article. Raw events and derived daily/article/topic aggregates should receive separate retention policies later; no automated deletion job is included in this phase.
 
 ## Static caching and rollback
 

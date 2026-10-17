@@ -84,6 +84,19 @@ export interface ServerLogFields {
   catalogueCacheAgeMs?: number;
   catalogueRefreshMs?: number;
   catalogueRefreshReason?: string;
+  cacheHit?: boolean;
+  cacheAgeMs?: number;
+  runtimeMs?: number;
+  profileMs?: number;
+  catalogueCacheLookupMs?: number;
+  sourceReadMs?: number;
+  aiRerankingMs?: number;
+  aiExplanationsMs?: number;
+  briefingSummaryMs?: number;
+  exclusionMs?: number;
+  reportLookupMs?: number;
+  totalMs?: number;
+  catalogueStale?: boolean;
 }
 
 export interface StructuredLogger { info(message: string, fields?: ServerLogFields): void; error(message: string, fields?: ServerLogFields): void; }

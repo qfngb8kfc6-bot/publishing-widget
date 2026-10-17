@@ -43,6 +43,16 @@ function normalizePersistedManifest(manifest: PublisherManifest): PublisherManif
   return { ...manifest, contentSource: { ...source, feedUrl: legacyUrl } as ContentSourceConfig };
 }
 
+function stableManifestValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableManifestValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, stableManifestValue(child)]));
+}
+
+function manifestFingerprint(manifest: PublisherManifest): string {
+  return JSON.stringify(stableManifestValue(normalizePersistedManifest(manifest)));
+}
+
 /** Resolves persisted publisher manifests into the existing synchronous registry contract. */
 export class PublisherRuntime {
   private loadedAt = 0;
@@ -50,6 +60,7 @@ export class PublisherRuntime {
   private readonly ttlMs: number;
   private readonly staticDefinitions = new Map<string, PublisherDefinition>();
   private readonly runtimeVersions = new Map<string, number>();
+  private readonly manifestFingerprints = new Map<string, string>();
 
   constructor(private readonly registry: PublisherRegistry, private readonly options: PublisherRuntimeOptions = {}) {
     this.ttlMs = Math.max(0, options.cacheTtlMs ?? 5_000);
@@ -148,9 +159,13 @@ export class PublisherRuntime {
   }
 
   private apply(record: PublisherRecord): void {
-    const definition = this.definition(record.manifest, this.staticDefinitions.get(record.manifest.publisherId) ?? this.registry.get(record.manifest.publisherId));
+    const publisherId = record.manifest.publisherId;
+    const fingerprint = manifestFingerprint(record.manifest);
+    if (this.manifestFingerprints.get(publisherId) === fingerprint && this.registry.get(publisherId)) return;
+    const definition = this.definition(record.manifest, this.staticDefinitions.get(publisherId) ?? this.registry.get(publisherId));
     this.registry.upsert(definition);
-    this.runtimeVersions.set(record.manifest.publisherId, (this.runtimeVersions.get(record.manifest.publisherId) ?? 0) + 1);
+    this.manifestFingerprints.set(publisherId, fingerprint);
+    this.runtimeVersions.set(publisherId, (this.runtimeVersions.get(publisherId) ?? 0) + 1);
   }
 
   private definition(manifest: PublisherManifest, base?: PublisherDefinition): PublisherDefinition {

@@ -50,6 +50,18 @@ describe('publisher persistence', () => {
     expect((await runtime.get('demo'))?.manifest?.name).toBe('Northstar Updated');
   });
 
+  it('does not bump the runtime version when a persisted manifest is unchanged', async () => {
+    const store = new MemoryPublisherStore([demoManifest]);
+    const runtime = new PublisherRuntime(createPublisherRegistry(), { store, cacheTtlMs: 0 });
+    await runtime.get('demo');
+    const initial = runtime.describe('demo').runtimeVersion;
+    await runtime.invalidate();
+    expect(runtime.describe('demo').runtimeVersion).toBe(initial);
+    await store.update({ ...demoManifest, publisherConfigVersion: '2' });
+    await runtime.invalidate();
+    expect(runtime.describe('demo').runtimeVersion).toBe(initial + 1);
+  });
+
   it('reconstructs a legacy RSS feed alias without mutating the persisted row', async () => {
     const source = sgiEuropeManifest.contentSource!;
     const legacyManifest = { ...sgiEuropeManifest, contentSource: { type: 'rss', feed: source.type === 'rss' ? source.feedUrl : undefined } as never };

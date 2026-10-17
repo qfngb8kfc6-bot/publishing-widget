@@ -52,10 +52,39 @@ export interface ReportStore {
   get(id: string, publisherId?: string): Promise<ReportRecord | null>;
 }
 
+export interface ReportPerformanceTiming {
+  requestId?: string;
+  publisherId: string;
+  theme?: string;
+  cacheHit: boolean;
+  cacheAgeMs: number;
+  catalogueItemCount: number;
+  runtimeMs: number;
+  companyResolutionMs: number;
+  profileMs: number;
+  catalogueCacheLookupMs: number;
+  sourceFetchMs: number;
+  sourceReadMs: number;
+  sourceParseMs: number;
+  normalizationMs: number;
+  preselectionMs: number;
+  deterministicRankingMs: number;
+  aiRerankingMs: number;
+  aiExplanationsMs: number;
+  briefingSummaryMs: number;
+  sectionAllocationMs: number;
+  persistenceMs: number;
+  totalMs: number;
+  reportLookupMs?: number;
+  exclusionMs?: number;
+  catalogueStale?: boolean;
+}
+
 export interface GenerateReportInput {
   publisherId: string;
   companyUrl: string;
   jobTitle: string;
   sessionId?: string;
   requestId?: string;
+  performance?: ReportPerformanceTiming;
 }
