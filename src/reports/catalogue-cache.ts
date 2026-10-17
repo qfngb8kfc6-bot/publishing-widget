@@ -3,6 +3,7 @@ import type { ContentTimingDiagnostics } from '../publishers/content';
 import type { CatalogueSnapshot, CatalogueSnapshotStore } from './catalogue-snapshot';
 
 export interface CatalogueCacheDiagnostics extends ContentTimingDiagnostics {
+  catalogueSnapshotLookupMs?: number;
   catalogueCacheHit: boolean;
   catalogueCacheAgeMs: number;
   catalogueRefreshMs: number;
@@ -70,7 +71,7 @@ export class PublisherCatalogueCache {
     const pending = this.inFlight.get(cacheKey);
     if (pending) {
       const shared = await pending;
-      return { articles: shared.articles, diagnostics: { ...shared.diagnostics, catalogueCacheHit: true, catalogueRefreshReason: 'shared_refresh' } };
+      return { articles: shared.articles, diagnostics: { ...shared.diagnostics, catalogueRefreshReason: 'shared_refresh' } };
     }
 
     const reason: CatalogueCacheDiagnostics['catalogueRefreshReason'] = !existing ? 'cold' : existing.key === key ? 'expired' : 'key_changed';
@@ -101,7 +102,9 @@ export class PublisherCatalogueCache {
   }
 
   private async hydrateOrRefresh(publisherId: string, key: string, loader: CatalogueLoader, reason: CatalogueCacheDiagnostics['catalogueRefreshReason'], existing?: CacheEntry): Promise<CatalogueCacheResult> {
+    let snapshotLookupMs = 0;
     if (this.snapshotStore) {
+      const snapshotStartedAt = Date.now();
       try {
         const snapshot = await this.snapshotStore.get(publisherId, key);
         if (snapshot && snapshot.articles.length <= this.maxArticles && snapshot.articles.every((article) => article && article.publisherId === publisherId && typeof article.id === 'string' && typeof article.url === 'string')) {
@@ -110,14 +113,17 @@ export class PublisherCatalogueCache {
             const entry: CacheEntry = { publisherId, key, refreshedAt, articles: snapshot.articles, timings: {} };
             this.entries.set(publisherId, entry);
             const age = Math.max(0, this.now() - refreshedAt);
-            if (age < this.maxStaleMs) return { articles: entry.articles, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'snapshot', catalogueStale: age >= this.ttlMs } };
+            if (age < this.maxStaleMs) return { articles: entry.articles, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueSnapshotLookupMs: Math.max(0, Date.now() - snapshotStartedAt), catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'snapshot', catalogueStale: age >= this.ttlMs } };
           }
         }
       } catch (error) {
         this.onRefreshError?.(publisherId, error, false);
+      } finally {
+        snapshotLookupMs = Math.max(0, Date.now() - snapshotStartedAt);
       }
     }
-    return this.refresh(publisherId, key, loader, reason, existing);
+    const refreshed = await this.refresh(publisherId, key, loader, reason, existing);
+    return { ...refreshed, diagnostics: { ...refreshed.diagnostics, catalogueSnapshotLookupMs: snapshotLookupMs } };
   }
 
   private startBackgroundRefresh(publisherId: string, key: string, cacheKey: string, loader: CatalogueLoader, existing?: CacheEntry): void {

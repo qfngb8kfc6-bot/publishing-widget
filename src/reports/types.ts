@@ -62,7 +62,11 @@ export interface ReportPerformanceTiming {
   runtimeMs: number;
   companyResolutionMs: number;
   profileMs: number;
+  aiProfileMs: number;
   catalogueCacheLookupMs: number;
+  catalogueSnapshotLookupMs: number;
+  catalogueRefreshMs: number;
+  catalogueRefreshReason?: string;
   sourceFetchMs: number;
   sourceReadMs: number;
   sourceParseMs: number;

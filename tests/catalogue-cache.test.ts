@@ -93,7 +93,7 @@ describe('publisher catalogue cache', () => {
     expect(events.find((event) => event.message === 'theme_retrieval_diagnostics')?.fields).toMatchObject({ publisherId: 'sgi-europe', catalogueCacheHit: true, sourceFetchMs: 0, sourceParseMs: 0, normalizationMs: 0 });
     expect(events.filter((event) => event.message === 'report_performance')).toHaveLength(2);
     expect(events.filter((event) => event.message === 'theme_performance')).toHaveLength(1);
-    expect(themeResponse.headers.get('Server-Timing')).toContain('cache;dur=');
+    expect(themeResponse.headers.get('Server-Timing')).toContain('catalogue;dur=');
     const secondRecord = await app.reportStore.get(secondReport.reportId, 'sgi-europe');
     expect(secondRecord?.recommendations.map((item) => item.articleId)).toEqual(report?.recommendations.map((item) => item.articleId));
 

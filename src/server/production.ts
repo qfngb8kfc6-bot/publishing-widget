@@ -1,4 +1,4 @@
-import { createAIConfig } from '../ai/config';
+import { AI_OPERATION_TIMEOUT_CAP_MS, createAIConfig } from '../ai/config';
 import { OpenAICompatibleProvider } from '../ai/providers/openai-compatible';
 import { validateProfessionalProfileEnhancement } from '../ai/validation';
 import type { AIProvider } from '../ai/types';
@@ -104,7 +104,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const generationLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generation ?? 12 });
   const adminAuth = new AdminAuth(environment, serverEnvironment);
   const aiConfig = createAIConfig(serverEnvironment);
-  const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: aiConfig.timeoutMs, maxTokens: aiConfig.maxTokens }, options.fetchImpl) : undefined);
+  const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: Math.min(aiConfig.timeoutMs, AI_OPERATION_TIMEOUT_CAP_MS), maxTokens: aiConfig.maxTokens }, options.fetchImpl) : undefined);
   const analyticsRoute = createAnalyticsIngestionRoute(analyticsStore, { isPublisherAllowed: (publisherId) => registry.has(publisherId) });
   const realToken = serverRealToken;
   const realUpstream = serverRealUpstream;

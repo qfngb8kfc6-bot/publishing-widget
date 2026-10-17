@@ -15,12 +15,15 @@ function withServerTiming(response: Response, timing: ReportPerformanceTiming): 
   const headers = new Headers(response.headers);
   const parts = [
     ['runtime', timing.runtimeMs],
-    ['cache', timing.catalogueCacheLookupMs],
-    ['source', timing.sourceFetchMs + timing.sourceReadMs + timing.sourceParseMs],
-    ['rank', timing.preselectionMs + timing.deterministicRankingMs],
+    ['company', timing.companyResolutionMs],
+    ['catalogue', timing.catalogueCacheLookupMs + timing.sourceFetchMs + timing.sourceReadMs + timing.sourceParseMs],
+    ['catalogue-snapshot', timing.catalogueSnapshotLookupMs],
+    ['catalogue-refresh', timing.catalogueRefreshMs],
+    ['ranking', timing.preselectionMs + timing.deterministicRankingMs],
+    ['ai-profile', timing.aiProfileMs],
     ['ai-rerank', timing.aiRerankingMs],
-    ['ai-explain', timing.aiExplanationsMs],
-    ['db', (timing.reportLookupMs ?? 0) + timing.persistenceMs],
+    ['ai-content', timing.aiExplanationsMs],
+    ['persist', timing.persistenceMs],
     ['total', timing.totalMs],
   ].map(([name, value]) => `${name};dur=${timingValue(value as number)}`);
   headers.set('Server-Timing', parts.join(', '));
@@ -43,7 +46,7 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
         const jobTitle = typeof body.jobTitle === 'string' ? body.jobTitle : '';
         if (!publisherId || !registry.get(publisherId) || registry.get(publisherId)?.manifest?.enabled === false) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
         if (companyUrl.length > 253 || jobTitle.length > 160 || !companyUrl.trim() || !jobTitle.trim()) return Response.json({ error: 'invalid_generation_input' }, { status: 400 });
-        const timing: ReportPerformanceTiming = { requestId: requestId ?? request.headers.get('X-Request-ID') ?? undefined, publisherId, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: context.runtimeMs ?? 0, companyResolutionMs: 0, profileMs: 0, catalogueCacheLookupMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0 };
+        const timing: ReportPerformanceTiming = { requestId: requestId ?? request.headers.get('X-Request-ID') ?? undefined, publisherId, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: context.runtimeMs ?? 0, companyResolutionMs: 0, profileMs: 0, aiProfileMs: 0, catalogueCacheLookupMs: 0, catalogueSnapshotLookupMs: 0, catalogueRefreshMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0 };
         const report = await generation.generate({ publisherId, companyUrl, jobTitle, sessionId: typeof body.sessionId === 'string' ? body.sessionId.slice(0, 160) : undefined, requestId: timing.requestId, performance: timing });
         return withServerTiming(Response.json({ generationId: report.id, status: 'complete', statusUrl: `/api/generations/${report.id}/status?publisherId=${encodeURIComponent(publisherId)}`, generationUrl: `/p/${publisherId}/generate/${report.id}`, reportId: report.id, reportUrl: `/p/${publisherId}/${report.id}` }, { status: 201 }), timing);
       } catch (error) {
@@ -78,7 +81,7 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
       const theme = findReportTheme(report, requestedTheme);
       if (!theme) return Response.json({ error: 'invalid_theme' }, { status: 400 });
       try {
-        const timing: ReportPerformanceTiming = { requestId, publisherId, theme, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: context.runtimeMs ?? 0, companyResolutionMs: 0, profileMs: 0, catalogueCacheLookupMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0, reportLookupMs: Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - lookupStartedAt) };
+        const timing: ReportPerformanceTiming = { requestId, publisherId, theme, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: context.runtimeMs ?? 0, companyResolutionMs: 0, profileMs: 0, aiProfileMs: 0, catalogueCacheLookupMs: 0, catalogueSnapshotLookupMs: 0, catalogueRefreshMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0, reportLookupMs: Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - lookupStartedAt) };
         const recommendations = await generation.searchTheme(report, theme, requestId, timing);
         return withServerTiming(Response.json({ reportId: report.id, publisherId, theme, recommendations }), timing);
       } catch {

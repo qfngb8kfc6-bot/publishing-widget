@@ -14,6 +14,9 @@ export interface AIEnvironment {
   AI_SEMANTIC_WEIGHT?: string;
 }
 
+/** Optional AI stages must not hold a report open for an unbounded provider timeout. */
+export const AI_OPERATION_TIMEOUT_CAP_MS = 5_000;
+
 export const defaultAIConfig: AIConfig = {
   enabled: false,
   provider: 'none',

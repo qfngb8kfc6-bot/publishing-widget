@@ -1,5 +1,6 @@
 import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { AIProviderError } from '../ai/provider';
+import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
 import { BoundedCompanyInputResolver, classifyCompanyInput, type CompanyContextProvider, type CompanyInputResolver, type ResolvedCompanyInput } from '../server/company';
@@ -31,7 +32,7 @@ function catalogueCacheKey(definition: NonNullable<ReturnType<PublisherRegistry[
 }
 
 function createPerformanceTiming(publisherId: string, requestId?: string): ReportPerformanceTiming {
-  return { requestId, publisherId, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: 0, companyResolutionMs: 0, profileMs: 0, catalogueCacheLookupMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0 };
+  return { requestId, publisherId, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: 0, companyResolutionMs: 0, profileMs: 0, aiProfileMs: 0, catalogueCacheLookupMs: 0, catalogueSnapshotLookupMs: 0, catalogueRefreshMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0 };
 }
 
 function reportId(): string {
@@ -123,8 +124,15 @@ interface RankedCandidate {
   scoreComponents?: RelevanceScoreComponents;
 }
 
+interface CachedEnrichedProfile {
+  expiresAt: number;
+  profile: ReturnType<typeof buildProfessionalProfile>;
+}
+
 export class ReportGenerationService {
   private readonly companyResolver: CompanyInputResolver;
+  private readonly enrichedProfileCache = new Map<string, CachedEnrichedProfile>();
+  private readonly enrichedProfileInFlight = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
 
   constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver, private readonly catalogueCache = new PublisherCatalogueCache()) {
     this.companyResolver = companyResolver ?? new BoundedCompanyInputResolver();
@@ -164,6 +172,83 @@ export class ReportGenerationService {
 
   private canUseAI(definition: ReturnType<PublisherRegistry['get']>): definition is NonNullable<ReturnType<PublisherRegistry['get']>> {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
+  }
+
+  private aiTimeoutMs(): number {
+    return Math.min(this.ai?.config.timeoutMs ?? AI_OPERATION_TIMEOUT_CAP_MS, AI_OPERATION_TIMEOUT_CAP_MS);
+  }
+
+  private async runAI<T>(operation: string, work: () => Promise<T>, context: Pick<ServerLogFields, 'requestId' | 'publisherId'> = {}): Promise<T | undefined> {
+    const requestStart = new Date().toISOString();
+    const startedAt = clockMs();
+    const timeoutMs = this.aiTimeoutMs();
+    try {
+      const value = await withTimeout(work(), timeoutMs);
+      this.logger?.info('ai_performance', { ...context, aiOperation: operation, aiModel: this.ai?.config.model, aiRequestStart: requestStart, aiDurationMs: Math.max(0, clockMs() - startedAt), aiTimeoutMs: timeoutMs, aiSuccess: true, aiRetryCount: 0, aiFallbackUsed: false });
+      return value;
+    } catch (error) {
+      this.logger?.info('ai_performance', { ...context, aiOperation: operation, aiModel: this.ai?.config.model, aiRequestStart: requestStart, aiDurationMs: Math.max(0, clockMs() - startedAt), aiTimeoutMs: timeoutMs, aiSuccess: false, aiRetryCount: 0, aiFallbackUsed: true, aiErrorCode: safeLogText(error instanceof AIProviderError ? error.code : error instanceof Error ? error.message : 'unknown', 120) });
+      return undefined;
+    }
+  }
+
+  private enrichedProfileCacheKey(publisherId: string, domain: string, profile: ReturnType<typeof buildProfessionalProfile>): string {
+    return `${publisherId}:${domain.toLowerCase()}:${profile.profileVersion}:${profile.company.analysisVersion}:${profile.role.normalizedTitle}`;
+  }
+
+  private async enrichProfileWithAI(publisherId: string, normalized: ResolvedCompanyInput, company: Awaited<ReturnType<CompanyContextProvider['getContext']>>, profile: ReturnType<typeof buildProfessionalProfile>, requestId?: string): Promise<ReturnType<typeof buildProfessionalProfile> | null> {
+    if (!this.ai) return null;
+    const key = this.enrichedProfileCacheKey(publisherId, normalized.domain, profile);
+    const cached = this.enrichedProfileCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.profile;
+    this.enrichedProfileCache.delete(key);
+    const pending = this.enrichedProfileInFlight.get(key);
+    if (pending) return (await pending) ?? null;
+    const operation = this.runAI('professional_profile_enrichment', async () => {
+      const raw = await (this.ai!.provider as ProfessionalAIProvider).enhanceProfessionalProfile({ publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile });
+      const merged = mergeProfessionalProfileEnhancement(profile, raw);
+      if (!merged) throw new Error('invalid_profile_enrichment');
+      return merged;
+    }, { publisherId, requestId });
+    this.enrichedProfileInFlight.set(key, operation);
+    try {
+      const enriched = await operation;
+      if (enriched) this.enrichedProfileCache.set(key, { profile: enriched, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
+      return enriched ?? null;
+    } finally {
+      this.enrichedProfileInFlight.delete(key);
+    }
+  }
+
+  /** Starts catalogue preparation independently of optional profile enrichment. */
+  private async warmCatalogue(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string): Promise<CatalogueCacheDiagnostics | undefined> {
+    const runtimeInfo = this.runtimeDiagnostics?.(publisherId);
+    const cacheKey = catalogueCacheKey(definition, runtimeInfo);
+    const archiveAdapter = definition.adapter as typeof definition.adapter & { loadCatalogue?: (options?: { limit?: number; onDebug?: import('../core').DebugSink }) => Promise<unknown[]>; sourceTimings?: { sourceFetchMs?: number; sourceReadMs?: number; sourceParseMs?: number; normalizationMs?: number; cataloguePreparationMs?: number } };
+    if (!cacheKey || !archiveAdapter.loadCatalogue) return undefined;
+    const limit = Math.max(definition.config.content.candidateRetrievalLimit, 30);
+    try {
+      const result = await this.catalogueCache.get(publisherId, cacheKey, async () => {
+        const raw = await archiveAdapter.loadCatalogue!({ limit, onDebug: undefined });
+        const normalizationStartedAt = clockMs();
+        const normalized = raw.flatMap((item) => {
+          const article = definition.adapter.normalizeArticle(item);
+          return article ? [article] : [];
+        });
+        const seen = new Set<string>();
+        const unique = normalized.filter((article) => {
+          const keys = articleIdentityKeys(article);
+          if (keys.some((key) => seen.has(key))) return false;
+          keys.forEach((key) => seen.add(key));
+          return true;
+        });
+        return { articles: unique, timings: { ...archiveAdapter.sourceTimings, normalizationMs: clockMs() - normalizationStartedAt } };
+      });
+      return result.diagnostics;
+    } catch {
+      // The authoritative retrieval path will retry and report the source failure with its normal stage diagnostics.
+      return undefined;
+    }
   }
 
   private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string) => void): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
@@ -207,7 +292,8 @@ export class ReportGenerationService {
           return { articles: unique, timings: { ...archiveAdapter.sourceTimings, normalizationMs, cataloguePreparationMs: clockMs() - catalogueLoadStartedAt } };
         });
         catalogueCacheLookupMs = clockMs() - cacheLookupStartedAt;
-        catalogueDiagnostics = loaded.diagnostics;
+        const loadedFromSource = (loaded.diagnostics.sourceFetchMs ?? 0) > 0 || (loaded.diagnostics.sourceParseMs ?? 0) > 0 || (loaded.diagnostics.normalizationMs ?? 0) > 0;
+        catalogueDiagnostics = { ...loaded.diagnostics, catalogueCacheHit: loaded.diagnostics.catalogueCacheHit && !loadedFromSource };
         catalogueItemCount = loaded.articles.length;
         if (publisherId === 'ibi') {
           const stats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { sitemapDocumentsFetched?: number; sitemapUrlsFound?: number; articleUrlsAccepted?: number; articleUrlsSelected?: number; articlePagesFetched?: number } } }).lastDiagnostics?.sourceStats;
@@ -328,8 +414,13 @@ export class ReportGenerationService {
           deterministicRelevanceType: result.relevanceType,
           relevanceSignals: result.relevanceSignals,
         }));
-        const semanticResults = validateSemanticResults(await withTimeout(this.ai!.provider.rerank(createEnrichedIntent(profile, publisherId), semanticCandidates), this.ai!.config.timeoutMs), semanticCandidates);
-        if (semanticResults.length === 0) throw new Error('no_valid_rerank_results');
+        const semanticResults = await this.runAI('semantic_reranking', async () => {
+          const raw = await this.ai!.provider.rerank(createEnrichedIntent(profile, publisherId), semanticCandidates);
+          const validated = validateSemanticResults(raw, semanticCandidates);
+          if (validated.length === 0) throw new Error('no_valid_rerank_results');
+          return validated;
+        }, { publisherId, requestId });
+        if (!semanticResults) throw new Error('semantic_reranking_unavailable');
         const semanticById = new Map(semanticResults.map((result) => [result.articleId, result]));
         const deterministicWeight = definition.manifest?.ranking?.deterministicWeight ?? this.ai!.config.deterministicWeight;
         const semanticWeight = definition.manifest?.ranking?.semanticWeight ?? this.ai!.config.semanticWeight;
@@ -412,11 +503,14 @@ export class ReportGenerationService {
     const failureStage = ranked.length > 0 ? 'complete' : ranking.aiFilteredCount > 0 && ranking.deterministicEligible > 0 ? 'ai_filtered_all' : ranking.deterministicEligible > 0 ? 'final_filter' : 'deterministic_threshold';
     const finalFormattingStartedAt = clockMs();
     const recommendations = this.recommendationsFromRanked(profile, ranked);
-    timing.cacheHit = ranking.timings.catalogueCacheHit;
+    timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
     timing.catalogueStale = ranking.timings.catalogueStale;
     timing.catalogueItemCount = ranking.normalizedArticleCount;
     timing.catalogueCacheLookupMs = ranking.timings.catalogueCacheLookupMs ?? 0;
+    timing.catalogueSnapshotLookupMs = ranking.timings.catalogueSnapshotLookupMs ?? 0;
+    timing.catalogueRefreshMs = ranking.timings.catalogueRefreshMs ?? 0;
+    timing.catalogueRefreshReason = ranking.timings.catalogueRefreshReason;
     timing.sourceFetchMs = ranking.timings.sourceFetchMs ?? 0;
     timing.sourceReadMs = ranking.timings.sourceReadMs ?? 0;
     timing.sourceParseMs = ranking.timings.sourceParseMs ?? 0;
@@ -489,16 +583,20 @@ export class ReportGenerationService {
       this.logIbiError(input, 'profile', error, resolutionDiagnostics);
       throw error;
     }
-    const professionalProfileMs = clockMs() - profileStartedAt;
+    const catalogueWarmup = this.warmCatalogue(definition, input.publisherId);
     let aiProfileUsed = false;
+    const aiProfileStartedAt = clockMs();
+    let warmupDiagnostics: CatalogueCacheDiagnostics | undefined;
     if (this.canUseAI(definition)) {
-      try {
-        const raw = await withTimeout((this.ai!.provider as ProfessionalAIProvider).enhanceProfessionalProfile({ publisherId: input.publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: jobTitle, company, role: profile.role, profile }), this.ai!.config.timeoutMs);
-        const merged = mergeProfessionalProfileEnhancement(profile, raw);
-        if (merged) { profile = merged; aiProfileUsed = true; }
-      } catch { /* deterministic profile remains authoritative */ }
+      const [enriched, warmed] = await Promise.all([this.enrichProfileWithAI(input.publisherId, normalized, company, profile, input.requestId), catalogueWarmup]);
+      warmupDiagnostics = warmed;
+      if (enriched) { profile = enriched; aiProfileUsed = true; }
+    } else {
+      warmupDiagnostics = await catalogueWarmup;
     }
-    timing.profileMs = clockMs() - profileStartedAt;
+    timing.aiProfileMs = this.canUseAI(definition) ? clockMs() - aiProfileStartedAt : 0;
+    const professionalProfileMs = clockMs() - profileStartedAt;
+    timing.profileMs = professionalProfileMs;
     this.markStage(input, 'profile_built');
     await this.track('role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
     await this.track('profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
@@ -511,6 +609,20 @@ export class ReportGenerationService {
       annotateGenerationFailure(error, stage);
       this.logIbiError(input, stage, error, resolutionDiagnostics);
       throw error;
+    }
+    if (warmupDiagnostics && !warmupDiagnostics.catalogueCacheHit) {
+      ranking.timings = {
+        ...ranking.timings,
+        catalogueCacheHit: false,
+        sourceFetchMs: warmupDiagnostics.sourceFetchMs ?? ranking.timings.sourceFetchMs,
+        sourceReadMs: warmupDiagnostics.sourceReadMs ?? ranking.timings.sourceReadMs,
+        sourceParseMs: warmupDiagnostics.sourceParseMs ?? ranking.timings.sourceParseMs,
+        normalizationMs: warmupDiagnostics.normalizationMs ?? ranking.timings.normalizationMs,
+        catalogueSnapshotLookupMs: warmupDiagnostics.catalogueSnapshotLookupMs ?? ranking.timings.catalogueSnapshotLookupMs,
+        cataloguePreparationMs: warmupDiagnostics.cataloguePreparationMs ?? ranking.timings.cataloguePreparationMs,
+        catalogueRefreshMs: warmupDiagnostics.catalogueRefreshMs ?? ranking.timings.catalogueRefreshMs,
+        catalogueRefreshReason: warmupDiagnostics.catalogueRefreshReason,
+      };
     }
     const ranked = ranking.ranked;
     const aiRerankUsed = ranking.aiRerankUsed;
@@ -531,23 +643,28 @@ export class ReportGenerationService {
     let aiExplanationUsed = false;
     const aiExplanationStartedAt = clockMs();
     if (aiAvailable && ranked.length > 0) {
-      try {
-        const contentRequest: ReportContentRequest = { publisherId: input.publisherId, profile, recommendations: deterministicRecommendations };
-        const raw = await withTimeout((this.ai!.provider as ProfessionalAIProvider).generateReportContent(contentRequest), this.ai!.config.timeoutMs);
-        const validated = validateReportContent(raw, contentRequest);
-        if (validated?.summary) { generatedSummary = validated.summary; aiSummaryUsed = true; }
-        if (this.ai!.config.explanationsEnabled && validated) {
-          for (const item of validated.explanations ?? []) explanationById.set(item.articleId, item.explanation);
-          aiExplanationUsed = explanationById.size > 0;
-        }
-      } catch { /* deterministic summary and explanations remain authoritative */ }
+      const contentRequest: ReportContentRequest = { publisherId: input.publisherId, profile, recommendations: deterministicRecommendations };
+      const validated = await this.runAI('report_content', async () => {
+        const raw = await (this.ai!.provider as ProfessionalAIProvider).generateReportContent(contentRequest);
+        const result = validateReportContent(raw, contentRequest);
+        if (!result) throw new Error('invalid_report_content');
+        return result;
+      }, { publisherId: input.publisherId, requestId: input.requestId });
+      if (validated?.summary) { generatedSummary = validated.summary; aiSummaryUsed = true; }
+      if (this.ai!.config.explanationsEnabled && validated) {
+        for (const item of validated.explanations ?? []) explanationById.set(item.articleId, item.explanation);
+        aiExplanationUsed = explanationById.size > 0;
+      }
     }
     const aiExplanationMs = clockMs() - aiExplanationStartedAt;
-    timing.cacheHit = ranking.timings.catalogueCacheHit;
+    timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
     timing.catalogueStale = ranking.timings.catalogueStale;
     timing.catalogueItemCount = ranking.normalizedArticleCount;
     timing.catalogueCacheLookupMs = ranking.timings.catalogueCacheLookupMs ?? 0;
+    timing.catalogueSnapshotLookupMs = ranking.timings.catalogueSnapshotLookupMs ?? 0;
+    timing.catalogueRefreshMs = ranking.timings.catalogueRefreshMs ?? 0;
+    timing.catalogueRefreshReason = ranking.timings.catalogueRefreshReason;
     timing.sourceFetchMs = ranking.timings.sourceFetchMs ?? 0;
     timing.sourceReadMs = ranking.timings.sourceReadMs ?? 0;
     timing.sourceParseMs = ranking.timings.sourceParseMs ?? 0;

@@ -89,6 +89,7 @@ export interface ServerLogFields {
   runtimeMs?: number;
   profileMs?: number;
   catalogueCacheLookupMs?: number;
+  catalogueSnapshotLookupMs?: number;
   sourceReadMs?: number;
   aiRerankingMs?: number;
   aiExplanationsMs?: number;
@@ -97,6 +98,15 @@ export interface ServerLogFields {
   reportLookupMs?: number;
   totalMs?: number;
   catalogueStale?: boolean;
+  aiOperation?: string;
+  aiModel?: string;
+  aiRequestStart?: string;
+  aiDurationMs?: number;
+  aiTimeoutMs?: number;
+  aiSuccess?: boolean;
+  aiRetryCount?: number;
+  aiFallbackUsed?: boolean;
+  aiErrorCode?: string;
 }
 
 export interface StructuredLogger { info(message: string, fields?: ServerLogFields): void; error(message: string, fields?: ServerLogFields): void; }
@@ -115,7 +125,8 @@ export function safeLogText(value: unknown, limit = 4_000): string | undefined {
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    if (level === 'error' || environment !== 'production') console[level]('[publisher-widget]', JSON.stringify(payload));
+    const safeProductionDiagnostic = ['ai_performance', 'report_performance', 'theme_performance'].includes(message);
+    if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };
 }
