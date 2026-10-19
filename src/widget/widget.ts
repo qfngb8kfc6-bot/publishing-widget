@@ -136,11 +136,11 @@ export class ContentDiscoveryWidget extends HTMLElement {
         : headerRequestId && /^[a-z0-9_-]{1,120}$/i.test(headerRequestId) ? headerRequestId : undefined;
       if (!response.ok || (!payload.generationUrl && !payload.reportUrl && !payload.statusUrl)) throw new Error('generation_unavailable');
       this.track('generation_started');
-      window.location.assign(payload.generationUrl ?? payload.reportUrl ?? payload.statusUrl as string);
+      // Report URLs are relative to the platform that answered, not to the publisher page hosting the widget.
+      this.navigateTo(new URL(payload.generationUrl ?? payload.reportUrl ?? payload.statusUrl as string, new URL(endpoint, window.location.href)).href);
     } catch (error) {
-      if (this.isDevelopmentEnvironment()) {
-        console.warn('[content-discovery] generation request failed', { endpoint, status: responseStatus, error: responseError ?? (error instanceof Error ? error.name : 'unknown'), requestId });
-      }
+      // Visitors see the friendly message; integrators get the status and safe error code in the console.
+      console.warn('[content-discovery] generation request failed', { endpoint, status: responseStatus, error: responseError ?? (error instanceof Error ? error.name : 'unknown'), requestId });
       this.closedByUser = false;
       this.state = 'error';
       this.render();
@@ -178,8 +178,10 @@ export class ContentDiscoveryWidget extends HTMLElement {
     else if (!event.shiftKey && this.root.activeElement === last) { event.preventDefault(); first.focus(); }
   }
 
-  private isDevelopmentEnvironment(): boolean {
-    return import.meta.env.DEV && typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1|::1)$/i.test(window.location.hostname);
+  /** Navigation seam for the post-generation redirect. */
+  protected navigateTo(url: string): void {
+    window.location.assign(url);
   }
+
 
 }
