@@ -13,7 +13,7 @@ import { profileForTheme } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
-import { PublisherCatalogueCache, type CatalogueCacheDiagnostics } from './catalogue-cache';
+import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
 
 export const GENERATION_VERSION = '1.2';
 
@@ -321,10 +321,11 @@ export class ReportGenerationService {
     let catalogueItemCount = 0;
     let catalogueCacheLookupMs = 0;
     let catalogueSelectionMs = 0;
+    let catalogueIndex: CatalogueArticleIndex | undefined;
     const catalogueLoadStartedAt = clockMs();
     try {
       const limit = Math.max(definition.config.content.candidateRetrievalLimit, 30);
-      const archiveAdapter = definition.adapter as typeof definition.adapter & { loadCatalogue?: (options?: { limit?: number; onDebug?: import('../core').DebugSink }) => Promise<unknown[]>; selectCatalogue?: (articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean }) => NormalizedArticle[]; sourceTimings?: { sourceFetchMs?: number; sourceReadMs?: number; sourceParseMs?: number; normalizationMs?: number; cataloguePreparationMs?: number } };
+      const archiveAdapter = definition.adapter as typeof definition.adapter & { loadCatalogue?: (options?: { limit?: number; onDebug?: import('../core').DebugSink }) => Promise<unknown[]>; selectCatalogue?: (articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean; preselectionFields?: CatalogueArticleIndex['preselectionFields'] }) => NormalizedArticle[]; sourceTimings?: { sourceFetchMs?: number; sourceReadMs?: number; sourceParseMs?: number; normalizationMs?: number; cataloguePreparationMs?: number } };
       if (cacheKey && archiveAdapter.loadCatalogue) {
         usedCatalogueCache = true;
         const cacheLookupStartedAt = clockMs();
@@ -355,6 +356,7 @@ export class ReportGenerationService {
         const loadedFromSource = (loaded.diagnostics.sourceFetchMs ?? 0) > 0 || (loaded.diagnostics.sourceParseMs ?? 0) > 0 || (loaded.diagnostics.normalizationMs ?? 0) > 0;
         catalogueDiagnostics = { ...loaded.diagnostics, catalogueCacheHit: loaded.diagnostics.catalogueCacheHit && !loadedFromSource };
         catalogueItemCount = loaded.articles.length;
+        catalogueIndex = loaded.index;
         if (publisherId === 'ibi') {
           const stats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { sitemapDocumentsFetched?: number; sitemapUrlsFound?: number; articleUrlsAccepted?: number; articleUrlsSelected?: number; articlePagesFetched?: number } } }).lastDiagnostics?.sourceStats;
           this.logger?.info('ibi_generation_content_source', {
@@ -371,7 +373,7 @@ export class ReportGenerationService {
           });
         }
         const selectionStartedAt = clockMs();
-        const selected = archiveAdapter.selectCatalogue ? archiveAdapter.selectCatalogue(loaded.articles, intent, { limit, archiveWide }) : loaded.articles;
+        const selected = archiveAdapter.selectCatalogue ? archiveAdapter.selectCatalogue(loaded.articles, intent, { limit, archiveWide, preselectionFields: loaded.index.preselectionFields }) : loaded.articles;
         catalogueSelectionMs = clockMs() - selectionStartedAt;
         this.noteSpan({ requestId, publisherId }, 'catalogue-select', catalogueSelectionMs);
         candidates = selected;
@@ -433,7 +435,7 @@ export class ReportGenerationService {
     const preselected = archiveWide
       ? unique
         .map((article) => {
-          const result = scoreArticle(article);
+          const result = scoreArticle(article, catalogueIndex?.professionalFields(article));
           preselectionScores.set(article, result);
           return { article, score: result.score };
         })
@@ -449,7 +451,7 @@ export class ReportGenerationService {
     const deterministicStartedAt = clockMs();
     const deterministicRanked: RankedCandidate[] = preselected
       .map((article) => {
-        const result = preselectionScores.get(article) ?? scoreArticle(article);
+        const result = preselectionScores.get(article) ?? scoreArticle(article, catalogueIndex?.professionalFields(article));
         return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
       })
       .filter((item) => passesRelevanceThreshold(item.result))

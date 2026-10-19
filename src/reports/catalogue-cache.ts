@@ -1,5 +1,5 @@
-import type { NormalizedArticle } from '../core';
-import type { ContentTimingDiagnostics } from '../publishers/content';
+import { compactProfessionalFieldIndexes, professionalFieldIndexes, TokenDictionary, type NormalizedArticle, type ProfessionalFieldIndexes } from '../core';
+import { compactFeedPreselectionFields, feedPreselectionFields, type ContentTimingDiagnostics, type FeedPreselectionFields } from '../publishers/content';
 import type { CatalogueSnapshot, CatalogueSnapshotStore } from './catalogue-snapshot';
 
 export interface CatalogueCacheDiagnostics extends ContentTimingDiagnostics {
@@ -11,8 +11,44 @@ export interface CatalogueCacheDiagnostics extends ContentTimingDiagnostics {
   catalogueStale?: boolean;
 }
 
+/**
+ * Per-article match indexes for one catalogue version. Built lazily, at most once per article, and owned by
+ * the cache entry: a refresh, source-key change or invalidation replaces the entry and drops its indexes.
+ * Only the entry's own article objects are memoized, so one publisher's index never serves another's articles.
+ */
+export class CatalogueArticleIndex {
+  private readonly members: ReadonlySet<NormalizedArticle>;
+  /** Shared by both index kinds; dropped with this catalogue version. */
+  private readonly dictionary = new TokenDictionary();
+  private readonly preselection = new Map<NormalizedArticle, FeedPreselectionFields>();
+  private readonly professional = new Map<NormalizedArticle, ProfessionalFieldIndexes>();
+
+  constructor(articles: readonly NormalizedArticle[]) {
+    this.members = new Set(articles);
+  }
+
+  readonly preselectionFields = (article: NormalizedArticle): FeedPreselectionFields => {
+    if (!this.members.has(article)) return feedPreselectionFields(article);
+    let fields = this.preselection.get(article);
+    if (!fields) { fields = compactFeedPreselectionFields(article, this.dictionary); this.preselection.set(article, fields); }
+    return fields;
+  };
+
+  readonly professionalFields = (article: NormalizedArticle): ProfessionalFieldIndexes => {
+    if (!this.members.has(article)) return professionalFieldIndexes(article);
+    let fields = this.professional.get(article);
+    if (!fields) { fields = compactProfessionalFieldIndexes(article, this.dictionary); this.professional.set(article, fields); }
+    return fields;
+  };
+
+  get indexedCounts(): { preselection: number; professional: number; dictionary: number } {
+    return { preselection: this.preselection.size, professional: this.professional.size, dictionary: this.dictionary.size };
+  }
+}
+
 export interface CatalogueCacheResult {
   articles: NormalizedArticle[];
+  index: CatalogueArticleIndex;
   diagnostics: CatalogueCacheDiagnostics;
 }
 
@@ -30,6 +66,7 @@ interface CacheEntry {
   key: string;
   refreshedAt: number;
   articles: NormalizedArticle[];
+  index: CatalogueArticleIndex;
   timings: ContentTimingDiagnostics;
 }
 
@@ -71,7 +108,7 @@ export class PublisherCatalogueCache {
     const pending = this.inFlight.get(cacheKey);
     if (pending) {
       const shared = await pending;
-      return { articles: shared.articles, diagnostics: { ...shared.diagnostics, catalogueRefreshReason: 'shared_refresh' } };
+      return { articles: shared.articles, index: shared.index, diagnostics: { ...shared.diagnostics, catalogueRefreshReason: 'shared_refresh' } };
     }
 
     const reason: CatalogueCacheDiagnostics['catalogueRefreshReason'] = !existing ? 'cold' : existing.key === key ? 'expired' : 'key_changed';
@@ -94,11 +131,11 @@ export class PublisherCatalogueCache {
   }
 
   private warm(entry: CacheEntry, age: number): CatalogueCacheResult {
-    return { articles: entry.articles, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'warm' } };
+    return { articles: entry.articles, index: entry.index, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'warm' } };
   }
 
   private stale(entry: CacheEntry, age: number): CatalogueCacheResult {
-    return { articles: entry.articles, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'stale', catalogueStale: true } };
+    return { articles: entry.articles, index: entry.index, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'stale', catalogueStale: true } };
   }
 
   private async hydrateOrRefresh(publisherId: string, key: string, loader: CatalogueLoader, reason: CatalogueCacheDiagnostics['catalogueRefreshReason'], existing?: CacheEntry): Promise<CatalogueCacheResult> {
@@ -110,10 +147,10 @@ export class PublisherCatalogueCache {
         if (snapshot && snapshot.articles.length <= this.maxArticles && snapshot.articles.every((article) => article && article.publisherId === publisherId && typeof article.id === 'string' && typeof article.url === 'string')) {
           const refreshedAt = Date.parse(snapshot.refreshedAt);
           if (Number.isFinite(refreshedAt)) {
-            const entry: CacheEntry = { publisherId, key, refreshedAt, articles: snapshot.articles, timings: {} };
+            const entry: CacheEntry = { publisherId, key, refreshedAt, articles: snapshot.articles, index: new CatalogueArticleIndex(snapshot.articles), timings: {} };
             this.entries.set(publisherId, entry);
             const age = Math.max(0, this.now() - refreshedAt);
-            if (age < this.maxStaleMs) return { articles: entry.articles, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueSnapshotLookupMs: Math.max(0, Date.now() - snapshotStartedAt), catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'snapshot', catalogueStale: age >= this.ttlMs } };
+            if (age < this.maxStaleMs) return { articles: entry.articles, index: entry.index, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueSnapshotLookupMs: Math.max(0, Date.now() - snapshotStartedAt), catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'snapshot', catalogueStale: age >= this.ttlMs } };
           }
         }
       } catch (error) {
@@ -139,13 +176,13 @@ export class PublisherCatalogueCache {
       const loaded = await loader();
       if (loaded.articles.length > this.maxArticles) throw new Error('catalogue_exceeds_cache_bound');
       const refreshedAt = this.now();
-      const entry: CacheEntry = { publisherId, key, refreshedAt, articles: loaded.articles, timings: loaded.timings ?? {} };
+      const entry: CacheEntry = { publisherId, key, refreshedAt, articles: loaded.articles, index: new CatalogueArticleIndex(loaded.articles), timings: loaded.timings ?? {} };
       this.entries.set(publisherId, entry);
       if (this.snapshotStore) {
         const snapshot: CatalogueSnapshot = { publisherId, sourceKey: key, articles: loaded.articles, refreshedAt: new Date(refreshedAt).toISOString() };
         void Promise.resolve().then(() => this.snapshotStore!.save(snapshot)).catch((error) => this.onRefreshError?.(publisherId, error, true));
       }
-      return { articles: loaded.articles, diagnostics: { ...(loaded.timings ?? {}), catalogueCacheHit: false, catalogueCacheAgeMs: 0, catalogueRefreshMs: Math.max(0, this.now() - startedAt), catalogueRefreshReason: reason } };
+      return { articles: loaded.articles, index: entry.index, diagnostics: { ...(loaded.timings ?? {}), catalogueCacheHit: false, catalogueCacheAgeMs: 0, catalogueRefreshMs: Math.max(0, this.now() - startedAt), catalogueRefreshReason: reason } };
     } catch (error) {
       if (existing && existing.key === key) {
         this.onRefreshError?.(publisherId, error, true);

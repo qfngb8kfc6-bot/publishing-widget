@@ -1,4 +1,5 @@
 import { normalizeToken, tokenize } from './intent';
+import { compactFieldIndexes, type TextMatchIndex, type TokenDictionary } from './compact-index';
 import type { Intent, NormalizedArticle, RelevanceResult } from './types';
 import type { ProfessionalProfile, RetrievalConcept } from './professional';
 import type { RelevanceScoreComponents } from './types';
@@ -130,15 +131,15 @@ export function rankArticles(articles: NormalizedArticle[], intent: Intent, limi
 }
 
 /** A field normalized once so every concept check is a set lookup. */
-export interface ProfessionalTextIndex {
-  normalized: string;
+export interface ProfessionalTextIndex extends TextMatchIndex {
+  readonly normalized: string;
   /** Every whitespace-separated token of the normalized text, of any length. */
-  tokens: Set<string>;
+  readonly tokens: TextMatchIndex['tokens'];
   /** Five-character prefixes of tokens with at least six characters. */
-  prefixes: Set<string>;
+  readonly prefixes: TextMatchIndex['prefixes'];
 }
 
-export function professionalTextIndex(value: string): ProfessionalTextIndex {
+export function professionalTextIndex(value: string): { normalized: string; tokens: Set<string>; prefixes: Set<string> } {
   const normalized = normalizeToken(value);
   const tokens = new Set<string>();
   const prefixes = new Set<string>();
@@ -152,11 +153,12 @@ export function professionalTextIndex(value: string): ProfessionalTextIndex {
 }
 
 function normalizedConceptMatches(normalizedConcept: string, text: ProfessionalTextIndex): boolean {
-  if (!normalizedConcept || !text.normalized) return false;
+  if (!normalizedConcept) return false;
   // Multi-word concepts must occur as a phrase. Treating their words as an
   // unordered AND match makes unrelated metadata such as "developer" and
   // "technology" look like a direct engineering signal.
   if (normalizedConcept.includes(' ')) return text.normalized.includes(normalizedConcept);
+  // Empty text has no tokens or prefixes, so single-token concepts need no separate emptiness check.
   return text.tokens.has(normalizedConcept) || (normalizedConcept.length >= 6 && text.prefixes.has(normalizedConcept.slice(0, 5)));
 }
 
@@ -182,12 +184,25 @@ export interface ProfessionalFieldIndexes {
   body: ProfessionalTextIndex;
 }
 
-export function professionalFieldIndexes(article: NormalizedArticle): ProfessionalFieldIndexes {
+function professionalValues(article: NormalizedArticle): { title: string; metadata: string; body: string } {
   // Audience labels describe distribution, not article subject matter. They
   // must not turn "manufacturer" into a direct "manufacturing" match.
-  const metadata = [article.description ?? '', ...article.categories, ...article.tags].join(' ');
-  const body = [article.contentSnippet ?? '', article.summary ?? '', article.body ?? ''].join(' ');
-  return { title: professionalTextIndex(article.title), metadata: professionalTextIndex(metadata), body: professionalTextIndex(body) };
+  return {
+    title: article.title,
+    metadata: [article.description ?? '', ...article.categories, ...article.tags].join(' '),
+    body: [article.contentSnippet ?? '', article.summary ?? '', article.body ?? ''].join(' '),
+  };
+}
+
+export function professionalFieldIndexes(article: NormalizedArticle): ProfessionalFieldIndexes {
+  const values = professionalValues(article);
+  return { title: professionalTextIndex(values.title), metadata: professionalTextIndex(values.metadata), body: professionalTextIndex(values.body) };
+}
+
+/** Memory-compact field indexes for caching with a catalogue; normalized text is kept because phrase concepts need it. */
+export function compactProfessionalFieldIndexes(article: NormalizedArticle, dictionary: TokenDictionary): ProfessionalFieldIndexes {
+  const values = professionalValues(article);
+  return compactFieldIndexes(dictionary, { title: professionalTextIndex(values.title), metadata: professionalTextIndex(values.metadata), body: professionalTextIndex(values.body) });
 }
 
 interface PreparedConcept { concept: RetrievalConcept; normalized: string }
