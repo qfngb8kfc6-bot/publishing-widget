@@ -1,5 +1,5 @@
 import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
-import { AIProviderError } from '../ai/provider';
+import { aiResponseDiagnostics, AIProviderError, type AIResponseDiagnostics } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
@@ -130,6 +130,19 @@ interface RankedCandidate {
   scoreComponents?: RelevanceScoreComponents;
 }
 
+/** Outcome of an optional AI stage: a validated value, or the reason it fell back. */
+interface AIOutcome<T> {
+  value?: T;
+  errorCode?: string;
+}
+
+type ObserveAIResponse = <R>(raw: R) => R;
+
+function aiDiagnosticFields(diagnostics: AIResponseDiagnostics | undefined): Partial<ServerLogFields> {
+  if (!diagnostics) return {};
+  return { aiHttpStatus: diagnostics.httpStatus, aiFinishReason: diagnostics.finishReason, aiPromptTokens: diagnostics.promptTokens, aiCompletionTokens: diagnostics.completionTokens, aiReasoningTokens: diagnostics.reasoningTokens };
+}
+
 interface CachedEnrichedProfile {
   expiresAt: number;
   profile: ReturnType<typeof buildProfessionalProfile>;
@@ -237,17 +250,26 @@ export class ReportGenerationService {
     return Math.min(this.ai?.config.timeoutMs ?? AI_OPERATION_TIMEOUT_CAP_MS, AI_OPERATION_TIMEOUT_CAP_MS);
   }
 
-  private async runAI<T>(operation: string, work: () => Promise<T>, context: Pick<ServerLogFields, 'requestId' | 'publisherId'> = {}): Promise<T | undefined> {
+  /**
+   * Runs one optional AI stage under the capped timeout. `observe` records the provider's response diagnostics
+   * (HTTP status, finish reason, token usage) for ai_performance; prompts and headers are never logged.
+   */
+  private async runAI<T>(operation: string, work: (observe: ObserveAIResponse) => Promise<T>, context: Pick<ServerLogFields, 'requestId' | 'publisherId'> = {}): Promise<AIOutcome<T>> {
     const requestStart = new Date().toISOString();
     const startedAt = clockMs();
     const timeoutMs = this.aiTimeoutMs();
+    let observed: AIResponseDiagnostics | undefined;
+    const observe: ObserveAIResponse = (raw) => { observed = aiResponseDiagnostics(raw) ?? observed; return raw; };
+    const base = { ...context, aiOperation: operation, aiModel: this.ai?.config.model, aiRequestStart: requestStart, aiTimeoutMs: timeoutMs, aiRetryCount: 0 };
     try {
-      const value = await withTimeout(work(), timeoutMs);
-      this.logger?.info('ai_performance', { ...context, aiOperation: operation, aiModel: this.ai?.config.model, aiRequestStart: requestStart, aiDurationMs: Math.max(0, clockMs() - startedAt), aiTimeoutMs: timeoutMs, aiSuccess: true, aiRetryCount: 0, aiFallbackUsed: false });
-      return value;
+      const value = await withTimeout(work(observe), timeoutMs);
+      this.logger?.info('ai_performance', { ...base, aiDurationMs: Math.max(0, clockMs() - startedAt), aiSuccess: true, aiFallbackUsed: false, ...aiDiagnosticFields(observed) });
+      return { value };
     } catch (error) {
-      this.logger?.info('ai_performance', { ...context, aiOperation: operation, aiModel: this.ai?.config.model, aiRequestStart: requestStart, aiDurationMs: Math.max(0, clockMs() - startedAt), aiTimeoutMs: timeoutMs, aiSuccess: false, aiRetryCount: 0, aiFallbackUsed: true, aiErrorCode: safeLogText(error instanceof AIProviderError ? error.code : error instanceof Error ? error.message : 'unknown', 120) });
-      return undefined;
+      const errorCode = error instanceof AIProviderError ? error.code : error instanceof Error ? error.message : 'unknown';
+      const diagnostics = error instanceof AIProviderError && Object.keys(error.diagnostics).length ? error.diagnostics : observed;
+      this.logger?.info('ai_performance', { ...base, aiDurationMs: Math.max(0, clockMs() - startedAt), aiSuccess: false, aiFallbackUsed: true, aiErrorCode: safeLogText(errorCode, 120), aiErrorMessage: safeLogText(error instanceof Error ? error.message : 'unknown', 300), ...aiDiagnosticFields(diagnostics) });
+      return { errorCode: safeLogText(errorCode, 120) };
     }
   }
 
@@ -263,12 +285,12 @@ export class ReportGenerationService {
     this.enrichedProfileCache.delete(key);
     const pending = this.enrichedProfileInFlight.get(key);
     if (pending) return (await pending) ?? null;
-    const operation = this.runAI('professional_profile_enrichment', async () => {
-      const raw = await (this.ai!.provider as ProfessionalAIProvider).enhanceProfessionalProfile({ publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile });
+    const operation = this.runAI('professional_profile_enrichment', async (observe) => {
+      const raw = observe(await (this.ai!.provider as ProfessionalAIProvider).enhanceProfessionalProfile({ publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile }));
       const merged = mergeProfessionalProfileEnhancement(profile, raw);
       if (!merged) throw new Error('invalid_profile_enrichment');
       return merged;
-    }, { publisherId, requestId });
+    }, { publisherId, requestId }).then((outcome) => outcome.value);
     this.enrichedProfileInFlight.set(key, operation);
     try {
       const enriched = await operation;
@@ -480,8 +502,8 @@ export class ReportGenerationService {
           deterministicRelevanceType: result.relevanceType,
           relevanceSignals: result.relevanceSignals,
         }));
-        const semanticResults = await this.runAI('semantic_reranking', async () => {
-          const raw = await this.ai!.provider.rerank(createEnrichedIntent(profile, publisherId), semanticCandidates);
+        const { value: semanticResults } = await this.runAI('semantic_reranking', async (observe) => {
+          const raw = observe(await this.ai!.provider.rerank(createEnrichedIntent(profile, publisherId), semanticCandidates));
           const validated = validateSemanticResults(raw, semanticCandidates);
           if (validated.length === 0) throw new Error('no_valid_rerank_results');
           return validated;
@@ -550,6 +572,7 @@ export class ReportGenerationService {
         confidence: item.confidence,
         scoreComponents: item.scoreComponents,
         aiProvider: item.rankingMode === 'hybrid' ? this.ai?.provider.providerName : undefined,
+        explanationSource: explanationById.has(item.article.id) ? 'ai' as const : 'deterministic' as const,
       },
     }));
   }
@@ -712,16 +735,18 @@ export class ReportGenerationService {
     const explanationById = new Map<string, string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
+    let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
     const aiExplanationStartedAt = clockMs();
     if (aiAvailable && ranked.length > 0) {
       const contentRequest: ReportContentRequest = { publisherId: input.publisherId, profile, recommendations: deterministicRecommendations };
-      const validated = await this.runAI('report_content', async () => {
-        const raw = await (this.ai!.provider as ProfessionalAIProvider).generateReportContent(contentRequest);
+      const { value: validated, errorCode } = await this.runAI('report_content', async (observe) => {
+        const raw = observe(await (this.ai!.provider as ProfessionalAIProvider).generateReportContent(contentRequest));
         const result = validateReportContent(raw, contentRequest);
         if (!result) throw new Error('invalid_report_content');
         return result;
       }, { publisherId: input.publisherId, requestId: input.requestId });
       if (validated?.summary) { generatedSummary = validated.summary; aiSummaryUsed = true; }
+      else summaryFallbackReason = errorCode ?? 'summary_missing';
       if (this.ai!.config.explanationsEnabled && validated) {
         for (const item of validated.explanations ?? []) explanationById.set(item.articleId, item.explanation);
         aiExplanationUsed = explanationById.size > 0;
@@ -760,7 +785,7 @@ export class ReportGenerationService {
     timing.sectionAllocationMs = sectionAllocationMs;
     const recommendations = allocation.recommendations;
     const report: ReportRecord = {
-      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, recommendations, sections: allocation.sections, generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
     const persistenceStartedAt = clockMs();
     try { await this.reports.save(report); } catch (error) { annotateGenerationFailure(error, 'report_persistence'); this.logIbiError(input, 'report_persistence', error); throw error; }
@@ -768,7 +793,7 @@ export class ReportGenerationService {
     timing.persistenceMs = persistenceMs;
     timing.totalMs = clockMs() - generationStartedAt;
     this.markStage(input, 'report_persisted');
-    this.trackTimed(timing, 'report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });
+    this.trackTimed(timing, 'report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiSummaryUsed, aiExplanationUsed });
     this.logIbi(input, 'ibi_generation_completed', { stage: 'complete', finalRecommendations: recommendations.length });
     this.logger?.info('report_generation_diagnostics', {
       requestId: input.requestId,

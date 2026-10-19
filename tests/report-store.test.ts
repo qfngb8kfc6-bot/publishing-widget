@@ -20,7 +20,7 @@ function report(recommendationCount: number): ReportRecord {
     professionalProfile: {} as ReportRecord['professionalProfile'], retrievalContext: {} as ReportRecord['retrievalContext'], overallMatchScore: 80, generatedSummary: 'Summary',
     recommendations: Array.from({ length: recommendationCount }, (_, index) => recommendation(index + 1)), sections: [],
     generationVersion: '1.2', rankingVersion: '1.2', professionalProfileVersion: '1', aiProviderVersion: 'deterministic', publisherConfigVersion: '1', widgetVersion: '0.5.0',
-    createdAt: '2026-10-19T00:00:00.000Z', updatedAt: '2026-10-19T00:00:00.000Z',
+    createdAt: '2026-10-19T00:00:00.000Z', updatedAt: '2026-10-19T00:00:00.000Z', summarySource: 'deterministic', summaryFallbackReason: 'timeout',
   };
 }
 
@@ -59,6 +59,10 @@ describe('PostgresReportStore.save', () => {
       'INSERT INTO report_recommendations',
       'COMMIT',
     ]);
+    const reportInsert = connection.statements[1];
+    expect(reportInsert.sql).toContain('summary_source, summary_fallback_reason) VALUES (');
+    expect(reportInsert.parameters).toHaveLength(21);
+    expect(reportInsert.parameters!.slice(19)).toEqual(['deterministic', 'timeout']);
     const insert = connection.statements[3];
     expect(insert.sql.match(/\(\$\d+,/g)).toHaveLength(8);
     expect(insert.sql).toContain('($64,$65,$66,$67,$68,$69,$70::jsonb,$71::jsonb,$72)');

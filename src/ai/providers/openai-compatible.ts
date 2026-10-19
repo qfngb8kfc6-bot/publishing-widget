@@ -1,4 +1,4 @@
-import { AIProviderError } from '../provider';
+import { AIProviderError, attachAIResponseDiagnostics, type AIResponseDiagnostics } from '../provider';
 import { validateExplanationResults, validateSemanticResults, sanitizeEnrichedIntent } from '../validation';
 import type { AIProvider, EnrichedIntent, ExplanationRequest, ProfessionalAIProvider, ProfessionalProfileEnhancementInput, ReportContentRequest, SemanticCandidate } from '../types';
 import type { Intent } from '../../core';
@@ -20,7 +20,18 @@ function redactDiagnostic(value: string, apiKey: string): string {
     .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[redacted]')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 240);
+    .slice(0, 300);
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function usageDiagnostics(usage: unknown): Pick<AIResponseDiagnostics, 'promptTokens' | 'completionTokens' | 'reasoningTokens'> {
+  if (!usage || typeof usage !== 'object') return {};
+  const record = usage as Record<string, unknown>;
+  const details = record.completion_tokens_details && typeof record.completion_tokens_details === 'object' ? record.completion_tokens_details as Record<string, unknown> : undefined;
+  return { promptTokens: numberOrUndefined(record.prompt_tokens), completionTokens: numberOrUndefined(record.completion_tokens), reasoningTokens: numberOrUndefined(details?.reasoning_tokens) };
 }
 
 async function responseDiagnostic(response: Response, apiKey: string): Promise<string> {
@@ -38,7 +49,7 @@ async function responseDiagnostic(response: Response, apiKey: string): Promise<s
     detail = '';
   }
   const safeDetail = redactDiagnostic(detail, apiKey);
-  return `HTTP ${response.status}${safeDetail ? `: ${safeDetail}` : ''}`;
+  return `HTTP ${response.status}${safeDetail ? `: ${safeDetail}` : ''}`.slice(0, 300);
 }
 
 /** Server-only provider. Do not import this module from the widget entry. */
@@ -112,6 +123,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
       'Never invent article IDs, articles, URLs, facts, credentials, tools, or user attributes.',
       outputInstruction,
     ].join(' ');
+    const diagnostics: AIResponseDiagnostics = {};
     try {
       const response = await this.fetchImpl(this.config.endpoint, {
         method: 'POST',
@@ -119,18 +131,28 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
         body: JSON.stringify({ model: this.config.model, temperature: 0, max_completion_tokens: Math.min(this.config.maxTokens ?? 900, 1200), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: `BEGIN_REFERENCE_JSON\n${JSON.stringify({ operation, payload })}\nEND_REFERENCE_JSON` }] }),
         signal: controller.signal,
       });
-      if (response.status === 429) throw new AIProviderError('rate-limit');
-      if (!response.ok) throw new AIProviderError('unavailable', await responseDiagnostic(response, this.config.apiKey));
+      diagnostics.httpStatus = response.status;
+      if (response.status === 429) throw new AIProviderError('rate-limit', await responseDiagnostic(response, this.config.apiKey), diagnostics);
+      if (!response.ok) throw new AIProviderError('unavailable', await responseDiagnostic(response, this.config.apiKey), diagnostics);
       const body = await response.json() as Record<string, unknown>;
       const choices = Array.isArray(body.choices) ? body.choices : [];
-      const message = choices[0] && typeof choices[0] === 'object' ? (choices[0] as Record<string, unknown>).message : undefined;
+      const choice = choices[0] && typeof choices[0] === 'object' ? choices[0] as Record<string, unknown> : undefined;
+      if (typeof choice?.finish_reason === 'string') diagnostics.finishReason = choice.finish_reason.slice(0, 40);
+      Object.assign(diagnostics, usageDiagnostics(body.usage));
+      const message = choice?.message;
       const content = message && typeof message === 'object' ? (message as Record<string, unknown>).content : body.output_text;
-      if (typeof content !== 'string') throw new AIProviderError('invalid-response');
-      try { return JSON.parse(content); } catch { throw new AIProviderError('invalid-response'); }
+      if (content === null || content === undefined || (typeof content === 'string' && !content.trim())) throw new AIProviderError('empty_response', `empty content (finish_reason=${diagnostics.finishReason ?? 'unknown'})`, diagnostics);
+      if (typeof content !== 'string') throw new AIProviderError('invalid-response', 'content is not text', diagnostics);
+      try {
+        return attachAIResponseDiagnostics(JSON.parse(content), diagnostics);
+      } catch {
+        if (diagnostics.finishReason === 'length') throw new AIProviderError('truncated', `output stopped at the token limit after ${diagnostics.completionTokens ?? 'unknown'} completion tokens`, diagnostics);
+        throw new AIProviderError('invalid-response', 'content is not valid JSON', diagnostics);
+      }
     } catch (error) {
       if (error instanceof AIProviderError) throw error;
-      if (error instanceof DOMException && error.name === 'AbortError') throw new AIProviderError('timeout');
-      throw new AIProviderError('unavailable');
+      if (error instanceof DOMException && error.name === 'AbortError') throw new AIProviderError('timeout', 'provider request aborted at the timeout', diagnostics);
+      throw new AIProviderError('unavailable', redactDiagnostic(error instanceof Error ? `${error.name}: ${error.message}` : 'provider request failed', this.config.apiKey), diagnostics);
     } finally {
       clearTimeout(timeout);
     }

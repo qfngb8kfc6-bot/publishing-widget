@@ -19,6 +19,8 @@ export interface ReportRecommendation {
     confidence?: number;
     scoreComponents?: RelevanceScoreComponents;
     aiProvider?: string;
+    /** Whether "why this matters" came from the AI content call or the deterministic template. */
+    explanationSource?: 'ai' | 'deterministic';
     editorialSection?: EditorialSectionId;
   };
 }
@@ -35,6 +37,10 @@ export interface ReportRecord {
   retrievalContext: ProfessionalProfile['retrieval'];
   overallMatchScore: number;
   generatedSummary: string;
+  /** Absent on reports created before content provenance was recorded. */
+  summarySource?: 'ai' | 'deterministic';
+  /** Why the deterministic summary was used, e.g. timeout, truncated, empty_response, ai_unavailable. */
+  summaryFallbackReason?: string;
   recommendations: ReportRecommendation[];
   sections?: EditorialSection[];
   generationVersion: string;

@@ -107,6 +107,13 @@ export interface ServerLogFields {
   aiRetryCount?: number;
   aiFallbackUsed?: boolean;
   aiErrorCode?: string;
+  /** Sanitized provider or validation error, at most 300 characters. */
+  aiErrorMessage?: string;
+  aiHttpStatus?: number;
+  aiFinishReason?: string;
+  aiPromptTokens?: number;
+  aiCompletionTokens?: number;
+  aiReasoningTokens?: number;
 }
 
 export interface StructuredLogger { info(message: string, fields?: ServerLogFields): void; error(message: string, fields?: ServerLogFields): void; }
