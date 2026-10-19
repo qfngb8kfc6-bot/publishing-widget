@@ -3,14 +3,14 @@ import path from 'node:path';
 import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import { createProductionApp, PostgresAnalyticsStore, PostgresReportStore, PostgresPublisherStore, PostgresCatalogueSnapshotStore } from './dist/server.mjs';
+import { createProductionApp, PostgresAnalyticsStore, PostgresReportStore, PostgresPublisherStore, PostgresCatalogueSnapshotStore, resolveCommitSha } from './dist/server.mjs';
 import { staticResponse } from './server-static.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'dist');
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || '0.0.0.0';
 const environment = process.env.NODE_ENV === 'production' ? 'production' : process.env.NODE_ENV === 'test' ? 'test' : 'development';
-const commitSha = process.env.COMMIT_SHA || process.env.GIT_SHA;
+const commitSha = resolveCommitSha(process.env);
 
 function numberEnv(name, fallback) {
   const value = Number(process.env[name]);

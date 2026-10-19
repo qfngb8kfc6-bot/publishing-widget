@@ -3,6 +3,11 @@ import type { PublisherRegistry } from '../core';
 import { validatePublisherServerConfig } from './env';
 import type { ServerEnvironment } from './env';
 
+/** Explicit COMMIT_SHA / GIT_SHA win; Render supplies RENDER_GIT_COMMIT automatically. */
+export function resolveCommitSha(environment: Record<string, string | undefined> = {}): string | undefined {
+  return environment.COMMIT_SHA || environment.GIT_SHA || environment.RENDER_GIT_COMMIT || undefined;
+}
+
 export function createGlobalHealthResponse(environment: 'development' | 'test' | 'production', commitSha?: string): Response {
   return Response.json({ status: 'ok', version: WIDGET_VERSION, environment, ...(commitSha ? { commitSha } : {}) });
 }
