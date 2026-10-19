@@ -143,4 +143,24 @@ describe('production AI performance safeguards', () => {
     expect(aiEvents.every((event) => event.fields?.publisherId === 'sgi-europe' && typeof event.fields?.requestId === 'string')).toBe(true);
     expect(aiEvents.every((event) => event.fields?.aiSuccess === false && event.fields?.aiFallbackUsed === true && event.fields?.aiRetryCount === 0)).toBe(true);
   });
+
+  it('times every awaited generation span and logs any single span over one second', async () => {
+    const logs: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    const logger = { info: (message: string, fields?: Record<string, unknown>) => logs.push({ message, fields }), error: () => undefined };
+    const app = createProductionApp({
+      environment: 'test',
+      serverEnvironment: {},
+      fetchImpl: async () => new Response(sgiEuropeRssFixture, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }),
+      companyContextProvider: { getContext: async (domain: string) => { await pause(1_100); return companyContext(domain); } },
+      logger,
+    });
+    const response = await generate(app);
+    expect(response.status).toBe(201);
+    const serverTiming = response.headers.get('Server-Timing') ?? '';
+    for (const span of ['company-context', 'analytics', 'catalogue-select', 'exclusion', 'sections', 'report-lookup']) expect(serverTiming).toContain(`${span};dur=`);
+    expect(Number(serverTiming.match(/company-context;dur=(\d+)/)?.[1])).toBeGreaterThanOrEqual(1_000);
+    const slow = logs.filter((entry) => entry.message === 'slow_span');
+    expect(slow.map((entry) => entry.fields?.stage)).toEqual(['company-context']);
+    expect(slow[0]?.fields).toMatchObject({ publisherId: 'sgi-europe', durationMs: expect.any(Number) });
+  });
 });
