@@ -1,4 +1,4 @@
-import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
+import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { AIProviderError } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
@@ -13,7 +13,7 @@ import { profileForTheme } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
-import { PublisherCatalogueCache, type CatalogueCacheDiagnostics } from './catalogue-cache';
+import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
 
 export const GENERATION_VERSION = '1.2';
 
@@ -21,6 +21,9 @@ function clockMs(): number { return typeof performance !== 'undefined' ? perform
 
 /** Any single generation span above this is logged individually so untimed stalls are visible in production. */
 const SLOW_SPAN_MS = 1_000;
+
+/** Bound on queued background analytics writes so an unavailable store cannot grow memory without limit. */
+const MAX_PENDING_ANALYTICS_WRITES = 500;
 
 function cacheSafeSource(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(cacheSafeSource);
@@ -135,6 +138,8 @@ interface CachedEnrichedProfile {
 export class ReportGenerationService {
   private readonly companyResolver: CompanyInputResolver;
   private readonly enrichedProfileCache = new Map<string, CachedEnrichedProfile>();
+  private analyticsQueue: Promise<void> = Promise.resolve();
+  private pendingAnalyticsWrites = 0;
   private readonly enrichedProfileInFlight = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
 
   constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver, private readonly catalogueCache = new PublisherCatalogueCache()) {
@@ -167,25 +172,46 @@ export class ReportGenerationService {
     this.logger?.info('generation_stage', { requestId: input.requestId, publisherId: input.publisherId, stage });
   }
 
-  private async track(name: Parameters<typeof createEvent>[0], publisherId: string, sessionId: string, metadata?: Record<string, string | number | boolean>): Promise<void> {
-    if (!this.analytics) return;
+  /**
+   * Queues an analytics write without blocking generation. Writes run one at a time in event
+   * order on a single connection; failures are logged and never reach the request.
+   */
+  private track(name: Parameters<typeof createEvent>[0], publisherId: string, sessionId: string, metadata?: Record<string, string | number | boolean>, requestId?: string): void {
+    const analytics = this.analytics;
+    if (!analytics) return;
+    if (this.pendingAnalyticsWrites >= MAX_PENDING_ANALYTICS_WRITES) {
+      this.logger?.error('analytics_write_dropped', { requestId, publisherId, operation: name });
+      return;
+    }
     const event = createEvent(name, publisherId, sessionId, metadata);
-    await this.analytics.append([{ ...event, eventId: event.eventId!, schemaVersion: event.schemaVersion!, receivedAt: new Date().toISOString() } as StoredAnalyticsEvent]);
+    const stored = { ...event, eventId: event.eventId!, schemaVersion: event.schemaVersion!, receivedAt: new Date().toISOString() } as StoredAnalyticsEvent;
+    this.pendingAnalyticsWrites += 1;
+    this.analyticsQueue = this.analyticsQueue
+      .then(async () => {
+        const startedAt = clockMs();
+        await analytics.append([stored]);
+        this.noteSpan({ requestId, publisherId }, `analytics-write:${name}`, clockMs() - startedAt);
+      })
+      .catch((error: unknown) => {
+        this.logger?.error('analytics_write_failed', { requestId, publisherId, operation: name, errorName: error instanceof Error ? error.name : 'unknown', errorMessage: safeLogText(error instanceof Error ? error.message : 'Analytics write failed.', 240) });
+      })
+      .finally(() => { this.pendingAnalyticsWrites -= 1; });
+  }
+
+  /** Resolves once every queued analytics write has settled (used by tests and shutdown). */
+  async flushAnalytics(): Promise<void> {
+    await this.analyticsQueue;
   }
 
   private noteSpan(context: Pick<ServerLogFields, 'requestId' | 'publisherId'>, span: string, durationMs: number): void {
     if (durationMs > SLOW_SPAN_MS) this.logger?.info('slow_span', { ...context, stage: span, durationMs: Math.round(durationMs) });
   }
 
-  private async trackTimed(timing: ReportPerformanceTiming, name: Parameters<typeof createEvent>[0], publisherId: string, sessionId: string, metadata?: Record<string, string | number | boolean>): Promise<void> {
+  /** Records the time spent queueing analytics on the request path; the writes themselves run in the background. */
+  private trackTimed(timing: ReportPerformanceTiming, name: Parameters<typeof createEvent>[0], publisherId: string, sessionId: string, metadata?: Record<string, string | number | boolean>): void {
     const startedAt = clockMs();
-    try {
-      await this.track(name, publisherId, sessionId, metadata);
-    } finally {
-      const durationMs = clockMs() - startedAt;
-      timing.analyticsMs = (timing.analyticsMs ?? 0) + durationMs;
-      this.noteSpan({ requestId: timing.requestId, publisherId }, `analytics:${name}`, durationMs);
-    }
+    this.track(name, publisherId, sessionId, metadata, timing.requestId);
+    timing.analyticsMs = (timing.analyticsMs ?? 0) + (clockMs() - startedAt);
   }
 
   private logSlowSpans(timing: ReportPerformanceTiming): void {
@@ -295,10 +321,11 @@ export class ReportGenerationService {
     let catalogueItemCount = 0;
     let catalogueCacheLookupMs = 0;
     let catalogueSelectionMs = 0;
+    let catalogueIndex: CatalogueArticleIndex | undefined;
     const catalogueLoadStartedAt = clockMs();
     try {
       const limit = Math.max(definition.config.content.candidateRetrievalLimit, 30);
-      const archiveAdapter = definition.adapter as typeof definition.adapter & { loadCatalogue?: (options?: { limit?: number; onDebug?: import('../core').DebugSink }) => Promise<unknown[]>; selectCatalogue?: (articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean }) => NormalizedArticle[]; sourceTimings?: { sourceFetchMs?: number; sourceReadMs?: number; sourceParseMs?: number; normalizationMs?: number; cataloguePreparationMs?: number } };
+      const archiveAdapter = definition.adapter as typeof definition.adapter & { loadCatalogue?: (options?: { limit?: number; onDebug?: import('../core').DebugSink }) => Promise<unknown[]>; selectCatalogue?: (articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean; preselectionFields?: CatalogueArticleIndex['preselectionFields'] }) => NormalizedArticle[]; sourceTimings?: { sourceFetchMs?: number; sourceReadMs?: number; sourceParseMs?: number; normalizationMs?: number; cataloguePreparationMs?: number } };
       if (cacheKey && archiveAdapter.loadCatalogue) {
         usedCatalogueCache = true;
         const cacheLookupStartedAt = clockMs();
@@ -329,6 +356,7 @@ export class ReportGenerationService {
         const loadedFromSource = (loaded.diagnostics.sourceFetchMs ?? 0) > 0 || (loaded.diagnostics.sourceParseMs ?? 0) > 0 || (loaded.diagnostics.normalizationMs ?? 0) > 0;
         catalogueDiagnostics = { ...loaded.diagnostics, catalogueCacheHit: loaded.diagnostics.catalogueCacheHit && !loadedFromSource };
         catalogueItemCount = loaded.articles.length;
+        catalogueIndex = loaded.index;
         if (publisherId === 'ibi') {
           const stats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { sitemapDocumentsFetched?: number; sitemapUrlsFound?: number; articleUrlsAccepted?: number; articleUrlsSelected?: number; articlePagesFetched?: number } } }).lastDiagnostics?.sourceStats;
           this.logger?.info('ibi_generation_content_source', {
@@ -345,7 +373,7 @@ export class ReportGenerationService {
           });
         }
         const selectionStartedAt = clockMs();
-        const selected = archiveAdapter.selectCatalogue ? archiveAdapter.selectCatalogue(loaded.articles, intent, { limit, archiveWide }) : loaded.articles;
+        const selected = archiveAdapter.selectCatalogue ? archiveAdapter.selectCatalogue(loaded.articles, intent, { limit, archiveWide, preselectionFields: loaded.index.preselectionFields }) : loaded.articles;
         catalogueSelectionMs = clockMs() - selectionStartedAt;
         this.noteSpan({ requestId, publisherId }, 'catalogue-select', catalogueSelectionMs);
         candidates = selected;
@@ -402,11 +430,12 @@ export class ReportGenerationService {
     const preselectionInputCount = usedCatalogueCache ? normalizedArticleCount : archiveWide ? normalizedArticleCount : sourceStats?.preselectionInputCount ?? normalizedArticleCount;
     const preselectionLimit = Math.min(Math.max(definition.config.content.candidateRetrievalLimit, 30), 100);
     const preselectionStartedAt = clockMs();
+    const scoreArticle = createProfessionalScorer(profile);
     const preselectionScores = new Map<NormalizedArticle, ReturnType<typeof scoreProfessionalArticle>>();
     const preselected = archiveWide
       ? unique
         .map((article) => {
-          const result = scoreProfessionalArticle(article, profile);
+          const result = scoreArticle(article, catalogueIndex?.professionalFields(article));
           preselectionScores.set(article, result);
           return { article, score: result.score };
         })
@@ -422,7 +451,7 @@ export class ReportGenerationService {
     const deterministicStartedAt = clockMs();
     const deterministicRanked: RankedCandidate[] = preselected
       .map((article) => {
-        const result = preselectionScores.get(article) ?? scoreProfessionalArticle(article, profile);
+        const result = preselectionScores.get(article) ?? scoreArticle(article, catalogueIndex?.professionalFields(article));
         return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
       })
       .filter((item) => passesRelevanceThreshold(item.result))
@@ -579,7 +608,7 @@ export class ReportGenerationService {
     const jobTitle = input.jobTitle.replace(/\s+/g, ' ').trim().slice(0, 160);
     if (!jobTitle) throw new Error('job_title_required');
     const activeSession = input.sessionId ?? sessionId();
-    await this.trackTimed(timing, 'generation_started', input.publisherId, activeSession);
+    this.trackTimed(timing, 'generation_started', input.publisherId, activeSession);
     const inputType = classifyCompanyInput(input.companyUrl);
     const baseResolutionDiagnostics: Partial<ServerLogFields> = {
       companyInputType: inputType,
@@ -607,7 +636,7 @@ export class ReportGenerationService {
       resolvedHostnamePresent: Boolean(normalized.domain),
       resolutionMethod: normalized.resolutionMethod,
     };
-    await this.trackTimed(timing, 'company_analysis_started', input.publisherId, activeSession);
+    this.trackTimed(timing, 'company_analysis_started', input.publisherId, activeSession);
     let company: Awaited<ReturnType<CompanyContextProvider['getContext']>>;
     const companyContextStartedAt = clockMs();
     try { company = await this.companyProvider.getContext(normalized.domain); }
@@ -615,7 +644,7 @@ export class ReportGenerationService {
     timing.companyContextMs = clockMs() - companyContextStartedAt;
     this.noteSpan(input, 'company-context', timing.companyContextMs);
     if (normalized.displayName) company = { ...company, name: normalized.displayName };
-    await this.trackTimed(timing, 'company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
+    this.trackTimed(timing, 'company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
     let profile: ReturnType<typeof buildProfessionalProfile>;
     const profileStartedAt = clockMs();
     try {
@@ -640,9 +669,9 @@ export class ReportGenerationService {
     const professionalProfileMs = clockMs() - profileStartedAt;
     timing.profileMs = professionalProfileMs;
     this.markStage(input, 'profile_built');
-    await this.trackTimed(timing, 'role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
-    await this.trackTimed(timing, 'profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
-    await this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);
+    this.trackTimed(timing, 'role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
+    this.trackTimed(timing, 'profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
+    this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);
     let ranking: Awaited<ReturnType<ReportGenerationService['rankProfile']>>;
     try {
       ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, false, (stage) => this.markStage(input, stage));
@@ -671,8 +700,8 @@ export class ReportGenerationService {
     this.logger?.info('report_retrieval_diagnostics', { requestId: input.requestId, publisherId: input.publisherId, normalizedArticles: ranking.normalizedCount, normalizedArticleCount: ranking.normalizedArticleCount, catalogueItemCount: ranking.normalizedArticleCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, retrievalCandidates: ranking.retrievedCount, candidateCount: ranking.retrievedCount, rankingCandidateCount: ranking.retrievedCount, deterministicEligible: ranking.deterministicEligible, eligibleCount: ranking.deterministicEligible, finalRecommendations: ranked.length, finalRecommendationCount: ranked.length, ...ranking.timings });
     this.logIbi(input, 'ibi_generation_counts', { stage: 'ranking', retrievalCandidates: ranking.retrievedCount, normalizedArticles: ranking.normalizedCount, deterministicEligible: ranking.deterministicEligible, aiRerankSurvivors: ranking.aiRerankSurvivors, finalRecommendations: ranked.length });
     const aiAvailable = this.canUseAI(definition);
-    await this.trackTimed(timing, 'retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
-    await this.trackTimed(timing, 'ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
+    this.trackTimed(timing, 'retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
+    this.trackTimed(timing, 'ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
     const deterministicRecommendations = ranked.map((item) => ({
       article: item.article,
       deterministicExplanation: explanation(profile, item),
@@ -739,13 +768,7 @@ export class ReportGenerationService {
     timing.persistenceMs = persistenceMs;
     timing.totalMs = clockMs() - generationStartedAt;
     this.markStage(input, 'report_persisted');
-    try {
-      await this.trackTimed(timing, 'report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });
-    } catch (error) {
-      annotateGenerationFailure(error, 'analytics');
-      this.logIbiError(input, 'analytics', error);
-      throw error;
-    }
+    this.trackTimed(timing, 'report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });
     this.logIbi(input, 'ibi_generation_completed', { stage: 'complete', finalRecommendations: recommendations.length });
     this.logger?.info('report_generation_diagnostics', {
       requestId: input.requestId,

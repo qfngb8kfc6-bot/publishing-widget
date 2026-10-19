@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildProfessionalProfile, normalizeToken, tokenize, type CompanyContext, type Intent, type NormalizedArticle } from '../src/core';
 import { archiveAwareFeedPreselection, feedPreselectionScores, phraseOrTokenMatch } from '../src/publishers/content/adapters';
-import { createSgiEuropeDefinition } from '../src/publishers/sgi-europe';
+import { company, normalizedCatalogue, syntheticArchive } from './ranking-fixtures';
 import { sgiEuropeRssFixture } from '../src/publishers/sgi-europe/fixtures';
 
 // ---------------------------------------------------------------------------
@@ -72,10 +72,6 @@ function referencePreselection(articles: NormalizedArticle[], intent: Intent, li
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-function company(domain: string, name: string, industry: string, topics: string[]): CompanyContext {
-  return { domain, canonicalUrl: `https://${domain}/`, name, industry, description: `${name} ${industry}`, topics, entities: [name], source: 'submitted-domain', fetchedAt: '2026-10-01T00:00:00.000Z', expiresAt: '2026-10-02T00:00:00.000Z', analysisVersion: 'test' };
-}
-
 /** Mirrors ReportGenerationService's createIntent so the real profile vocabulary is exercised. */
 function profileIntent(context: CompanyContext, jobTitle: string): Intent {
   const profile = buildProfessionalProfile(context, jobTitle, new Date('2026-10-01T00:00:00.000Z'));
@@ -108,44 +104,6 @@ const intents: Array<[string, Intent]> = [
     excludedConcepts: ['esports', 'fantasy-league'],
   }],
 ];
-
-const VOCABULARY = [
-  'retail', 'stores', 'store', 'storefront', 'omnichannel', 'omni-channel', 'distribution', 'distributor', 'distributing', 'wholesale',
-  'merchandising', 'merchandise', 'e-commerce', 'ecommerce', 'D2C', 'DTC', 'click-and-collect', 'flagship', 'Nike', 'Adidas', 'Decathlon',
-  'footwear', 'apparel', 'running', 'ski-touring', 'café', 'Café', 'AI', 'U.K.', 'EU', 'supply', 'chain', 'logistics', 'esports',
-  'fantasy-league', 'product', 'development', 'innovation', 'launch', 'materials', 'technology', 'software', 'pricing', 'consumer',
-  'growth', 'Europe', 'markets', 'sales', 'category', 'operations', 'q3', '2026', 'x', 'of', 'the', '&', '—', 'openings',
-];
-
-function word(seed: number): string {
-  return VOCABULARY[seed % VOCABULARY.length];
-}
-
-function escapeXml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/** Deterministic synthetic archive at production scale, including date ties, missing dates and punctuation. */
-function syntheticArchive(count: number): string {
-  const items = Array.from({ length: count }, (_, index) => {
-    const title = Array.from({ length: 6 + (index % 5) }, (_, offset) => word(index * 7 + offset * 13)).join(' ');
-    const description = Array.from({ length: 25 + (index % 30) }, (_, offset) => word(index * 11 + offset * 17)).join(index % 3 === 0 ? ', ' : ' ');
-    const category = word(index * 3);
-    const pubDate = index % 97 === 0 ? '' : `<pubDate>${new Date(Date.UTC(2005 + (index % 22), index % 12, 1 + (index % 28))).toUTCString()}</pubDate>`;
-    return `<item><guid>synthetic-${index}</guid><title>${escapeXml(title)}</title><link>https://www.sgieurope.com/${category.replace(/[^a-z]/gi, '') || 'news'}/synthetic-${index}.article</link><description>${escapeXml(description)}</description><category>${escapeXml(category)}</category>${pubDate}</item>`;
-  }).join('');
-  return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>SGI</title>${items}</channel></rss>`;
-}
-
-async function normalizedCatalogue(xml: string): Promise<{ definition: ReturnType<typeof createSgiEuropeDefinition>; articles: NormalizedArticle[] }> {
-  const definition = createSgiEuropeDefinition(async () => new Response(xml, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }));
-  const records = await definition.adapter.loadCatalogue!({ limit: 100 });
-  const articles = records.flatMap((record) => {
-    const article = definition.adapter.normalizeArticle(record);
-    return article ? [article] : [];
-  });
-  return { definition, articles };
-}
 
 function expectIdenticalPreselection(articles: NormalizedArticle[], intent: Intent, limits: number[], selectCatalogue?: (articles: NormalizedArticle[], intent: Intent, options: { limit: number }) => NormalizedArticle[]): void {
   // The reference is the slow implementation being replaced, so score once and derive every ordering from it.

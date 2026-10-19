@@ -83,6 +83,7 @@ async function start() {
     shuttingDown = true;
     console.log(`[publisher-widget] shutting down signal=${signal}`);
     await new Promise((resolve) => server.close(() => resolve()));
+    await app.flushAnalytics();
     await analyticsStore?.close?.();
     process.exit(0);
   };

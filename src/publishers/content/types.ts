@@ -146,7 +146,8 @@ export interface ContentAdapter<RawArticle = unknown> extends PublisherContentAd
   /** Loads the complete source catalogue for archive-capable sources. */
   loadCatalogue?(options?: { limit?: number; onDebug?: DebugSink }): Promise<RawArticle[]>;
   /** Applies the source's existing candidate-selection semantics to a cached catalogue. */
-  selectCatalogue?(articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean }): NormalizedArticle[];
+  /** `preselectionFields` lets a caller supply cached per-article indexes; results must not depend on it. */
+  selectCatalogue?(articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean; preselectionFields?: (article: NormalizedArticle) => import('./adapters').FeedPreselectionFields }): NormalizedArticle[];
   sourceTimings?: ContentTimingDiagnostics;
   healthCheck(): Promise<ContentSourceHealth>;
 }

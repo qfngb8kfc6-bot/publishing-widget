@@ -1,4 +1,4 @@
-import { normalizeToken, tokenize, type ContentSourceHealth, type Intent, type NormalizedArticle, type PublisherArticle, type SearchOptions } from '../../core';
+import { compactFieldIndexes, normalizeToken, tokenize, type ContentSourceHealth, type TextMatchIndex, type TokenDictionary, type Intent, type NormalizedArticle, type PublisherArticle, type SearchOptions } from '../../core';
 import { getField, normalizeMappedArticle, normalizeRecords, type CanonicalNormalizationOptions } from './normalize';
 import { csvRecords } from './csv';
 import { assertSafePublicUrl, ContentSourceError, fetchText, safeSourceFetch } from './security';
@@ -44,15 +44,10 @@ function uniqueTerms(values: string[]): string[] {
   return [...new Set(values.flatMap((value) => tokenize(value)))];
 }
 
-interface PreselectionText {
-  normalized: string;
-  tokens: Set<string>;
-  /** Five-character prefixes of tokens with at least six characters. */
-  prefixes: Set<string>;
-}
+type PreselectionText = TextMatchIndex;
 
 /** Normalizes and tokenizes a text field once so every term check is a set lookup. */
-function preselectionText(value: string): PreselectionText {
+function preselectionText(value: string): { normalized: string; tokens: Set<string>; prefixes: Set<string> } {
   const normalized = normalizeToken(value);
   const tokens = new Set<string>();
   const prefixes = new Set<string>();
@@ -64,8 +59,9 @@ function preselectionText(value: string): PreselectionText {
 }
 
 function normalizedTermMatches(normalizedTerm: string, text: PreselectionText): boolean {
-  if (!normalizedTerm || !text.normalized) return false;
+  if (!normalizedTerm) return false;
   if (normalizedTerm.includes(' ')) return text.normalized.includes(normalizedTerm);
+  // Empty text has no tokens or prefixes, so single-token terms need no separate emptiness check.
   return text.tokens.has(normalizedTerm) || (normalizedTerm.length >= 6 && text.prefixes.has(normalizedTerm.slice(0, 5)));
 }
 
@@ -97,13 +93,60 @@ function preselectionTerms(intent: Intent): PreselectionTerms {
   };
 }
 
-function articlePreselectionScore(article: NormalizedArticle, terms: PreselectionTerms): number {
-  const titleValue = article.title;
-  const metadataValue = [article.description ?? '', article.author ?? '', article.category ?? '', ...article.categories, ...article.tags].join(' ');
-  const bodyValue = [article.contentSnippet ?? '', article.summary ?? '', article.searchText ?? ''].join(' ');
-  const title = preselectionText(titleValue);
-  const metadata = preselectionText(metadataValue);
-  const body = preselectionText(bodyValue);
+/** An article's preselection fields, each normalized and tokenized once. Safe to cache per catalogue version. */
+export interface FeedPreselectionFields {
+  title: PreselectionText;
+  metadata: PreselectionText;
+  body: PreselectionText;
+}
+
+function preselectionValues(article: NormalizedArticle): { title: string; metadata: string; body: string } {
+  return {
+    title: article.title,
+    metadata: [article.description ?? '', article.author ?? '', article.category ?? '', ...article.categories, ...article.tags].join(' '),
+    body: [article.contentSnippet ?? '', article.summary ?? '', article.searchText ?? ''].join(' '),
+  };
+}
+
+export function feedPreselectionFields(article: NormalizedArticle): FeedPreselectionFields {
+  const values = preselectionValues(article);
+  return { title: preselectionText(values.title), metadata: preselectionText(values.metadata), body: preselectionText(values.body) };
+}
+
+/**
+ * Memory-compact preselection fields for caching with a catalogue. Preselection terms are always single
+ * tokens, so normalized text is recomputed on demand for the phrase path instead of being held in memory.
+ */
+export function compactFeedPreselectionFields(article: NormalizedArticle, dictionary: TokenDictionary): FeedPreselectionFields {
+  const values = preselectionValues(article);
+  return compactFieldIndexes(dictionary, {
+    title: { ...preselectionText(values.title), normalized: lazyNormalizedField(article, 'title') },
+    metadata: { ...preselectionText(values.metadata), normalized: lazyNormalizedField(article, 'metadata') },
+    body: { ...preselectionText(values.body), normalized: lazyNormalizedField(article, 'body') },
+  });
+}
+
+/** Kept outside the builder's scope so the cached closure retains only the article, not its joined field text. */
+function lazyNormalizedField(article: NormalizedArticle, field: 'title' | 'metadata' | 'body'): () => string {
+  return () => normalizeToken(preselectionValues(article)[field]);
+}
+
+/**
+ * Exclusions match against the combined title, metadata and body. Normalization turns the joining spaces
+ * into token boundaries, so a single-token term matches the combined text exactly when it matches any field;
+ * phrase terms (never produced by the tokenized intent today) normalize the combined text on demand.
+ */
+function exclusionMatches(normalizedTerm: string, article: NormalizedArticle, fields: FeedPreselectionFields): boolean {
+  if (!normalizedTerm) return false;
+  if (normalizedTerm.includes(' ')) {
+    const values = preselectionValues(article);
+    return normalizedTermMatches(normalizedTerm, preselectionText(`${values.title} ${values.metadata} ${values.body}`));
+  }
+  return normalizedTermMatches(normalizedTerm, fields.title) || normalizedTermMatches(normalizedTerm, fields.metadata) || normalizedTermMatches(normalizedTerm, fields.body);
+}
+
+function articlePreselectionScore(article: NormalizedArticle, terms: PreselectionTerms, fields: FeedPreselectionFields): number {
+  const { title, metadata, body } = fields;
   let score = 0;
   const addMatches = (termList: string[], weight: number) => {
     for (const term of termList) {
@@ -116,21 +159,20 @@ function articlePreselectionScore(article: NormalizedArticle, terms: Preselectio
   addMatches(terms.adjacent, 0.65);
   addMatches(terms.query, 0.35);
   addMatches(terms.company, 1.25);
-  if (terms.exclusions.length) {
-    const all = preselectionText(`${titleValue} ${metadataValue} ${bodyValue}`);
-    for (const term of terms.exclusions) if (normalizedTermMatches(term, all)) score -= 6;
-  }
+  for (const term of terms.exclusions) if (exclusionMatches(term, article, fields)) score -= 6;
   return score;
 }
 
-/** Deterministic archive preselection scores, computed with one tokenization per article field. */
-export function feedPreselectionScores(articles: NormalizedArticle[], intent: Intent): number[] {
+export type FeedPreselectionFieldSource = (article: NormalizedArticle) => FeedPreselectionFields;
+
+/** Deterministic archive preselection scores; pass a field source to reuse cached per-article indexes. */
+export function feedPreselectionScores(articles: NormalizedArticle[], intent: Intent, fieldsFor: FeedPreselectionFieldSource = feedPreselectionFields): number[] {
   const terms = preselectionTerms(intent);
-  return articles.map((article) => articlePreselectionScore(article, terms));
+  return articles.map((article) => articlePreselectionScore(article, terms, fieldsFor(article)));
 }
 
-export function archiveAwareFeedPreselection<T extends NormalizedArticle>(articles: T[], intent: Intent, limit: number): T[] {
-  const scores = feedPreselectionScores(articles, intent);
+export function archiveAwareFeedPreselection<T extends NormalizedArticle>(articles: T[], intent: Intent, limit: number, fieldsFor?: FeedPreselectionFieldSource): T[] {
+  const scores = feedPreselectionScores(articles, intent, fieldsFor);
   const scored = articles.map((article, index) => ({ article, index, score: scores[index] }));
   const ordered = [...scored].sort((left, right) => right.score - left.score || compareFeedDates(left.article, right.article) || left.index - right.index);
   return ordered.slice(0, limit).map(({ article }) => article);
@@ -396,8 +438,8 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
     return records;
   }
 
-  selectCatalogue(articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean }): NormalizedArticle[] {
-    return options.archiveWide ? articles : archiveAwareFeedPreselection(articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100));
+  selectCatalogue(articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean; preselectionFields?: FeedPreselectionFieldSource }): NormalizedArticle[] {
+    return options.archiveWide ? articles : archiveAwareFeedPreselection(articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100), options.preselectionFields);
   }
 
   fetch(intent: Intent, options: SearchOptions): Promise<unknown[]> { return this.search(intent, options); }

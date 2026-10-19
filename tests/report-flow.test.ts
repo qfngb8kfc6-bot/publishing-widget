@@ -113,6 +113,7 @@ describe('hosted report flow', () => {
     expect((await app.handle(new Request(`https://product.example/api/generations/${payload.reportId}/status?publisherId=real-publisher`))).status).toBe(404);
     expect((await app.handle(new Request(`https://product.example/api/generations/${payload.reportId}/status`))).status).toBe(400);
     expect((await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}`))).status).toBe(400);
+    await app.flushAnalytics();
     const funnelEvents = await app.analyticsStore.query({ publisherId: 'demo' });
     expect(funnelEvents.map((event) => event.name)).toEqual(expect.arrayContaining(['generation_started', 'company_analysis_completed', 'profile_generated', 'retrieval_completed', 'ranking_completed', 'report_generated']));
     expect(funnelEvents.every((event) => !JSON.stringify(event.metadata ?? {}).includes('Software Engineer'))).toBe(true);
