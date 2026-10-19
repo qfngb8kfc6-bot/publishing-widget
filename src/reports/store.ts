@@ -68,14 +68,16 @@ export class PostgresReportStore implements ReportStore {
     connection.release();
   }
 
+  /** Loads a report and its ranked recommendations in a single round trip. */
   async get(id: string, publisherId?: string): Promise<ReportRecord | null> {
     const parameters: unknown[] = [id];
     let where = 'r.id = $1';
     if (publisherId) { parameters.push(publisherId); where += ' AND r.publisher_id = $2'; }
-    const reportResult = await this.client.query<Record<string, unknown>>(`SELECT r.* FROM reports r WHERE ${where} LIMIT 1`, parameters);
+    const reportResult = await this.client.query<Record<string, unknown>>(`SELECT r.*, COALESCE((SELECT json_agg(json_build_object('article_id', rr.article_id, 'rank', rr.rank, 'raw_score', rr.raw_score, 'display_score', rr.display_score, 'reason', rr.reason, 'article_json', rr.article_json, 'ranking_metadata_json', rr.ranking_metadata_json) ORDER BY rr.rank ASC) FROM report_recommendations rr WHERE rr.report_id = r.id), '[]'::json) AS recommendations_json FROM reports r WHERE ${where} LIMIT 1`, parameters);
     const row = reportResult.rows[0];
     if (!row) return null;
-    const recommendations = await this.client.query<Record<string, unknown>>('SELECT article_id, rank, raw_score, display_score, reason, article_json, ranking_metadata_json FROM report_recommendations WHERE report_id = $1 ORDER BY rank ASC', [id]);
+    const recommendationRows = (typeof row.recommendations_json === 'string' ? JSON.parse(row.recommendations_json) : row.recommendations_json) as Array<Record<string, unknown>> | null;
+    const recommendations = { rows: Array.isArray(recommendationRows) ? recommendationRows : [] };
     const normalizedRecommendations = recommendations.rows.map((item) => ({ articleId: String(item.article_id), rank: Number(item.rank), rawScore: Number(item.raw_score), displayScore: Number(item.display_score), explanation: String(item.reason), article: item.article_json as ReportRecord['recommendations'][number]['article'], rankingMetadata: item.ranking_metadata_json as ReportRecord['recommendations'][number]['rankingMetadata'] }));
     return {
       id: String(row.id), publisherId: String(row.publisher_id), sessionId: String(row.session_id), companyUrl: String(row.company_url), companyDomain: String(row.company_domain), companyName: row.company_name ? String(row.company_name) : undefined, jobTitle: String(row.job_title),

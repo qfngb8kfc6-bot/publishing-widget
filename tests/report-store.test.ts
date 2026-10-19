@@ -92,3 +92,33 @@ describe('PostgresReportStore.save', () => {
     expect(statements).toEqual(['INSERT', 'DELETE', 'INSERT']);
   });
 });
+
+describe('PostgresReportStore.get', () => {
+  const row = {
+    id: 'report-1', publisher_id: 'sgi-europe', session_id: 'session-1', company_url: 'https://nike.com/', company_domain: 'nike.com', company_name: 'Nike', job_title: 'Head of Retail',
+    professional_profile_json: {}, retrieval_context_json: {}, overall_match_score: 80, generated_summary: 'Summary', summary_source: 'ai', summary_fallback_reason: null,
+    generation_version: '1.2', ranking_version: '1.2', professional_profile_version: '1', ai_provider_version: 'deterministic', publisher_config_version: '1', widget_version: '0.5.0',
+    created_at: new Date('2026-10-19T00:00:00.000Z'), updated_at: new Date('2026-10-19T00:00:00.000Z'),
+  };
+  const recommendationRows = [1, 2].map((rank) => ({ article_id: `article-${rank}`, rank, raw_score: 90.5 - rank, display_score: 90 - rank, reason: `Why ${rank}`, article_json: recommendation(rank).article, ranking_metadata_json: recommendation(rank).rankingMetadata }));
+
+  it('loads the report and its recommendations in one query', async () => {
+    for (const recommendationsJson of [recommendationRows, JSON.stringify(recommendationRows)]) {
+      const queries: Array<{ sql: string; parameters?: unknown[] }> = [];
+      const store = new PostgresReportStore({ query: async <Row>(sql: string, parameters?: unknown[]) => { queries.push({ sql, parameters }); return { rows: [{ ...row, recommendations_json: recommendationsJson }] as Row[] }; } });
+      const loaded = await store.get('report-1', 'sgi-europe');
+      expect(queries).toHaveLength(1);
+      expect(queries[0].sql).toContain('json_agg');
+      expect(queries[0].parameters).toEqual(['report-1', 'sgi-europe']);
+      expect(loaded?.recommendations.map((item) => [item.articleId, item.rank, item.rawScore, item.displayScore])).toEqual([['article-1', 1, 89.5, 89], ['article-2', 2, 88.5, 88]]);
+      expect(loaded?.summarySource).toBe('ai');
+      expect(loaded?.summaryFallbackReason).toBeUndefined();
+    }
+  });
+
+  it('returns null when no report matches and an empty list for a zero-result report', async () => {
+    expect(await new PostgresReportStore({ query: async <Row>() => ({ rows: [] as Row[] }) }).get('missing')).toBeNull();
+    const empty = await new PostgresReportStore({ query: async <Row>() => ({ rows: [{ ...row, recommendations_json: [] }] as Row[] }) }).get('report-1');
+    expect(empty?.recommendations).toEqual([]);
+  });
+});
