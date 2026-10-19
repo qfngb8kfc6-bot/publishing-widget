@@ -129,15 +129,40 @@ export function rankArticles(articles: NormalizedArticle[], intent: Intent, limi
     .map(({ index: _index, ...result }) => result);
 }
 
-function phraseMatches(concept: string, value: string): boolean {
-  const normalizedConcept = normalizeToken(concept);
-  const normalizedValue = normalizeToken(value);
-  if (!normalizedConcept || !normalizedValue) return false;
+/** A field normalized once so every concept check is a set lookup. */
+export interface ProfessionalTextIndex {
+  normalized: string;
+  /** Every whitespace-separated token of the normalized text, of any length. */
+  tokens: Set<string>;
+  /** Five-character prefixes of tokens with at least six characters. */
+  prefixes: Set<string>;
+}
+
+export function professionalTextIndex(value: string): ProfessionalTextIndex {
+  const normalized = normalizeToken(value);
+  const tokens = new Set<string>();
+  const prefixes = new Set<string>();
+  if (normalized) {
+    for (const token of normalized.split(/\s+/)) {
+      tokens.add(token);
+      if (token.length >= 6) prefixes.add(token.slice(0, 5));
+    }
+  }
+  return { normalized, tokens, prefixes };
+}
+
+function normalizedConceptMatches(normalizedConcept: string, text: ProfessionalTextIndex): boolean {
+  if (!normalizedConcept || !text.normalized) return false;
   // Multi-word concepts must occur as a phrase. Treating their words as an
   // unordered AND match makes unrelated metadata such as "developer" and
   // "technology" look like a direct engineering signal.
-  if (normalizedConcept.includes(' ')) return normalizedValue.includes(normalizedConcept);
-  return normalizedValue.split(/\s+/).some((token) => token === normalizedConcept || (normalizedConcept.length >= 6 && token.length >= 6 && token.slice(0, 5) === normalizedConcept.slice(0, 5)));
+  if (normalizedConcept.includes(' ')) return text.normalized.includes(normalizedConcept);
+  return text.tokens.has(normalizedConcept) || (normalizedConcept.length >= 6 && text.prefixes.has(normalizedConcept.slice(0, 5)));
+}
+
+/** Phrase concepts match as normalized substrings; single concepts match a token or a shared five-character prefix when both are at least six characters. */
+export function phraseMatches(concept: string, value: string): boolean {
+  return normalizedConceptMatches(normalizeToken(concept), professionalTextIndex(value));
 }
 
 function unique(values: string[]): string[] { return [...new Set(values.map((value) => value.trim()).filter(Boolean))]; }
@@ -151,27 +176,30 @@ function fallbackConcepts(profile: ProfessionalProfile): RetrievalConcept[] {
   ];
 }
 
-function matchingConcepts(concepts: RetrievalConcept[], value: string): RetrievalConcept[] {
-  return concepts.filter((concept) => phraseMatches(concept.concept, value));
+export interface ProfessionalFieldIndexes {
+  title: ProfessionalTextIndex;
+  metadata: ProfessionalTextIndex;
+  body: ProfessionalTextIndex;
 }
 
-function professionalFields(article: NormalizedArticle): { title: string; metadata: string; body: string; all: string } {
-  const title = article.title;
+export function professionalFieldIndexes(article: NormalizedArticle): ProfessionalFieldIndexes {
   // Audience labels describe distribution, not article subject matter. They
   // must not turn "manufacturer" into a direct "manufacturing" match.
   const metadata = [article.description ?? '', ...article.categories, ...article.tags].join(' ');
   const body = [article.contentSnippet ?? '', article.summary ?? '', article.body ?? ''].join(' ');
-  return { title, metadata, body, all: `${title} ${metadata} ${body}` };
+  return { title: professionalTextIndex(article.title), metadata: professionalTextIndex(metadata), body: professionalTextIndex(body) };
 }
 
-function evidenceContribution(matches: RetrievalConcept[], fields: { title: string; metadata: string; body: string }, amounts: { title: number; metadata: number; body: number }, cap: number): { score: number; matches: RetrievalConcept[] } {
+interface PreparedConcept { concept: RetrievalConcept; normalized: string }
+interface PreparedTerm { term: string; normalized: string }
+
+function evidenceContribution(matches: PreparedConcept[], fields: ProfessionalFieldIndexes, amounts: { title: number; metadata: number; body: number }, cap: number): { score: number; matches: RetrievalConcept[] } {
   const seen = new Set<string>();
   const selected: RetrievalConcept[] = [];
   let score = 0;
-  for (const match of matches) {
-    const key = normalizeToken(match.concept);
+  for (const { concept: match, normalized: key } of matches) {
     if (!key || seen.has(key)) continue;
-    const field = phraseMatches(match.concept, fields.title) ? 'title' : phraseMatches(match.concept, fields.metadata) ? 'metadata' : phraseMatches(match.concept, fields.body) ? 'body' : undefined;
+    const field = normalizedConceptMatches(key, fields.title) ? 'title' : normalizedConceptMatches(key, fields.metadata) ? 'metadata' : normalizedConceptMatches(key, fields.body) ? 'body' : undefined;
     if (!field) continue;
     seen.add(key);
     selected.push(match);
@@ -180,13 +208,12 @@ function evidenceContribution(matches: RetrievalConcept[], fields: { title: stri
   return { score: Math.min(cap, score), matches: selected };
 }
 
-function companyEvidence(terms: string[], fields: { title: string; metadata: string; body: string }): { score: number; matches: string[] } {
+function companyEvidence(terms: PreparedTerm[], fields: ProfessionalFieldIndexes): { score: number; matches: string[] } {
   const seen = new Set<string>();
   let score = 0;
-  for (const term of terms) {
-    const key = normalizeToken(term);
+  for (const { normalized: key } of terms) {
     if (!key || seen.has(key)) continue;
-    const amount = phraseMatches(term, fields.title) ? PROFESSIONAL_SCORE_WEIGHTS.companyTitle : phraseMatches(term, fields.metadata) ? PROFESSIONAL_SCORE_WEIGHTS.companyMetadata : phraseMatches(term, fields.body) ? PROFESSIONAL_SCORE_WEIGHTS.companyBody : 0;
+    const amount = normalizedConceptMatches(key, fields.title) ? PROFESSIONAL_SCORE_WEIGHTS.companyTitle : normalizedConceptMatches(key, fields.metadata) ? PROFESSIONAL_SCORE_WEIGHTS.companyMetadata : normalizedConceptMatches(key, fields.body) ? PROFESSIONAL_SCORE_WEIGHTS.companyBody : 0;
     if (!amount) continue;
     seen.add(key);
     score += amount;
@@ -194,24 +221,40 @@ function companyEvidence(terms: string[], fields: { title: string; metadata: str
   return { score: Math.min(14, score), matches: [...seen] };
 }
 
+export type ProfessionalArticleScorer = (article: NormalizedArticle, fields?: ProfessionalFieldIndexes) => RelevanceResult;
+
+/**
+ * Prepares a profile's concepts once so scoring a whole archive normalizes each
+ * concept a single time. Pass precomputed field indexes to skip re-indexing an article.
+ */
+export function createProfessionalScorer(profile: ProfessionalProfile): ProfessionalArticleScorer {
+  const prepareTerm = (term: string): PreparedTerm => ({ term, normalized: normalizeToken(term) });
+  const concepts = profile.retrieval?.concepts?.length ? profile.retrieval.concepts : fallbackConcepts(profile);
+  const directConcepts = concepts.filter((concept) => concept.relevanceType === 'direct').map((concept) => ({ concept, normalized: normalizeToken(concept.concept) }));
+  const adjacentConcepts = concepts.filter((concept) => concept.relevanceType === 'adjacent').map((concept) => ({ concept, normalized: normalizeToken(concept.concept) }));
+  const exclusions = (profile.excludedConcepts?.length ? profile.excludedConcepts : profile.retrieval?.exclusions ?? []).map(prepareTerm);
+  const roleConcepts = concepts.filter((concept) => concept.source === 'role');
+  const companyTerms = tokenize(`${profile.companyName ?? ''} ${profile.companyDomain}`).map(prepareTerm);
+  const companyLabel = normalizeToken(profile.companyName ?? profile.companyDomain);
+  return (article, fields = professionalFieldIndexes(article)) => scorePreparedProfessionalArticle(article, profile, fields, { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel });
+}
+
 /** Version-independent deterministic professional score used by persisted reports. */
 export function scoreProfessionalArticle(article: NormalizedArticle, profile: ProfessionalProfile): RelevanceResult {
-  const concepts = profile.retrieval?.concepts?.length ? profile.retrieval.concepts : fallbackConcepts(profile);
-  const directConcepts = concepts.filter((concept) => concept.relevanceType === 'direct');
-  const adjacentConcepts = concepts.filter((concept) => concept.relevanceType === 'adjacent');
-  const fields = professionalFields(article);
+  return createProfessionalScorer(profile)(article);
+}
+
+function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: ProfessionalProfile, fields: ProfessionalFieldIndexes, prepared: { directConcepts: PreparedConcept[]; adjacentConcepts: PreparedConcept[]; exclusions: PreparedTerm[]; roleConcepts: RetrievalConcept[]; companyTerms: PreparedTerm[]; companyLabel: string }): RelevanceResult {
+  const { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel } = prepared;
   const directEvidence = evidenceContribution(directConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.directTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.directMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.directBody }, 58);
   const adjacentEvidence = evidenceContribution(adjacentConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.adjacentTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.adjacentMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.adjacentBody }, 28);
   const directMatches = unique(directEvidence.matches.map((item) => item.concept));
   const adjacentMatches = unique(adjacentEvidence.matches.map((item) => item.concept));
-  const exclusions = profile.excludedConcepts?.length ? profile.excludedConcepts : profile.retrieval?.exclusions ?? [];
-  const negativeTitle = exclusions.filter((concept) => phraseMatches(concept, fields.title));
-  const negativeMetadata = exclusions.filter((concept) => phraseMatches(concept, fields.metadata));
-  const negativeBody = exclusions.filter((concept) => phraseMatches(concept, fields.body));
+  const negativeTitle = exclusions.filter((term) => normalizedConceptMatches(term.normalized, fields.title)).map((term) => term.term);
+  const negativeMetadata = exclusions.filter((term) => normalizedConceptMatches(term.normalized, fields.metadata)).map((term) => term.term);
+  const negativeBody = exclusions.filter((term) => normalizedConceptMatches(term.normalized, fields.body)).map((term) => term.term);
   const negativeMatches = unique([...negativeTitle, ...negativeMetadata, ...negativeBody]);
-  const roleConcepts = concepts.filter((concept) => concept.source === 'role');
   const roleMatches = unique([...directEvidence.matches, ...adjacentEvidence.matches].filter((match) => roleConcepts.includes(match)).map((match) => match.concept));
-  const companyTerms = tokenize(`${profile.companyName ?? ''} ${profile.companyDomain}`);
   const company = companyEvidence(companyTerms, fields);
   const parsedPublishedAt = article.publishedAt ? Date.parse(article.publishedAt) : Number.NaN;
   const hasValidPublishedAt = Number.isFinite(parsedPublishedAt);
@@ -222,14 +265,14 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
   const roleBonus = Math.min(10, roleMatches.length * PROFESSIONAL_SCORE_WEIGHTS.roleBonus);
   const companyBonus = company.score;
   const negativePenalty = Math.min(45, negativeTitle.length * 28 + negativeMetadata.length * 18 + negativeBody.length * 10);
-  const exceptionalBonus = company.matches.length > 0 && directEvidence.matches.filter((match) => match.source === 'role').length >= 3 && phraseMatches(profile.companyName ?? profile.companyDomain, fields.title) ? 26 : 0;
+  const exceptionalBonus = company.matches.length > 0 && directEvidence.matches.filter((match) => match.source === 'role').length >= 3 && normalizedConceptMatches(companyLabel, fields.title) ? 26 : 0;
   const recencyMultiplier = hasValidPublishedAt ? recencyMultiplierForAge(ageDays) : UNKNOWN_DATE_RECENCY_MULTIPLIER;
   const adjacentWeight = 1;
   const baseScore = directScore + adjacentScore * adjacentWeight + roleBonus + companyBonus + exceptionalBonus;
   const preRecencyScore = Math.max(0, Math.round(baseScore - negativePenalty));
   const postRecencyScore = Math.max(0, Math.round(baseScore * recencyMultiplier + freshness - negativePenalty));
   const rawScore = postRecencyScore;
-  const meaningfulDirect = directMatches.length > 0 && directScore >= 8 && (directEvidence.matches.some((match) => phraseMatches(match.concept, fields.title)) || directMatches.length >= 2 || directEvidence.matches.some((match) => match.source === 'company'));
+  const meaningfulDirect = directMatches.length > 0 && directScore >= 8 && (directEvidence.matches.some((match) => normalizedConceptMatches(normalizeToken(match.concept), fields.title)) || directMatches.length >= 2 || directEvidence.matches.some((match) => match.source === 'company'));
   const meaningfulAdjacent = adjacentMatches.length > 0 && adjacentScore >= 8;
   const relevanceType: RelevanceResult['relevanceType'] = meaningfulDirect ? 'direct' : meaningfulAdjacent ? 'adjacent' : rawScore > 0 ? 'weak' : 'none';
   const score = calibrateRelevanceScore(rawScore, relevanceType);

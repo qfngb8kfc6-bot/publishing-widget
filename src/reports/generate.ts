@@ -1,4 +1,4 @@
-import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
+import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { AIProviderError } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
@@ -428,11 +428,12 @@ export class ReportGenerationService {
     const preselectionInputCount = usedCatalogueCache ? normalizedArticleCount : archiveWide ? normalizedArticleCount : sourceStats?.preselectionInputCount ?? normalizedArticleCount;
     const preselectionLimit = Math.min(Math.max(definition.config.content.candidateRetrievalLimit, 30), 100);
     const preselectionStartedAt = clockMs();
+    const scoreArticle = createProfessionalScorer(profile);
     const preselectionScores = new Map<NormalizedArticle, ReturnType<typeof scoreProfessionalArticle>>();
     const preselected = archiveWide
       ? unique
         .map((article) => {
-          const result = scoreProfessionalArticle(article, profile);
+          const result = scoreArticle(article);
           preselectionScores.set(article, result);
           return { article, score: result.score };
         })
@@ -448,7 +449,7 @@ export class ReportGenerationService {
     const deterministicStartedAt = clockMs();
     const deterministicRanked: RankedCandidate[] = preselected
       .map((article) => {
-        const result = preselectionScores.get(article) ?? scoreProfessionalArticle(article, profile);
+        const result = preselectionScores.get(article) ?? scoreArticle(article);
         return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
       })
       .filter((item) => passesRelevanceThreshold(item.result))
