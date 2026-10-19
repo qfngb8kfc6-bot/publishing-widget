@@ -105,7 +105,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const generationLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generation ?? 12 });
   const adminAuth = new AdminAuth(environment, serverEnvironment);
   const aiConfig = createAIConfig(serverEnvironment);
-  const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: Math.min(aiConfig.timeoutMs, AI_OPERATION_TIMEOUT_CAP_MS), maxTokens: aiConfig.maxTokens }, options.fetchImpl) : undefined);
+  const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: Math.min(aiConfig.timeoutMs, AI_OPERATION_TIMEOUT_CAP_MS), maxTokens: aiConfig.maxTokens, stageMaxTokens: aiConfig.stageMaxTokens, temperature: aiConfig.temperature, reasoningEffort: aiConfig.reasoningEffort }, options.fetchImpl) : undefined);
   const analyticsRoute = createAnalyticsIngestionRoute(analyticsStore, { isPublisherAllowed: (publisherId) => registry.has(publisherId) });
   const realToken = serverRealToken;
   const realUpstream = serverRealUpstream;
@@ -267,7 +267,7 @@ export async function runConfiguredAIHealthCheck(serverEnvironment: Record<strin
   const config = createAIConfig(serverEnvironment);
   if (!config.enabled || config.provider === 'none') return { status: 'disabled' };
   if (config.provider !== 'openai-compatible' || !config.apiKey) throw new Error('AI provider is enabled but server configuration is incomplete');
-  const provider = new OpenAICompatibleProvider({ endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: config.timeoutMs, maxTokens: config.maxTokens }, fetchImpl);
+  const provider = new OpenAICompatibleProvider({ endpoint: config.endpoint, apiKey: config.apiKey, model: config.model, timeoutMs: config.timeoutMs, maxTokens: config.maxTokens, temperature: config.temperature, reasoningEffort: config.reasoningEffort }, fetchImpl);
   const company = { domain: 'health-check.example', canonicalUrl: 'https://health-check.example/', name: 'Health Check', industry: 'technology', description: 'A synthetic health-check company context.', topics: ['technology'], entities: ['Health Check'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'health-check' };
   const profile = buildProfessionalProfile(company, 'Technology professional');
   const result = await provider.enhanceProfessionalProfile({ publisherId: '__health_check__', submittedCompanyUrl: company.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile });

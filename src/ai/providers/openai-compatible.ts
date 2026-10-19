@@ -1,6 +1,6 @@
 import { AIProviderError, attachAIResponseDiagnostics, type AIResponseDiagnostics } from '../provider';
 import { validateExplanationResults, validateSemanticResults, sanitizeEnrichedIntent } from '../validation';
-import type { AIProvider, EnrichedIntent, ExplanationRequest, ProfessionalAIProvider, ProfessionalProfileEnhancementInput, ReportContentRequest, SemanticCandidate } from '../types';
+import type { AIProvider, AIStageMaxTokens, EnrichedIntent, ExplanationRequest, ProfessionalAIProvider, ProfessionalProfileEnhancementInput, ReportContentRequest, SemanticCandidate } from '../types';
 import type { Intent } from '../../core';
 
 export interface OpenAICompatibleConfig {
@@ -9,7 +9,19 @@ export interface OpenAICompatibleConfig {
   model: string;
   timeoutMs: number;
   maxTokens?: number;
+  stageMaxTokens?: AIStageMaxTokens;
+  temperature?: number;
+  reasoningEffort?: string;
 }
+
+/** The shared AI_MAX_TOKENS budget keeps its historical ceiling; an explicit per-stage budget may go higher. */
+const SHARED_MAX_TOKENS_CEILING = 1200;
+const STAGE_MAX_TOKENS_CEILING = 16_000;
+const STAGE_BY_OPERATION: Record<string, keyof AIStageMaxTokens> = {
+  'professional-profile-enrichment': 'profile',
+  'semantic-reranking': 'rerank',
+  'report-content': 'content',
+};
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -80,7 +92,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
     return this.requestJson('semantic-reranking', {
       enrichedIntent: intent,
       candidates: candidates.map((candidate) => ({ ...candidate, contentSnippet: candidate.contentSnippet?.slice(0, 500) })),
-    }, `Return a JSON array of objects with articleId, semanticScore from 0 to 100, relevanceType (direct or adjacent), confidence from 0 to 100, keep (boolean), rationale, and up to three concise grounded signals. You may return fewer results and set keep false for weak or conflicting candidates. Direct matches must outrank merely adjacent matches. Do not reward generic topical overlap. Only use article IDs supplied in candidates.`);
+    }, `Return a JSON object of the form {"results": [...]} where results is an array of objects with articleId, semanticScore from 0 to 100, relevanceType (direct or adjacent), confidence from 0 to 100, keep (boolean), rationale, and up to three concise grounded signals. You may return fewer results and set keep false for weak or conflicting candidates. Direct matches must outrank merely adjacent matches. Do not reward generic topical overlap. Only use article IDs supplied in candidates.`);
   }
 
   async explainMany(requests: ExplanationRequest[]): Promise<unknown> {
@@ -112,6 +124,21 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
     return valid[0]?.explanation ?? 'This story connects with your answers.';
   }
 
+  private maxCompletionTokens(operation: string): number {
+    const stage = STAGE_BY_OPERATION[operation];
+    const stageBudget = stage ? this.config.stageMaxTokens?.[stage] : undefined;
+    if (stageBudget !== undefined) return Math.min(stageBudget, STAGE_MAX_TOKENS_CEILING);
+    return Math.min(this.config.maxTokens ?? 900, SHARED_MAX_TOKENS_CEILING);
+  }
+
+  /** temperature and reasoning_effort are sent only when configured, so model defaults apply otherwise. */
+  private samplingParameters(): { temperature?: number; reasoning_effort?: string } {
+    return {
+      ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
+      ...(this.config.reasoningEffort ? { reasoning_effort: this.config.reasoningEffort } : {}),
+    };
+  }
+
   private async requestJson(operation: string, payload: unknown, outputInstruction: string): Promise<unknown> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
@@ -128,7 +155,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
       const response = await this.fetchImpl(this.config.endpoint, {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.config.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ model: this.config.model, temperature: 0, max_completion_tokens: Math.min(this.config.maxTokens ?? 900, 1200), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: `BEGIN_REFERENCE_JSON\n${JSON.stringify({ operation, payload })}\nEND_REFERENCE_JSON` }] }),
+        body: JSON.stringify({ model: this.config.model, ...this.samplingParameters(), max_completion_tokens: this.maxCompletionTokens(operation), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: `BEGIN_REFERENCE_JSON\n${JSON.stringify({ operation, payload })}\nEND_REFERENCE_JSON` }] }),
         signal: controller.signal,
       });
       diagnostics.httpStatus = response.status;

@@ -10,8 +10,20 @@ export interface AIConfig {
   explanationsEnabled: boolean;
   timeoutMs: number;
   maxTokens: number;
+  /** Per-stage completion budgets; each falls back to maxTokens. */
+  stageMaxTokens?: AIStageMaxTokens;
+  /** Sent only when configured: some reasoning models reject a non-default temperature. */
+  temperature?: number;
+  /** Sent as reasoning_effort only when configured. */
+  reasoningEffort?: string;
   deterministicWeight: number;
   semanticWeight: number;
+}
+
+export interface AIStageMaxTokens {
+  profile?: number;
+  rerank?: number;
+  content?: number;
 }
 
 /** Compatibility retrieval shape for the optional AI reranker; not the persisted professional profile. */
