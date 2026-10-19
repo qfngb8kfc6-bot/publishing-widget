@@ -44,46 +44,94 @@ function uniqueTerms(values: string[]): string[] {
   return [...new Set(values.flatMap((value) => tokenize(value)))];
 }
 
-function phraseOrTokenMatch(term: string, value: string): boolean {
-  const normalizedTerm = normalizeToken(term);
-  const normalizedValue = normalizeToken(value);
-  if (!normalizedTerm || !normalizedValue) return false;
-  if (normalizedTerm.includes(' ')) return normalizedValue.includes(normalizedTerm);
-  return tokenize(normalizedValue).some((token) => token === normalizedTerm || (normalizedTerm.length >= 6 && token.length >= 6 && token.slice(0, 5) === normalizedTerm.slice(0, 5)));
+interface PreselectionText {
+  normalized: string;
+  tokens: Set<string>;
+  /** Five-character prefixes of tokens with at least six characters. */
+  prefixes: Set<string>;
 }
 
-function articlePreselectionScore(article: NormalizedArticle, intent: Intent): number {
-  const title = article.title;
-  const metadata = [article.description ?? '', article.author ?? '', article.category ?? '', ...article.categories, ...article.tags].join(' ');
-  const body = [article.contentSnippet ?? '', article.summary ?? '', article.searchText ?? ''].join(' ');
-  const all = `${title} ${metadata} ${body}`;
-  const direct = uniqueTerms([...(intent.directInterests ?? []), ...intent.interests, ...intent.personas, ...intent.keywords]);
-  const adjacent = uniqueTerms(intent.adjacentInterests ?? []);
-  const query = uniqueTerms([intent.queryText]);
+/** Normalizes and tokenizes a text field once so every term check is a set lookup. */
+function preselectionText(value: string): PreselectionText {
+  const normalized = normalizeToken(value);
+  const tokens = new Set<string>();
+  const prefixes = new Set<string>();
+  for (const token of tokenize(normalized)) {
+    tokens.add(token);
+    if (token.length >= 6) prefixes.add(token.slice(0, 5));
+  }
+  return { normalized, tokens, prefixes };
+}
+
+function normalizedTermMatches(normalizedTerm: string, text: PreselectionText): boolean {
+  if (!normalizedTerm || !text.normalized) return false;
+  if (normalizedTerm.includes(' ')) return text.normalized.includes(normalizedTerm);
+  return text.tokens.has(normalizedTerm) || (normalizedTerm.length >= 6 && text.prefixes.has(normalizedTerm.slice(0, 5)));
+}
+
+/** Phrase terms match as normalized substrings; single terms match a whole token or a shared five-character prefix when both are at least six characters. */
+export function phraseOrTokenMatch(term: string, value: string): boolean {
+  return normalizedTermMatches(normalizeToken(term), preselectionText(value));
+}
+
+interface PreselectionTerms {
+  direct: string[];
+  adjacent: string[];
+  query: string[];
+  company: string[];
+  exclusions: string[];
+}
+
+function preselectionTerms(intent: Intent): PreselectionTerms {
+  const normalized = (terms: string[]) => terms.map((term) => normalizeToken(term));
   const answerValues = Object.entries(intent.answers ?? {}).flatMap(([key, value]) => {
     const values = Array.isArray(value) ? value : [value];
     return /company|domain|url/i.test(key) ? values : values.filter((candidate) => /\.[a-z]{2,}$/i.test(String(candidate)));
   });
-  const company = uniqueTerms(answerValues.map(String));
-  const exclusions = uniqueTerms(intent.excludedConcepts ?? []);
+  return {
+    direct: normalized(uniqueTerms([...(intent.directInterests ?? []), ...intent.interests, ...intent.personas, ...intent.keywords])),
+    adjacent: normalized(uniqueTerms(intent.adjacentInterests ?? [])),
+    query: normalized(uniqueTerms([intent.queryText])),
+    company: normalized(uniqueTerms(answerValues.map(String))),
+    exclusions: normalized(uniqueTerms(intent.excludedConcepts ?? [])),
+  };
+}
+
+function articlePreselectionScore(article: NormalizedArticle, terms: PreselectionTerms): number {
+  const titleValue = article.title;
+  const metadataValue = [article.description ?? '', article.author ?? '', article.category ?? '', ...article.categories, ...article.tags].join(' ');
+  const bodyValue = [article.contentSnippet ?? '', article.summary ?? '', article.searchText ?? ''].join(' ');
+  const title = preselectionText(titleValue);
+  const metadata = preselectionText(metadataValue);
+  const body = preselectionText(bodyValue);
   let score = 0;
-  const addMatches = (terms: string[], weight: number) => {
-    for (const term of terms) {
-      if (phraseOrTokenMatch(term, title)) score += 7 * weight;
-      else if (phraseOrTokenMatch(term, metadata)) score += 3 * weight;
-      else if (phraseOrTokenMatch(term, body)) score += 1 * weight;
+  const addMatches = (termList: string[], weight: number) => {
+    for (const term of termList) {
+      if (normalizedTermMatches(term, title)) score += 7 * weight;
+      else if (normalizedTermMatches(term, metadata)) score += 3 * weight;
+      else if (normalizedTermMatches(term, body)) score += 1 * weight;
     }
   };
-  addMatches(direct, 1);
-  addMatches(adjacent, 0.65);
-  addMatches(query, 0.35);
-  addMatches(company, 1.25);
-  for (const term of exclusions) if (phraseOrTokenMatch(term, all)) score -= 6;
+  addMatches(terms.direct, 1);
+  addMatches(terms.adjacent, 0.65);
+  addMatches(terms.query, 0.35);
+  addMatches(terms.company, 1.25);
+  if (terms.exclusions.length) {
+    const all = preselectionText(`${titleValue} ${metadataValue} ${bodyValue}`);
+    for (const term of terms.exclusions) if (normalizedTermMatches(term, all)) score -= 6;
+  }
   return score;
 }
 
-function archiveAwareFeedPreselection(articles: PublisherArticle[], intent: Intent, limit: number): PublisherArticle[] {
-  const scored = articles.map((article, index) => ({ article, index, score: articlePreselectionScore(article, intent) }));
+/** Deterministic archive preselection scores, computed with one tokenization per article field. */
+export function feedPreselectionScores(articles: NormalizedArticle[], intent: Intent): number[] {
+  const terms = preselectionTerms(intent);
+  return articles.map((article) => articlePreselectionScore(article, terms));
+}
+
+export function archiveAwareFeedPreselection<T extends NormalizedArticle>(articles: T[], intent: Intent, limit: number): T[] {
+  const scores = feedPreselectionScores(articles, intent);
+  const scored = articles.map((article, index) => ({ article, index, score: scores[index] }));
   const ordered = [...scored].sort((left, right) => right.score - left.score || compareFeedDates(left.article, right.article) || left.index - right.index);
   return ordered.slice(0, limit).map(({ article }) => article);
 }
