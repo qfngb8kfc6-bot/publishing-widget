@@ -501,6 +501,9 @@ export class ReportGenerationService {
           deterministicScore: result.deterministicScore,
           deterministicRelevanceType: result.relevanceType,
           relevanceSignals: result.relevanceSignals,
+          publishedAt: result.article.publishedAt,
+          category: result.article.category,
+          matchedConcepts: [...result.directMatches, ...result.adjacentMatches],
         }));
         const { value: semanticResults } = await this.runAI('semantic_reranking', async (observe) => {
           const raw = observe(await this.ai!.provider.rerank(createEnrichedIntent(profile, publisherId), semanticCandidates));
@@ -730,6 +733,8 @@ export class ReportGenerationService {
       deterministicExplanation: explanation(profile, item),
       relevanceSignals: item.relevanceSignals,
       semanticSignals: item.semanticSignals,
+      matchedConcepts: [...item.directMatches, ...item.adjacentMatches],
+      score: Math.round(item.finalScore),
     }));
     let generatedSummary = reportSummary(profile, ranked.length);
     const explanationById = new Map<string, string>();

@@ -67,3 +67,34 @@ describe('AI request parameters', () => {
     expect(validateSemanticResults({ rankings: [result] }, candidates)).toHaveLength(0);
   });
 });
+
+describe('AI article payloads', () => {
+  const longText = `${'Nike is expanding owned stores across Europe while trimming wholesale accounts. '.repeat(20)}TAILSENTINEL`;
+  const article = { id: 'a1', title: 'Nike reshapes European distribution', description: longText, url: 'https://www.sgieurope.com/a1.article', canonicalUrl: 'https://www.sgieurope.com/a1.article', categories: ['Retail', 'Distribution'], tags: ['nike'], contentSnippet: longText, summary: longText, searchText: `${longText} ${longText}`, publishedAt: '2026-09-01T10:00:00.000Z', category: 'Retail', publisherId: 'sgi-europe', provenance: { sourceType: 'rss' } };
+  const allowed = ['articleId', 'title', 'description', 'publishedAt', 'category', 'matchedConcepts', 'score'];
+
+  function payload(captured: Captured[]) {
+    const user = (captured[0].body.messages as Array<{ content: string }>)[1].content;
+    return JSON.parse(user.replace('BEGIN_REFERENCE_JSON\n', '').replace('\nEND_REFERENCE_JSON', '')).payload;
+  }
+
+  it('sends the content call a minimal projection per article', async () => {
+    const { provider, captured } = providerFor({});
+    await provider.generateReportContent({ publisherId: 'sgi-europe', profile: {} as never, recommendations: [{ article: article as never, deterministicExplanation: 'Directly matches stores, relevant to your work.', relevanceSignals: ['directly matches stores'], semanticSignals: [], matchedConcepts: ['stores', 'distribution', 'stores'], score: 82 }] });
+    const [projected] = payload(captured).articles;
+    expect(Object.keys(projected).every((key) => allowed.includes(key))).toBe(true);
+    expect(projected).toMatchObject({ articleId: 'a1', title: article.title, publishedAt: article.publishedAt, category: 'Retail', matchedConcepts: ['stores', 'distribution'], score: 82 });
+    expect(projected.description.length).toBeLessThanOrEqual(601);
+    const sent = (captured[0].body.messages as Array<{ content: string }>)[1].content;
+    for (const absent of ['searchText', 'provenance', 'canonicalUrl', 'https://www.sgieurope.com', 'deterministicExplanation', 'TAILSENTINEL']) expect(sent).not.toContain(absent);
+  });
+
+  it('sends the rerank call the same projection plus the deterministic relevance type', async () => {
+    const { provider, captured } = providerFor({});
+    await provider.rerank({} as never, [{ articleId: 'a1', title: article.title, description: longText, categories: article.categories, tags: article.tags, contentSnippet: longText, deterministicScore: 74, deterministicRelevanceType: 'direct', relevanceSignals: ['directly matches stores'], publishedAt: article.publishedAt, category: 'Retail', matchedConcepts: ['stores'] }]);
+    const [projected] = payload(captured).candidates;
+    expect(Object.keys(projected).every((key) => [...allowed, 'relevanceType'].includes(key))).toBe(true);
+    expect(projected).toMatchObject({ articleId: 'a1', score: 74, relevanceType: 'direct', matchedConcepts: ['stores'] });
+    expect(projected.description.length).toBeLessThanOrEqual(601);
+  });
+});

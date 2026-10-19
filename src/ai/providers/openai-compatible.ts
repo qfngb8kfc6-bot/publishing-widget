@@ -17,6 +17,41 @@ export interface OpenAICompatibleConfig {
 /** The shared AI_MAX_TOKENS budget keeps its historical ceiling; an explicit per-stage budget may go higher. */
 const SHARED_MAX_TOKENS_CEILING = 1200;
 const STAGE_MAX_TOKENS_CEILING = 16_000;
+/** Article text sent to the model; enough to explain relevance without repeating the article body. */
+const ARTICLE_DESCRIPTION_LIMIT = 600;
+
+function clipText(value: string | undefined, limit = ARTICLE_DESCRIPTION_LIMIT): string | undefined {
+  const text = value?.replace(/\s+/g, ' ').trim();
+  if (!text) return undefined;
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > limit * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/** Minimal per-article projection shared by rerank and content calls: no URLs, provenance, search text or duplicates. */
+interface AIArticleProjection {
+  articleId: string;
+  title: string;
+  description?: string;
+  publishedAt?: string;
+  category?: string;
+  matchedConcepts?: string[];
+  score?: number;
+}
+
+function projectArticle(article: { id: string; title: string; description?: string; summary?: string; contentSnippet?: string; publishedAt?: string; category?: string; categories?: string[] }, matchedConcepts: string[] | undefined, score: number | undefined): AIArticleProjection {
+  return {
+    articleId: article.id,
+    title: article.title,
+    description: clipText(article.description ?? article.summary ?? article.contentSnippet),
+    publishedAt: article.publishedAt,
+    category: article.category ?? article.categories?.[0],
+    matchedConcepts: matchedConcepts?.length ? [...new Set(matchedConcepts)].slice(0, 8) : undefined,
+    score,
+  };
+}
+
 const STAGE_BY_OPERATION: Record<string, keyof AIStageMaxTokens> = {
   'professional-profile-enrichment': 'profile',
   'semantic-reranking': 'rerank',
@@ -91,7 +126,10 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
   async rerank(intent: EnrichedIntent, candidates: SemanticCandidate[]): Promise<unknown> {
     return this.requestJson('semantic-reranking', {
       enrichedIntent: intent,
-      candidates: candidates.map((candidate) => ({ ...candidate, contentSnippet: candidate.contentSnippet?.slice(0, 500) })),
+      candidates: candidates.map((candidate) => ({
+        ...projectArticle({ id: candidate.articleId, title: candidate.title, description: candidate.description, contentSnippet: candidate.contentSnippet, publishedAt: candidate.publishedAt, category: candidate.category, categories: candidate.categories }, candidate.matchedConcepts, candidate.deterministicScore),
+        relevanceType: candidate.deterministicRelevanceType,
+      })),
     }, `Return a JSON object of the form {"results": [...]} where results is an array of objects with articleId, semanticScore from 0 to 100, relevanceType (direct or adjacent), confidence from 0 to 100, keep (boolean), rationale, and up to three concise grounded signals. You may return fewer results and set keep false for weak or conflicting candidates. Direct matches must outrank merely adjacent matches. Do not reward generic topical overlap. Only use article IDs supplied in candidates.`);
   }
 
@@ -109,12 +147,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
   async generateReportContent(input: ReportContentRequest): Promise<unknown> {
     return this.requestJson('report-content', {
       profile: input.profile,
-      recommendations: input.recommendations.map((recommendation) => ({
-        article: { ...recommendation.article, contentSnippet: recommendation.article.contentSnippet?.slice(0, 500) },
-        deterministicExplanation: recommendation.deterministicExplanation,
-        relevanceSignals: recommendation.relevanceSignals,
-        semanticSignals: recommendation.semanticSignals,
-      })),
+      articles: input.recommendations.map((recommendation) => projectArticle(recommendation.article, recommendation.matchedConcepts, recommendation.score)),
     }, 'Return a JSON object with summary and explanations. summary must be a concise briefing based only on the supplied professional profile and articles. explanations must be an array of objects with articleId and one or two concise sentences explaining why that known article matters. Use only supplied article evidence and profile signals. Never invent article IDs, facts, URLs, companies, responsibilities or events.');
   }
 

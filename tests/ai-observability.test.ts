@@ -88,7 +88,7 @@ async function generate(app: ReturnType<typeof aiApp>['app']) {
 
 function candidateIds(body: { messages: Array<{ content: string }> }): string[] {
   const payload = JSON.parse(body.messages[1].content.replace('BEGIN_REFERENCE_JSON\n', '').replace('\nEND_REFERENCE_JSON', '')).payload;
-  return (payload.recommendations ?? []).map((item: { article: { id: string } }) => item.article.id);
+  return (payload.articles ?? []).map((item: { articleId: string }) => item.articleId);
 }
 
 describe('report AI provenance and ai_performance diagnostics', () => {
