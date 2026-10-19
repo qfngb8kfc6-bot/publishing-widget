@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createProductionApp, runConfiguredAIHealthCheck } from '../src/server/production';
+import { createProductionApp, resolveCommitSha, runConfiguredAIHealthCheck } from '../src/server/production';
 import { SlidingWindowRateLimiter } from '../src/server/rate-limit';
 import { originAllowed } from '../src/server/cors';
 import { demoManifest } from '../src/demo/config';
@@ -9,6 +9,15 @@ import { MemoryPublisherStore } from '../src/publishers/store';
 import { createEvent } from '../src/core';
 
 describe('production boundaries', () => {
+  it('reports the deployed commit from COMMIT_SHA, GIT_SHA or RENDER_GIT_COMMIT', async () => {
+    expect(resolveCommitSha({})).toBeUndefined();
+    expect(resolveCommitSha({ RENDER_GIT_COMMIT: 'render-sha' })).toBe('render-sha');
+    expect(resolveCommitSha({ GIT_SHA: 'git-sha', RENDER_GIT_COMMIT: 'render-sha' })).toBe('git-sha');
+    expect(resolveCommitSha({ COMMIT_SHA: 'commit-sha', GIT_SHA: 'git-sha', RENDER_GIT_COMMIT: 'render-sha' })).toBe('commit-sha');
+    const app = createProductionApp({ environment: 'production', serverEnvironment: {}, commitSha: resolveCommitSha({ RENDER_GIT_COMMIT: 'render-sha' }) });
+    expect(await (await app.handle(new Request('https://product.example/health'))).json()).toMatchObject({ status: 'ok', commitSha: 'render-sha' });
+  });
+
   it('serves safe health data and disables mock AI in production', async () => {
     const app = createProductionApp({ environment: 'production', serverEnvironment: {} });
     const health = await app.handle(new Request('https://product.example/health'));

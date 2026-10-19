@@ -19,6 +19,9 @@ export const GENERATION_VERSION = '1.2';
 
 function clockMs(): number { return typeof performance !== 'undefined' ? performance.now() : Date.now(); }
 
+/** Any single generation span above this is logged individually so untimed stalls are visible in production. */
+const SLOW_SPAN_MS = 1_000;
+
 function cacheSafeSource(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(cacheSafeSource);
   if (!value || typeof value !== 'object') return value;
@@ -170,6 +173,36 @@ export class ReportGenerationService {
     await this.analytics.append([{ ...event, eventId: event.eventId!, schemaVersion: event.schemaVersion!, receivedAt: new Date().toISOString() } as StoredAnalyticsEvent]);
   }
 
+  private noteSpan(context: Pick<ServerLogFields, 'requestId' | 'publisherId'>, span: string, durationMs: number): void {
+    if (durationMs > SLOW_SPAN_MS) this.logger?.info('slow_span', { ...context, stage: span, durationMs: Math.round(durationMs) });
+  }
+
+  private async trackTimed(timing: ReportPerformanceTiming, name: Parameters<typeof createEvent>[0], publisherId: string, sessionId: string, metadata?: Record<string, string | number | boolean>): Promise<void> {
+    const startedAt = clockMs();
+    try {
+      await this.track(name, publisherId, sessionId, metadata);
+    } finally {
+      const durationMs = clockMs() - startedAt;
+      timing.analyticsMs = (timing.analyticsMs ?? 0) + durationMs;
+      this.noteSpan({ requestId: timing.requestId, publisherId }, `analytics:${name}`, durationMs);
+    }
+  }
+
+  private logSlowSpans(timing: ReportPerformanceTiming): void {
+    const spans: Array<[string, number | undefined]> = [
+      ['company', timing.companyResolutionMs],
+      ['ai-profile', timing.aiProfileMs],
+      ['catalogue', timing.catalogueCacheLookupMs],
+      ['exclusion', timing.exclusionMs],
+      ['ranking', timing.preselectionMs + timing.deterministicRankingMs],
+      ['ai-rerank', timing.aiRerankingMs],
+      ['ai-content', timing.aiExplanationsMs],
+      ['sections', timing.sectionAllocationMs],
+      ['persist', timing.persistenceMs],
+    ];
+    for (const [span, durationMs] of spans) this.noteSpan({ requestId: timing.requestId, publisherId: timing.publisherId }, span, durationMs ?? 0);
+  }
+
   private canUseAI(definition: ReturnType<PublisherRegistry['get']>): definition is NonNullable<ReturnType<PublisherRegistry['get']>> {
     return Boolean(this.ai?.config.enabled && this.ai.config.provider !== 'none' && definition?.manifest?.features?.aiEnabled !== false && isProfessionalAIProvider(this.ai.provider));
   }
@@ -251,7 +284,7 @@ export class ReportGenerationService {
     }
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string) => void): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string) => void): Promise<{ ranked: RankedCandidate[]; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     const runtimeInfo = this.runtimeDiagnostics?.(publisherId);
@@ -261,6 +294,7 @@ export class ReportGenerationService {
     let usedCatalogueCache = false;
     let catalogueItemCount = 0;
     let catalogueCacheLookupMs = 0;
+    let catalogueSelectionMs = 0;
     const catalogueLoadStartedAt = clockMs();
     try {
       const limit = Math.max(definition.config.content.candidateRetrievalLimit, 30);
@@ -310,7 +344,10 @@ export class ReportGenerationService {
             retrievalCandidates: loaded.articles.length,
           });
         }
+        const selectionStartedAt = clockMs();
         const selected = archiveAdapter.selectCatalogue ? archiveAdapter.selectCatalogue(loaded.articles, intent, { limit, archiveWide }) : loaded.articles;
+        catalogueSelectionMs = clockMs() - selectionStartedAt;
+        this.noteSpan({ requestId, publisherId }, 'catalogue-select', catalogueSelectionMs);
         candidates = selected;
       } else {
         candidates = await definition.adapter.search(intent, {
@@ -461,7 +498,7 @@ export class ReportGenerationService {
     onStage?.('ranking_complete');
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_output', { stage: 'ranking', deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, finalRecommendations: ranked.length });
     const finalFormattingStartedAt = clockMs();
-    const timings = { ...catalogueDiagnostics, normalizationMs: catalogueDiagnostics.normalizationMs ?? normalizationMs, cataloguePreparationMs: catalogueDiagnostics.cataloguePreparationMs ?? (clockMs() - catalogueLoadStartedAt), catalogueCacheLookupMs, currentReportExclusionMs, preselectionMs, deterministicRankingMs, aiRerankMs, finalFormattingMs: clockMs() - finalFormattingStartedAt };
+    const timings = { ...catalogueDiagnostics, normalizationMs: catalogueDiagnostics.normalizationMs ?? normalizationMs, cataloguePreparationMs: catalogueDiagnostics.cataloguePreparationMs ?? (clockMs() - catalogueLoadStartedAt), catalogueCacheLookupMs, catalogueSelectionMs, currentReportExclusionMs, preselectionMs, deterministicRankingMs, aiRerankMs, finalFormattingMs: clockMs() - finalFormattingStartedAt };
     return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
   }
 
@@ -508,6 +545,7 @@ export class ReportGenerationService {
     timing.catalogueStale = ranking.timings.catalogueStale;
     timing.catalogueItemCount = ranking.normalizedArticleCount;
     timing.catalogueCacheLookupMs = ranking.timings.catalogueCacheLookupMs ?? 0;
+    timing.catalogueSelectionMs = ranking.timings.catalogueSelectionMs;
     timing.catalogueSnapshotLookupMs = ranking.timings.catalogueSnapshotLookupMs ?? 0;
     timing.catalogueRefreshMs = ranking.timings.catalogueRefreshMs ?? 0;
     timing.catalogueRefreshReason = ranking.timings.catalogueRefreshReason;
@@ -521,6 +559,7 @@ export class ReportGenerationService {
     timing.exclusionMs = ranking.timings.currentReportExclusionMs;
     timing.totalMs = clockMs() - themeStartedAt;
     this.logger?.info('theme_retrieval_diagnostics', { publisherId: report.publisherId, theme: safeLogText(theme, 160), catalogueCount: ranking.normalizedArticleCount, catalogueItemCount: ranking.normalizedArticleCount, rawCandidateCount: ranking.rawCandidateCount, candidateCount: ranking.retrievedCount, normalizedCandidateCount: ranking.normalizedCandidateCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, excludedCurrentReportCount: report.recommendations.length, excludedArticleCount: ranking.excludedArticleCount, uniqueCandidateCount: ranking.uniqueCandidateCount, thresholdInputCount: ranking.thresholdInputCount, deterministicEligibleCount: ranking.deterministicEligible, aiEligibleCount: ranking.aiEligibleCount, aiInputCount: ranking.aiInputCount, aiFilteredCount: ranking.aiFilteredCount, finalResultCount: ranked.length, finalRecommendationCount: ranked.length, excludedExistingCount: report.recommendations.length, eligibleCount: ranking.deterministicEligible, failureStage, ...ranking.timings, totalThemeSearchMs: clockMs() - themeStartedAt, finalFormattingMs: clockMs() - finalFormattingStartedAt });
+    this.logSlowSpans(timing);
     this.logger?.info('theme_performance', { ...timing, totalMs: timing.totalMs, exclusionMs: timing.exclusionMs ?? 0 });
     return recommendations;
   }
@@ -540,7 +579,7 @@ export class ReportGenerationService {
     const jobTitle = input.jobTitle.replace(/\s+/g, ' ').trim().slice(0, 160);
     if (!jobTitle) throw new Error('job_title_required');
     const activeSession = input.sessionId ?? sessionId();
-    await this.track('generation_started', input.publisherId, activeSession);
+    await this.trackTimed(timing, 'generation_started', input.publisherId, activeSession);
     const inputType = classifyCompanyInput(input.companyUrl);
     const baseResolutionDiagnostics: Partial<ServerLogFields> = {
       companyInputType: inputType,
@@ -568,12 +607,15 @@ export class ReportGenerationService {
       resolvedHostnamePresent: Boolean(normalized.domain),
       resolutionMethod: normalized.resolutionMethod,
     };
-    await this.track('company_analysis_started', input.publisherId, activeSession);
+    await this.trackTimed(timing, 'company_analysis_started', input.publisherId, activeSession);
     let company: Awaited<ReturnType<CompanyContextProvider['getContext']>>;
+    const companyContextStartedAt = clockMs();
     try { company = await this.companyProvider.getContext(normalized.domain); }
     catch (error) { annotateGenerationFailure(error, 'company_context'); this.logIbiError(input, 'company_context', error, resolutionDiagnostics); throw error; }
+    timing.companyContextMs = clockMs() - companyContextStartedAt;
+    this.noteSpan(input, 'company-context', timing.companyContextMs);
     if (normalized.displayName) company = { ...company, name: normalized.displayName };
-    await this.track('company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
+    await this.trackTimed(timing, 'company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
     let profile: ReturnType<typeof buildProfessionalProfile>;
     const profileStartedAt = clockMs();
     try {
@@ -598,9 +640,9 @@ export class ReportGenerationService {
     const professionalProfileMs = clockMs() - profileStartedAt;
     timing.profileMs = professionalProfileMs;
     this.markStage(input, 'profile_built');
-    await this.track('role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
-    await this.track('profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
-    await this.track('retrieval_started', input.publisherId, activeSession);
+    await this.trackTimed(timing, 'role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
+    await this.trackTimed(timing, 'profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
+    await this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);
     let ranking: Awaited<ReturnType<ReportGenerationService['rankProfile']>>;
     try {
       ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, false, (stage) => this.markStage(input, stage));
@@ -629,8 +671,8 @@ export class ReportGenerationService {
     this.logger?.info('report_retrieval_diagnostics', { requestId: input.requestId, publisherId: input.publisherId, normalizedArticles: ranking.normalizedCount, normalizedArticleCount: ranking.normalizedArticleCount, catalogueItemCount: ranking.normalizedArticleCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, retrievalCandidates: ranking.retrievedCount, candidateCount: ranking.retrievedCount, rankingCandidateCount: ranking.retrievedCount, deterministicEligible: ranking.deterministicEligible, eligibleCount: ranking.deterministicEligible, finalRecommendations: ranked.length, finalRecommendationCount: ranked.length, ...ranking.timings });
     this.logIbi(input, 'ibi_generation_counts', { stage: 'ranking', retrievalCandidates: ranking.retrievedCount, normalizedArticles: ranking.normalizedCount, deterministicEligible: ranking.deterministicEligible, aiRerankSurvivors: ranking.aiRerankSurvivors, finalRecommendations: ranked.length });
     const aiAvailable = this.canUseAI(definition);
-    await this.track('retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
-    await this.track('ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
+    await this.trackTimed(timing, 'retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
+    await this.trackTimed(timing, 'ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
     const deterministicRecommendations = ranked.map((item) => ({
       article: item.article,
       deterministicExplanation: explanation(profile, item),
@@ -662,6 +704,7 @@ export class ReportGenerationService {
     timing.catalogueStale = ranking.timings.catalogueStale;
     timing.catalogueItemCount = ranking.normalizedArticleCount;
     timing.catalogueCacheLookupMs = ranking.timings.catalogueCacheLookupMs ?? 0;
+    timing.catalogueSelectionMs = ranking.timings.catalogueSelectionMs;
     timing.catalogueSnapshotLookupMs = ranking.timings.catalogueSnapshotLookupMs ?? 0;
     timing.catalogueRefreshMs = ranking.timings.catalogueRefreshMs ?? 0;
     timing.catalogueRefreshReason = ranking.timings.catalogueRefreshReason;
@@ -697,7 +740,7 @@ export class ReportGenerationService {
     timing.totalMs = clockMs() - generationStartedAt;
     this.markStage(input, 'report_persisted');
     try {
-      await this.track('report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });
+      await this.trackTimed(timing, 'report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiExplanationUsed });
     } catch (error) {
       annotateGenerationFailure(error, 'analytics');
       this.logIbiError(input, 'analytics', error);
@@ -722,6 +765,8 @@ export class ReportGenerationService {
       finalRecommendationCount: recommendations.length,
       ...ranking.timings,
     });
+    timing.exclusionMs = ranking.timings.currentReportExclusionMs;
+    this.logSlowSpans(timing);
     this.logger?.info('report_performance', { ...timing, totalMs: timing.totalMs });
     return report;
   }

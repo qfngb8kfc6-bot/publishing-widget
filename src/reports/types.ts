@@ -81,6 +81,9 @@ export interface ReportPerformanceTiming {
   totalMs: number;
   reportLookupMs?: number;
   exclusionMs?: number;
+  companyContextMs?: number;
+  analyticsMs?: number;
+  catalogueSelectionMs?: number;
   catalogueStale?: boolean;
 }
 

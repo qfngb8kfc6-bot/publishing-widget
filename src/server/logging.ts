@@ -125,7 +125,7 @@ export function safeLogText(value: unknown, limit = 4_000): string | undefined {
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    const safeProductionDiagnostic = ['ai_performance', 'report_performance', 'theme_performance'].includes(message);
+    const safeProductionDiagnostic = ['ai_performance', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
     if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };
