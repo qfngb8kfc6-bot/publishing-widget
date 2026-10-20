@@ -15,6 +15,7 @@ import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
 import { articleRelationship, limitOwnCompanyShare } from './relationship';
 import { explanationQualityWarnings, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
+import { angleForArticle, normalizeAngle } from '../ai/angles';
 import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
 
@@ -885,7 +886,11 @@ export class ReportGenerationService {
           this.logExplanationRejections(input, outcome.request, [...(outcome.value.explanations ?? []), ...(outcome.value.weakArticleIds ?? []).map((articleId) => ({ articleId }))], outcome.rejections);
           return outcome.value.explanations ?? [];
         });
-        for (const item of accepted) explanationById.set(item.articleId, { explanation: item.explanation, angle: item.angle });
+        const articleById = new Map(ranked.map((item) => [item.article.id, item.article]));
+        for (const item of accepted) {
+          const article = articleById.get(item.articleId);
+          explanationById.set(item.articleId, { explanation: item.explanation, angle: article ? angleForArticle(normalizeAngle(item.angle), article) : normalizeAngle(item.angle) });
+        }
         aiExplanationUsed = explanationById.size > 0;
         this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map(ranked.map((item) => {
           const timing = articleTiming(item.article.publishedAt);

@@ -1,6 +1,7 @@
 import { normalizeToken, subjectMatcher, subjectTermsFor, tokenize, type Intent } from '../core';
 import type { AIExplanationResult, AIProfessionalProfileEnhancement, AIReportContent, EnrichedIntent, ReportContentRequest, SemanticCandidate } from './types';
 import type { ProfessionalProfile } from '../core';
+import { normalizeAngle } from './angles';
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -279,11 +280,9 @@ export interface ExplanationRejection {
   presentFields?: string[];
 }
 
-/** An angle is a short label (at most four words); anything else is dropped without rejecting the explanation. */
+/** An angle is one of ALLOWED_ANGLES: other labels map to the closest one, or are dropped without rejecting the explanation. */
 function validAngle(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const angle = value.replace(/\s+/g, ' ').trim().toLowerCase();
-  return angle && angle.length <= 40 && angle.split(' ').length <= 4 && /^[a-z][a-z -]*$/.test(angle) ? angle : undefined;
+  return normalizeAngle(value);
 }
 
 /** Model-chosen field names are logged only when they look like identifiers, so free text can never leak through a key. */
