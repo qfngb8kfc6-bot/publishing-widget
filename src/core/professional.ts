@@ -224,7 +224,7 @@ export function analyzeRole(jobTitle: string): RoleContext {
   const adjacentThemes = topics.length ? unique([...match.direct, ...match.adjacent]) : match.adjacent;
   // Its responsibilities are the subject's too, not the catch-all "strategic planning, organisational decisions".
   const label = topics.join(' and ');
-  const responsibilities = topics.length ? [`${label} programme`, `${label} regulation`, `${label} peer benchmarks`] : match.responsibilities;
+  const responsibilities = topics.length ? [`${label} risk`, `${label} regulation`, `${label} reporting`] : match.responsibilities;
   return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics, subjectTerms: topics } : {}) };
 }
 

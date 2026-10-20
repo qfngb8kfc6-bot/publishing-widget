@@ -190,7 +190,25 @@ export function validateReportContent(raw: unknown, request: ReportContentReques
   const summary = optionalString(value.summary, 1200);
   if (!summary && explanations.length === 0 && weakArticleIds.length === 0) return null;
   const citedArticleIds = summary && Array.isArray(value.citedArticleIds) ? [...new Set(value.citedArticleIds.filter((id): id is string => typeof id === 'string' && candidateIds.has(id)))] : [];
-  return { summary, explanations, ...(summary ? { citedArticleIds } : {}), ...(weakArticleIds.length ? { weakArticleIds } : {}) };
+  const themeDescriptions = validThemeDescriptions(value.themeDescriptions, request.themes ?? []);
+  return { summary, explanations, ...(summary ? { citedArticleIds } : {}), ...(weakArticleIds.length ? { weakArticleIds } : {}), ...(themeDescriptions ? { themeDescriptions } : {}) };
+}
+
+const THEME_DESCRIPTION_MAX_LENGTH = 160;
+
+/** One single-line description per supplied theme; unknown themes and over-long or empty lines are dropped. */
+function validThemeDescriptions(raw: unknown, themes: string[]): Record<string, string> | undefined {
+  if (!Array.isArray(raw) || themes.length === 0) return undefined;
+  const byKey = new Map(themes.map((theme) => [normalizeToken(theme), theme]));
+  const descriptions: Record<string, string> = {};
+  for (const item of raw) {
+    const entry = record(item);
+    const theme = typeof entry?.theme === 'string' ? byKey.get(normalizeToken(entry.theme)) : undefined;
+    const description = typeof entry?.description === 'string' ? entry.description.replace(/\s+/g, ' ').trim() : '';
+    if (!theme || !description || description.length > THEME_DESCRIPTION_MAX_LENGTH || descriptions[theme]) continue;
+    descriptions[theme] = description;
+  }
+  return Object.keys(descriptions).length ? descriptions : undefined;
 }
 
 export function sanitizeEnrichedIntent(raw: unknown, baseIntent: Intent): EnrichedIntent | null {

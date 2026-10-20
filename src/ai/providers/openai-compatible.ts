@@ -132,8 +132,9 @@ const REPORT_CONTENT_RULES = [
 /** Summary plus explanations (the whole report, or part A of a split request). */
 export const REPORT_CONTENT_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
-  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}, {"articleId": "a2", "fit": "weak"}]} with exactly one entry per supplied article.',
+  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}, {"articleId": "a2", "fit": "weak"}], "themeDescriptions": [{"theme": "...", "description": "..."}]} with exactly one entry per supplied article.',
   ...REPORT_CONTENT_RULES,
+  'THEMES: when themes are supplied, return themeDescriptions with one entry per theme, theme copied exactly as supplied. description is one line of at most 18 words saying what the supplied articles show about that theme, naming a company, number or fact from them (for example "Acme Apparel and Northwind Sports both cut PFAS from outerwear ahead of EU limits"). Do not address the reader, restate their role or write "relevant to". Omit themeDescriptions when no themes are supplied.',
 ].join(' ');
 
 /** Explanations only (part B of a split request): same rules, no summary. */
@@ -254,6 +255,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
         const { articleId: _articleId, ...projection } = projectArticle(recommendation.article, recommendation.matchedConcepts, recommendation.score);
         return { id: `a${index + 1}`, ...projection, relationship: recommendation.relationship };
       }),
+      ...(input.includeSummary !== false && input.themes?.length ? { themes: input.themes } : {}),
     }, input.includeSummary === false ? REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS : REPORT_CONTENT_INSTRUCTIONS);
     return attachAIResponseDiagnostics(resolveContentAliases(raw, aliases), aiResponseDiagnostics(raw) ?? {});
   }

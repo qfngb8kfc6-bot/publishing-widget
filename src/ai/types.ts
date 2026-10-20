@@ -113,6 +113,8 @@ export interface AIProfessionalProfileEnhancement {
 
 export interface ReportContentRequest {
   publisherId: string;
+  /** The report's theme cards; the summary call (part A) writes one short description per theme. */
+  themes?: string[];
   /** false for an explanations-only part of a split content request (no summary is written). Default true. */
   includeSummary?: boolean;
   profile: ProfessionalProfile;
@@ -136,6 +138,8 @@ export interface AIReportContent {
   /** Articles the model marked fit:"weak" instead of explaining. */
   weakArticleIds?: string[];
   explanations?: AIExplanationResult[];
+  /** One short line per supplied theme, keyed by the theme exactly as supplied. */
+  themeDescriptions?: Record<string, string>;
 }
 
 export interface IntentEnhancer {

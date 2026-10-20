@@ -1,8 +1,8 @@
 import { BatchingAnalyticsClient } from './analytics/client';
-import { createEvent, DEFAULT_THEME, normalizeToken, type PublisherRegistry } from './core';
+import { createEvent, DEFAULT_THEME, normalizeToken, roleSubjectLabel, type PublisherRegistry } from './core';
 import type { PublisherExperienceBranding, PublisherManifest } from './publishers/manifest';
 import type { ReportRecord, ReportRecommendation } from './reports';
-import { reportThemes } from './reports/themes';
+import { MAX_SHOWN_THEME_ARTICLE_IDS, reportThemes } from './reports/themes';
 import { allocateEditorialSections, articleIdentityKeys, type EditorialSection } from './reports/sections';
 
 function escapeHtml(value: string): string {
@@ -136,11 +136,18 @@ function storyMarkup(recommendation: ReportRecommendation, manifest: PublisherMa
   return `<article class="${featured ? 'featured-story' : 'story-card'}" data-story-card="${escapeHtml(article.id)}">${articleImage(article, manifest)}<div class="story-body"><div class="story-meta"><span class="match-badge">${recommendation.displayScore}% match</span><span>${category}</span>${date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''}</div><h3>${title}</h3>${description ? `<p class="story-summary">${description}</p>` : ''}<div class="why"><span class="why-icon" aria-hidden="true">✦</span><div><strong>Why this matters to you</strong><p>${escapeHtml(recommendation.explanation)}</p></div></div>${articleLink(article, manifest)}</div></article>`;
 }
 
+/** The AI-written line for a theme card, or the standard text when AI did not provide one. */
+function themeDescription(report: ReportRecord, theme: string): string {
+  const written = report.themeDescriptions?.[theme];
+  if (written) return written;
+  const focus = roleSubjectLabel(report.professionalProfile.role) ?? report.professionalProfile.role.function.toLowerCase();
+  return `Relevant to your ${focus} focus and the information needs identified for this briefing.`;
+}
+
 function highlightMarkup(report: ReportRecord): string {
-  const profile = report.professionalProfile;
   const values = reportThemes(report);
   if (!values.length) return '';
-  return `<section class="highlights-section" aria-labelledby="highlights-heading"><p class="section-kicker">Highlights</p><h2 id="highlights-heading">Top themes in your briefing</h2><div class="highlight-grid">${values.map((value, index) => `<article class="highlight-card"><span class="highlight-index">${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(value)}</h3><p>Relevant to your ${escapeHtml(profile.role.function.toLowerCase())} focus and the information needs identified for this briefing.</p><button class="highlight-action" type="button" data-theme-search="${escapeHtml(value)}">Find stories →</button></article>`).join('')}</div></section>`;
+  return `<section class="highlights-section" aria-labelledby="highlights-heading"><p class="section-kicker">Highlights</p><h2 id="highlights-heading">Top themes in your briefing</h2><div class="highlight-grid">${values.map((value, index) => `<article class="highlight-card"><span class="highlight-index">${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(value)}</h3><p>${escapeHtml(themeDescription(report, value))}</p><button class="highlight-action" type="button" data-theme-search="${escapeHtml(value)}">Find stories →</button></article>`).join('')}</div></section>`;
 }
 
 function themeResultsMarkup(): string {
@@ -267,6 +274,9 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   bindStoryClicks(app);
 
   const themeResults = app.querySelector<HTMLElement>('[data-theme-results]');
+  // Articles shown by each theme opened on this page, so another theme's results do not repeat them.
+  const shownByTheme = new Map<string, string[]>();
+  const shownElsewhere = (theme: string) => [...shownByTheme].filter(([key]) => key !== theme).flatMap(([, ids]) => ids).slice(-MAX_SHOWN_THEME_ARTICLE_IDS);
   app.querySelectorAll<HTMLButtonElement>('[data-theme-search]').forEach((button) => button.addEventListener('click', async () => {
     if (button.disabled || !themeResults) return;
     const theme = button.dataset.themeSearch ?? '';
@@ -279,11 +289,13 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
     themeResults.innerHTML = '<p class="theme-results-status">Finding stories…</p>';
     analytics.track(createEvent('theme_find_stories_clicked', report.publisherId, report.sessionId, { reportId: report.id, theme: normalizeToken(theme) }));
     try {
-      const response = await fetch(`/api/reports/${encodeURIComponent(report.id)}/themes/${encodeURIComponent(theme)}/search?publisherId=${encodeURIComponent(report.publisherId)}`, { method: 'POST' });
+      const response = await fetch(`/api/reports/${encodeURIComponent(report.id)}/themes/${encodeURIComponent(theme)}/search?publisherId=${encodeURIComponent(report.publisherId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shownArticleIds: shownElsewhere(normalizeToken(theme)) }) });
       if (!response.ok) throw new Error('theme_search_failed');
       const payload = await response.json() as { theme?: string; recommendations?: ReportRecommendation[] };
       const recommendations = Array.isArray(payload.recommendations) ? payload.recommendations : [];
       const resolvedTheme = payload.theme ?? theme;
+      shownByTheme.delete(normalizeToken(theme));
+      shownByTheme.set(normalizeToken(theme), recommendations.map((recommendation) => recommendation.articleId));
       themeResults.dataset.theme = resolvedTheme;
       themeResults.innerHTML = themeResultsContent(resolvedTheme, report, manifest, recommendations);
       bindStoryClicks(themeResults);

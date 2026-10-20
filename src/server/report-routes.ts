@@ -3,9 +3,27 @@ import type { PublisherRegistry } from '../core';
 import type { ReportGenerationService } from '../reports/generate';
 import type { ReportStore } from '../reports/types';
 import type { ReportPerformanceTiming } from '../reports/types';
-import { findReportTheme } from '../reports/themes';
+import { findReportTheme, MAX_SHOWN_THEME_ARTICLE_IDS } from '../reports/themes';
 
 export interface ReportRouteContext { runtimeMs?: number }
+
+const MAX_SHOWN_ARTICLE_ID_LENGTH = 512;
+
+/**
+ * Article IDs already shown in other theme results this session, from an optional JSON body
+ * {"shownArticleIds": [...]}. An empty body is accepted; at most MAX_SHOWN_THEME_ARTICLE_IDS strings are kept.
+ * They are only used as exclusion keys, so an unknown ID matches nothing.
+ */
+async function readShownArticleIds(request: Request): Promise<string[]> {
+  const text = await request.text();
+  if (!text.trim()) return [];
+  if (new TextEncoder().encode(text).byteLength > 40_000) throw new Error('payload_too_large');
+  const body = JSON.parse(text) as unknown;
+  const value = body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>).shownArticleIds : undefined;
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('invalid_shown_article_ids');
+  return [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= MAX_SHOWN_ARTICLE_ID_LENGTH))].slice(0, MAX_SHOWN_THEME_ARTICLE_IDS);
+}
 
 function timingValue(value: number | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.round(value as number)) : 0;
@@ -86,9 +104,11 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
       try { requestedTheme = decodeURIComponent(themeMatch[2]); } catch { return Response.json({ error: 'invalid_theme' }, { status: 400 }); }
       const theme = findReportTheme(report, requestedTheme);
       if (!theme) return Response.json({ error: 'invalid_theme' }, { status: 400 });
+      let shownArticleIds: string[] = [];
+      try { shownArticleIds = await readShownArticleIds(request); } catch { return Response.json({ error: 'invalid_request' }, { status: 400 }); }
       try {
         const timing: ReportPerformanceTiming = { requestId, publisherId, theme, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: context.runtimeMs ?? 0, companyResolutionMs: 0, profileMs: 0, aiProfileMs: 0, catalogueCacheLookupMs: 0, catalogueSnapshotLookupMs: 0, catalogueRefreshMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0, reportLookupMs: Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - lookupStartedAt) };
-        const recommendations = await generation.searchTheme(report, theme, requestId, timing);
+        const recommendations = await generation.searchTheme(report, theme, requestId, timing, shownArticleIds);
         return withServerTiming(Response.json({ reportId: report.id, publisherId, theme, recommendations }), timing);
       } catch {
         return Response.json({ error: 'theme_search_unavailable' }, { status: 503 });

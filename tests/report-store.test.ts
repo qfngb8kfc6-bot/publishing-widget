@@ -60,9 +60,10 @@ describe('PostgresReportStore.save', () => {
       'COMMIT',
     ]);
     const reportInsert = connection.statements[1];
-    expect(reportInsert.sql).toContain('summary_source, summary_fallback_reason) VALUES (');
-    expect(reportInsert.parameters).toHaveLength(21);
-    expect(reportInsert.parameters!.slice(19)).toEqual(['deterministic', 'timeout']);
+    expect(reportInsert.sql).toContain('summary_source, summary_fallback_reason, theme_descriptions_json) VALUES (');
+    expect(reportInsert.sql).toContain('$22::jsonb)');
+    expect(reportInsert.parameters).toHaveLength(22);
+    expect(reportInsert.parameters!.slice(19)).toEqual(['deterministic', 'timeout', null]);
     const insert = connection.statements[3];
     expect(insert.sql.match(/\(\$\d+,/g)).toHaveLength(8);
     expect(insert.sql).toContain('($64,$65,$66,$67,$68,$69,$70::jsonb,$71::jsonb,$72)');
@@ -114,6 +115,16 @@ describe('PostgresReportStore.get', () => {
       expect(loaded?.summarySource).toBe('ai');
       expect(loaded?.summaryFallbackReason).toBeUndefined();
     }
+  });
+
+  it('stores theme descriptions as JSON and reads them back, absent on older reports', async () => {
+    const connection = new RecordingConnection();
+    await new PostgresReportStore(pool(connection)).save({ ...report(1), themeDescriptions: { emissions: 'Adidas and On both cut scope 1-2 emissions.' } });
+    expect(connection.statements[1].parameters![21]).toBe(JSON.stringify({ emissions: 'Adidas and On both cut scope 1-2 emissions.' }));
+    const read = (stored: unknown) => new PostgresReportStore({ query: async <Row>() => ({ rows: [{ ...row, recommendations_json: [], theme_descriptions_json: stored }] as Row[] }) }).get('report-1');
+    expect((await read({ emissions: 'Line.', bad: 3 }))?.themeDescriptions).toEqual({ emissions: 'Line.' });
+    expect((await read('{"emissions":"Line."}'))?.themeDescriptions).toEqual({ emissions: 'Line.' });
+    expect((await read(null))?.themeDescriptions).toBeUndefined();
   });
 
   it('returns null when no report matches and an empty list for a zero-result report', async () => {

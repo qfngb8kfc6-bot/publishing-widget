@@ -133,6 +133,7 @@ describe('hosted professional experience', () => {
     }));
     const { reportId } = await generated.json() as { reportId: string };
     const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json();
+    report.themeDescriptions = { [report.professionalProfile.professionalInterests[0]]: 'Two platform teams <b>cut</b> release times by half.' };
     const requests: Array<{ input: string; init?: RequestInit }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -149,6 +150,10 @@ describe('hosted professional experience', () => {
 
     const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-theme-search]')];
     expect(buttons.length).toBe(4);
+    const cardLines = [...document.querySelectorAll('.highlight-card p')].map((line) => line.textContent);
+    expect(cardLines[0]).toBe('Two platform teams <b>cut</b> release times by half.');
+    expect(document.querySelector('.highlight-card p b')).toBeNull();
+    expect(cardLines[1]).toMatch(/^Relevant to your .+ focus and the information needs identified for this briefing\.$/);
     expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(true);
     await buttons[0].click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -159,7 +164,10 @@ describe('hosted professional experience', () => {
     await buttons[1].click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.querySelector('.theme-results')?.textContent).toContain('No strong stories were found');
-    expect(requests.filter((request) => request.input.includes('/themes/')).length).toBe(2);
+    const themeRequests = requests.filter((request) => request.input.includes('/themes/'));
+    expect(themeRequests.length).toBe(2);
+    // The second theme excludes what the first theme showed.
+    expect(themeRequests.map((request) => JSON.parse(String(request.init?.body)).shownArticleIds)).toEqual([[], [report.recommendations[1].articleId]]);
     const analyticsEvents = requests.filter((request) => request.input.includes('/api/analytics/events')).flatMap((request) => {
       try { return (JSON.parse(String(request.init?.body)) as { events?: Array<{ name: string; metadata?: Record<string, unknown> }> }).events ?? []; } catch { return []; }
     });

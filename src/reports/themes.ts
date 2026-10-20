@@ -1,4 +1,4 @@
-import { normalizeToken, roleSubjectTerms } from '../core';
+import { normalizeToken, roleSubjectTerms, subjectMatcher } from '../core';
 import type { ProfessionalProfile } from '../core';
 import type { ReportRecord } from './types';
 
@@ -11,6 +11,9 @@ function unique(values: string[]): string[] {
     return true;
   });
 }
+
+/** At most this many already-shown theme-result article IDs are sent with, and excluded from, a theme search. */
+export const MAX_SHOWN_THEME_ARTICLE_IDS = 60;
 
 /** Generic vocabulary expansion for focused professional themes. */
 const THEME_EXPANSIONS: Record<string, string[]> = {
@@ -28,6 +31,13 @@ function expandedThemeTerms(theme: string): string[] {
 /** The same bounded theme list is used by the report UI and the focused-search API. */
 export function reportThemes(report: Pick<ReportRecord, 'professionalProfile'>): string[] {
   const profile = report.professionalProfile;
+  const onSubject = subjectMatcher(profile.role);
+  if (onSubject) {
+    // A role anchored on its title subject gets themes about that subject only: its direct subject concepts
+    // first, never the catch-all leadership themes (strategy, markets, operations).
+    const subjectConcepts = (profile.retrieval.concepts ?? []).filter((concept) => concept.relevanceType === 'direct' && onSubject(concept.concept)).map((concept) => concept.concept);
+    return unique([...subjectConcepts, ...profile.professionalInterests.filter(onSubject), ...profile.likelyInformationNeeds.filter(onSubject)]).slice(0, 4);
+  }
   return unique([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes]).slice(0, 4);
 }
 

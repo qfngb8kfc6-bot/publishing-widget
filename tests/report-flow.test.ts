@@ -145,12 +145,25 @@ describe('hosted report flow', () => {
     };
     const response = await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=demo`, { method: 'POST' }));
     expect(response.status).toBe(200);
-    const payload = await response.json() as { theme: string; recommendations: Array<{ articleId: string }> };
+    const payload = await response.json() as { theme: string; recommendations: Array<{ articleId: string; explanation: string }> };
     expect(payload.theme).toBe(theme);
     expect(observedQuery.toLowerCase()).toContain(theme.toLowerCase().split(' ')[0]);
     expect(payload.recommendations.map((item) => item.articleId)).toContain('theme-focused-extra');
     expect(payload.recommendations.map((item) => item.articleId)).not.toContain('theme-focused-duplicate-url');
     expect(payload.recommendations.map((item) => item.articleId)).not.toContain(before.recommendations[0].articleId);
+    // Theme results get a neutral line from the article description, not the role template.
+    const extraResult = payload.recommendations.find((item) => item.articleId === 'theme-focused-extra')!;
+    expect(extraResult.explanation).toBe(`Coverage of ${theme}.`);
+    expect(payload.recommendations.map((item) => item.explanation).join(' ')).not.toMatch(/relevant to your work as|Software Engineer/);
+    // Articles already shown by another theme this session are excluded too.
+    const searchShown = (body: string) => app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=demo`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }));
+    const afterShown = await (await searchShown(JSON.stringify({ shownArticleIds: ['theme-focused-extra', 'unknown-id', 42] }))).json() as { recommendations: Array<{ articleId: string }> };
+    expect(afterShown.recommendations.map((item) => item.articleId)).not.toContain('theme-focused-extra');
+    expect(afterShown.recommendations.length).toBe(payload.recommendations.length - 1);
+    const overLimit = Array.from({ length: 80 }, (_, index) => `other-${index}`).concat('theme-focused-extra');
+    expect(((await (await searchShown(JSON.stringify({ shownArticleIds: overLimit }))).json()) as { recommendations: Array<{ articleId: string }> }).recommendations.map((item) => item.articleId)).toContain('theme-focused-extra');
+    expect((await searchShown('{"shownArticleIds": "theme-focused-extra"}')).status).toBe(400);
+    expect((await searchShown('not json')).status).toBe(400);
     expect(await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json()).toMatchObject({ recommendations: before.recommendations });
     expect((await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/not-a-report-theme/search?publisherId=demo`, { method: 'POST' }))).status).toBe(400);
     expect((await app.handle(new Request(`https://product.example/api/reports/${reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=real-publisher`, { method: 'POST' }))).status).toBe(404);

@@ -9,7 +9,7 @@ import type { ReportRecord, ReportRecommendation, GenerateReportInput, ReportPer
 import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
-import { profileForTheme } from './themes';
+import { MAX_SHOWN_THEME_ARTICLE_IDS, profileForTheme, reportThemes } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
@@ -118,6 +118,19 @@ function createEnrichedIntent(profile: ReturnType<typeof buildProfessionalProfil
     industry: profile.company.industry,
     ...(subjectTerms ? { subject: roleSubjectLabel(profile.role), subjectTerms: subjectTerms.slice(0, 24) } : {}),
   };
+}
+
+/**
+ * A neutral, factual line for a theme result: the first sentence of the article's own description, without
+ * restating the reader's role. Used until theme results get AI explanations.
+ */
+export function factualLine(article: Pick<NormalizedArticle, 'title' | 'description' | 'summary' | 'contentSnippet'>): string {
+  const text = (article.description ?? article.summary ?? article.contentSnippet ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return article.title;
+  const sentence = text.match(/^.+?[.!?](?=\s|$)/)?.[0] ?? text;
+  if (sentence.length <= 220) return sentence;
+  const clipped = sentence.slice(0, 220);
+  return `${clipped.slice(0, Math.max(clipped.lastIndexOf(' '), 160)).trim()}…`;
 }
 
 function explanation(profile: ReturnType<typeof buildProfessionalProfile>, relevance: Pick<RelevanceResult, 'relevanceSignals' | 'relevanceType' | 'directMatches' | 'adjacentMatches'>): string {
@@ -632,13 +645,13 @@ export class ReportGenerationService {
     return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
   }
 
-  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set(), lowerConfidenceIds: ReadonlySet<string> = new Set()): ReportRecommendation[] {
+  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set(), lowerConfidenceIds: ReadonlySet<string> = new Set(), fallbackExplanation: (item: RankedCandidate) => string = (item) => explanation(profile, item)): ReportRecommendation[] {
     return ranked.map((item, index) => ({
       articleId: item.article.id,
       rank: index + 1,
       rawScore: item.finalScore,
       displayScore: displayRelevanceScore(item.finalScore),
-      explanation: explanationById.get(item.article.id)?.explanation ?? explanation(profile, item),
+      explanation: explanationById.get(item.article.id)?.explanation ?? fallbackExplanation(item),
       article: item.article,
       rankingMetadata: {
         relevanceSignals: item.relevanceSignals,
@@ -659,7 +672,11 @@ export class ReportGenerationService {
     }));
   }
 
-  async searchTheme(report: ReportRecord, theme: string, requestId?: string, performanceTiming?: ReportPerformanceTiming): Promise<ReportRecommendation[]> {
+  /**
+   * shownArticleIds: articles already shown in other theme results this session (client-supplied, at most
+   * MAX_SHOWN_THEME_ARTICLE_IDS). They are excluded alongside the main report's articles; unknown IDs match nothing.
+   */
+  async searchTheme(report: ReportRecord, theme: string, requestId?: string, performanceTiming?: ReportPerformanceTiming, shownArticleIds: string[] = []): Promise<ReportRecommendation[]> {
     const themeStartedAt = clockMs();
     const timing = performanceTiming ?? createPerformanceTiming(report.publisherId, requestId);
     timing.requestId = requestId ?? timing.requestId;
@@ -668,12 +685,12 @@ export class ReportGenerationService {
     const definition = this.registry.get(report.publisherId);
     if (!definition || definition.manifest?.enabled === false) throw new Error('invalid_publisher');
     const profile = profileForTheme(report.professionalProfile, theme);
-    const excluded = new Set(report.recommendations.flatMap((recommendation) => articleIdentityKeys(recommendation.article)));
+    const excluded = new Set([...report.recommendations.flatMap((recommendation) => articleIdentityKeys(recommendation.article)), ...shownArticleIds.slice(0, MAX_SHOWN_THEME_ARTICLE_IDS).map((id) => `id:${id}`)]);
     const ranking = await this.rankProfile(definition, report.publisherId, profile, excluded, requestId, true);
     const { ranked } = ranking;
     const failureStage = ranked.length > 0 ? 'complete' : ranking.aiFilteredCount > 0 && ranking.deterministicEligible > 0 ? 'ai_filtered_all' : ranking.deterministicEligible > 0 ? 'final_filter' : 'deterministic_threshold';
     const finalFormattingStartedAt = clockMs();
-    const recommendations = this.recommendationsFromRanked(profile, ranked);
+    const recommendations = this.recommendationsFromRanked(profile, ranked, undefined, undefined, undefined, (item) => factualLine(item.article));
     timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
     timing.catalogueStale = ranking.timings.catalogueStale;
@@ -826,6 +843,7 @@ export class ReportGenerationService {
     const contentWeakIds = new Set<string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
+    let themeDescriptions: Record<string, string> | undefined;
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
     const aiExplanationStartedAt = clockMs();
     if (aiAvailable && ranked.length > 0) {
@@ -833,7 +851,7 @@ export class ReportGenerationService {
       // explanations, B (only when needed) the remaining explanations. Each falls back independently.
       const explanationsEnabled = this.ai!.config.explanationsEnabled;
       const parts: Array<{ part: 'A' | 'B'; request: ReportContentRequest }> = [
-        { part: 'A', request: { publisherId: input.publisherId, profile, recommendations: deterministicRecommendations.slice(0, CONTENT_PART_A_SIZE) } },
+        { part: 'A', request: { publisherId: input.publisherId, profile, themes: reportThemes({ professionalProfile: profile }), recommendations: deterministicRecommendations.slice(0, CONTENT_PART_A_SIZE) } },
         ...(explanationsEnabled && deterministicRecommendations.length > CONTENT_PART_A_SIZE ? [{ part: 'B' as const, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: deterministicRecommendations.slice(CONTENT_PART_A_SIZE) } }] : []),
       ];
       const outcomes = await Promise.all(parts.map(async ({ part, request }) => {
@@ -853,6 +871,7 @@ export class ReportGenerationService {
         citedIds = new Set(partA.value.citedArticleIds ?? []);
         this.logQualityWarnings(input, 'summary', summaryQualityWarnings(partA.value.summary, partA.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
       } else summaryFallbackReason = partA.errorCode ?? 'summary_missing';
+      themeDescriptions = partA.value?.themeDescriptions;
       for (const outcome of outcomes) for (const articleId of outcome.value?.weakArticleIds ?? []) contentWeakIds.add(articleId);
       if (explanationsEnabled) {
         const accepted = outcomes.flatMap((outcome) => {
@@ -905,7 +924,7 @@ export class ReportGenerationService {
     timing.sectionAllocationMs = sectionAllocationMs;
     const recommendations = allocation.recommendations;
     const report: ReportRecord = {
-      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
     const persistenceStartedAt = clockMs();
     try { await this.reports.save(report); } catch (error) { annotateGenerationFailure(error, 'report_persistence'); this.logIbiError(input, 'report_persistence', error); throw error; }
