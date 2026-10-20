@@ -1,7 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 
-export const PROFESSIONAL_PROFILE_VERSION = '1.4';
-export const RANKING_VERSION = '1.3';
+export const PROFESSIONAL_PROFILE_VERSION = '1.5';
+export const RANKING_VERSION = '1.4';
 
 export interface CompanyContext {
   domain: string;
@@ -41,6 +41,12 @@ export interface RoleContext {
   roleSource?: 'dedicated' | 'generic';
   /** Subject words from a generic title, e.g. "sustainability" in "Head of Sustainability". */
   titleTopics?: string[];
+  /**
+   * The title subject and its news vocabulary (title topics plus validated AI subject vocabulary), e.g.
+   * sustainability, emissions, recycled, greenwashing. Only concepts anchored to these are direct for a
+   * generic role. Set only for generic roles with title topics.
+   */
+  subjectTerms?: string[];
 }
 
 export type RelevanceType = 'direct' | 'adjacent';
@@ -118,6 +124,76 @@ function specific(values: string[]): string[] {
   return unique(values).filter((value) => !GENERIC_CONCEPTS.has(normalizeToken(value)));
 }
 
+/**
+ * Business-management words a catch-all leadership title brings with it. They describe how a senior person works,
+ * not what their title subject is, so they never anchor a concept to that subject.
+ */
+const LEADERSHIP_WORDS = new Set(['board', 'business', 'corporate', 'decision', 'decisions', 'executive', 'finance', 'financial', 'governance', 'growth', 'leader', 'leaders', 'leadership', 'management', 'market', 'markets', 'operational', 'operations', 'organisation', 'organisational', 'organization', 'organizational', 'performance', 'planning', 'results', 'risk', 'risks', 'strategic', 'strategy']);
+
+function wordsMatch(left: string, right: string): boolean {
+  if (left === right) return true;
+  const shorter = Math.min(left.length, right.length);
+  if (shorter < 5) return false;
+  let shared = 0;
+  while (shared < shorter && left[shared] === right[shared]) shared += 1;
+  // Word forms of one subject: lawsuit/lawsuits, sustainable/sustainability, compliance/compliant.
+  return shared >= Math.max(5, shorter - 3);
+}
+
+/** True when every word of the subject term occurs (in some word form) in the concept. */
+function anchoredTo(concept: string, term: string): boolean {
+  const conceptWords = normalizeToken(concept).split(' ').filter(Boolean);
+  const termWords = normalizeToken(term).split(' ').filter(Boolean);
+  return termWords.length > 0 && termWords.every((word) => conceptWords.some((candidate) => wordsMatch(candidate, word)));
+}
+
+/** True when a concept is part of a title topic ("marine" in "marine engineer") and not just a leadership word. */
+function partOfTopic(concept: string, topic: string): boolean {
+  const conceptWords = normalizeToken(concept).split(' ').filter(Boolean);
+  const topicWords = normalizeToken(topic).split(' ').filter(Boolean);
+  return conceptWords.length > 0 && !conceptWords.every((word) => LEADERSHIP_WORDS.has(word)) && conceptWords.every((word) => topicWords.some((candidate) => wordsMatch(candidate, word)));
+}
+
+/**
+ * Validated subject vocabulary for a generic titled role: short, specific terms that are not merely leadership
+ * words (a title topic itself, e.g. "strategy" in "Head of Strategy", is always kept).
+ */
+export function subjectTermsFor(role: RoleContext, vocabulary: string[] = []): string[] {
+  const topics = role.titleTopics ?? [];
+  const topicKeys = new Set(topics.map(normalizeToken));
+  const accepted = vocabulary
+    .map((term) => term.replace(/\s+/g, ' ').trim())
+    .filter((term) => {
+      const key = normalizeToken(term);
+      if (!key || key.length > 40 || key.split(' ').length > 3 || GENERIC_CONCEPTS.has(key)) return false;
+      return topicKeys.has(key) || !key.split(' ').every((word) => LEADERSHIP_WORDS.has(word));
+    });
+  return unique([...topics, ...accepted]).slice(0, 32);
+}
+
+/** The subject terms that anchor a generic titled role, or undefined when the role is not anchored. */
+export function roleSubjectTerms(role: RoleContext): string[] | undefined {
+  if (role.roleSource !== 'generic' || !role.titleTopics?.length) return undefined;
+  return role.subjectTerms?.length ? role.subjectTerms : role.titleTopics;
+}
+
+/**
+ * For a generic titled role, a test for whether a concept is about the title subject: "sustainability strategy",
+ * "emissions" (subject vocabulary) and "marine" (part of "marine engineer") are; "strategy" and "finance" are not.
+ * Undefined for every other role, which is not anchored.
+ */
+export function subjectMatcher(role: RoleContext): ((concept: string) => boolean) | undefined {
+  const terms = roleSubjectTerms(role);
+  if (!terms) return undefined;
+  const topics = role.titleTopics ?? [];
+  return (concept) => terms.some((term) => anchoredTo(concept, term)) || topics.some((topic) => partOfTopic(concept, topic));
+}
+
+/** "sustainability" or "legal and compliance": the reader-facing subject of a generic titled role. */
+export function roleSubjectLabel(role: RoleContext): string | undefined {
+  return role.roleSource === 'generic' && role.titleTopics?.length ? role.titleTopics.join(' and ') : undefined;
+}
+
 export function normalizeJobTitle(value: string): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, 160);
 }
@@ -146,7 +222,10 @@ export function analyzeRole(jobTitle: string): RoleContext {
   // leadership concepts become adjacent context rather than the role's core.
   const directThemes = topics.length ? topics : match.direct;
   const adjacentThemes = topics.length ? unique([...match.direct, ...match.adjacent]) : match.adjacent;
-  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities: match.responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics } : {}) };
+  // Its responsibilities are the subject's too, not the catch-all "strategic planning, organisational decisions".
+  const label = topics.join(' and ');
+  const responsibilities = topics.length ? [`${label} programme`, `${label} regulation`, `${label} peer benchmarks`] : match.responsibilities;
+  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics, subjectTerms: topics } : {}) };
 }
 
 function ruleFor(role: RoleContext): RoleRule {
@@ -201,9 +280,11 @@ export function buildProfessionalProfile(company: CompanyContext, jobTitle: stri
   // Keep publisher/company labels available for profile display and compatibility;
   // generic labels are excluded from weighted retrieval concepts and search terms.
   const professionalInterests = unique([...directInterests, ...adjacentInterests, ...company.topics]);
-  const searchTerms = unique([...concepts.flatMap((item) => tokenize(item.concept)), ...role.responsibilities.flatMap(tokenize), ...tokenize(company.name ?? company.domain)]).filter((term) => !GENERIC_CONCEPTS.has(term));
+  // A titled generic role's responsibilities restate its subject; their filler words are not search terms.
+  const responsibilityTerms = role.titleTopics?.length ? [] : role.responsibilities.flatMap(tokenize);
+  const searchTerms = unique([...concepts.flatMap((item) => tokenize(item.concept)), ...responsibilityTerms, ...tokenize(company.name ?? company.domain)]).filter((term) => !GENERIC_CONCEPTS.has(term));
   const semanticQueries = [
-    `${role.function} developments relevant to ${company.name ?? company.domain}`,
+    `${roleSubjectLabel(role) ?? role.function} developments relevant to ${company.name ?? company.domain}`,
     `${directInterests.slice(0, 4).join(', ')} for ${role.rawTitle}`,
   ];
   const retrieval: RetrievalConcepts = {

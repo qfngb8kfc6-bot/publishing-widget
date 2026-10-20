@@ -1,7 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 import { compactFieldIndexes, type TextMatchIndex, type TokenDictionary } from './compact-index';
 import type { Intent, NormalizedArticle, RelevanceResult } from './types';
-import type { ProfessionalProfile, RetrievalConcept } from './professional';
+import { subjectMatcher, type ProfessionalProfile, type RetrievalConcept } from './professional';
 import type { RelevanceScoreComponents } from './types';
 
 const STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'from', 'your', 'you', 'that', 'what', 'best', 'describes']);
@@ -245,13 +245,18 @@ export type ProfessionalArticleScorer = (article: NormalizedArticle, fields?: Pr
 export function createProfessionalScorer(profile: ProfessionalProfile): ProfessionalArticleScorer {
   const prepareTerm = (term: string): PreparedTerm => ({ term, normalized: normalizeToken(term) });
   const concepts = profile.retrieval?.concepts?.length ? profile.retrieval.concepts : fallbackConcepts(profile);
-  const directConcepts = concepts.filter((concept) => concept.relevanceType === 'direct').map((concept) => ({ concept, normalized: normalizeToken(concept.concept) }));
-  const adjacentConcepts = concepts.filter((concept) => concept.relevanceType === 'adjacent').map((concept) => ({ concept, normalized: normalizeToken(concept.concept) }));
+  // A generic titled role ("Head of Sustainability") is anchored on its title subject: only concepts about that
+  // subject are direct evidence, and any other direct concept (strategy, finance, a company activity) is scored
+  // as adjacent. An article must therefore match the subject to be direct.
+  const onSubject = profile.role ? subjectMatcher(profile.role) : undefined;
+  const isDirect = (concept: RetrievalConcept) => concept.relevanceType === 'direct' && (!onSubject || onSubject(concept.concept));
+  const directConcepts = concepts.filter(isDirect).map((concept) => ({ concept, normalized: normalizeToken(concept.concept) }));
+  const adjacentConcepts = concepts.filter((concept) => !isDirect(concept)).map((concept) => ({ concept, normalized: normalizeToken(concept.concept) }));
   const exclusions = (profile.excludedConcepts?.length ? profile.excludedConcepts : profile.retrieval?.exclusions ?? []).map(prepareTerm);
   const roleConcepts = concepts.filter((concept) => concept.source === 'role');
   const companyTerms = tokenize(`${profile.companyName ?? ''} ${profile.companyDomain}`).map(prepareTerm);
   const companyLabel = normalizeToken(profile.companyName ?? profile.companyDomain);
-  return (article, fields = professionalFieldIndexes(article)) => scorePreparedProfessionalArticle(article, profile, fields, { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel });
+  return (article, fields = professionalFieldIndexes(article)) => scorePreparedProfessionalArticle(article, profile, fields, { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored: Boolean(onSubject) });
 }
 
 /** Version-independent deterministic professional score used by persisted reports. */
@@ -259,8 +264,8 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
   return createProfessionalScorer(profile)(article);
 }
 
-function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: ProfessionalProfile, fields: ProfessionalFieldIndexes, prepared: { directConcepts: PreparedConcept[]; adjacentConcepts: PreparedConcept[]; exclusions: PreparedTerm[]; roleConcepts: RetrievalConcept[]; companyTerms: PreparedTerm[]; companyLabel: string }): RelevanceResult {
-  const { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel } = prepared;
+function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: ProfessionalProfile, fields: ProfessionalFieldIndexes, prepared: { directConcepts: PreparedConcept[]; adjacentConcepts: PreparedConcept[]; exclusions: PreparedTerm[]; roleConcepts: RetrievalConcept[]; companyTerms: PreparedTerm[]; companyLabel: string; subjectAnchored?: boolean }): RelevanceResult {
+  const { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored } = prepared;
   const directEvidence = evidenceContribution(directConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.directTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.directMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.directBody }, 58);
   const adjacentEvidence = evidenceContribution(adjacentConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.adjacentTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.adjacentMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.adjacentBody }, 28);
   const directMatches = unique(directEvidence.matches.map((item) => item.concept));
@@ -269,7 +274,8 @@ function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: P
   const negativeMetadata = exclusions.filter((term) => normalizedConceptMatches(term.normalized, fields.metadata)).map((term) => term.term);
   const negativeBody = exclusions.filter((term) => normalizedConceptMatches(term.normalized, fields.body)).map((term) => term.term);
   const negativeMatches = unique([...negativeTitle, ...negativeMetadata, ...negativeBody]);
-  const roleMatches = unique([...directEvidence.matches, ...adjacentEvidence.matches].filter((match) => roleConcepts.includes(match)).map((match) => match.concept));
+  // For a subject-anchored role only subject matches earn the role bonus; generic concepts earn nothing extra.
+  const roleMatches = unique([...directEvidence.matches, ...(subjectAnchored ? [] : adjacentEvidence.matches)].filter((match) => roleConcepts.includes(match)).map((match) => match.concept));
   const company = companyEvidence(companyTerms, fields);
   const parsedPublishedAt = article.publishedAt ? Date.parse(article.publishedAt) : Number.NaN;
   const hasValidPublishedAt = Number.isFinite(parsedPublishedAt);
@@ -284,12 +290,17 @@ function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: P
   const negativePenalty = Math.min(45, negativeTitle.length * 28 + negativeMetadata.length * 18 + negativeBody.length * 10);
   const exceptionalBonus = company.matches.length > 0 && directEvidence.matches.filter((match) => match.source === 'role').length >= 3 && normalizedConceptMatches(companyLabel, fields.title) ? 26 : 0;
   const recencyMultiplier = hasValidPublishedAt ? recencyMultiplierForAge(ageDays) : UNKNOWN_DATE_RECENCY_MULTIPLIER;
-  const adjacentWeight = 1;
+  const meaningfulDirect = directMatches.length > 0 && directScore >= 8 && (directEvidence.matches.some((match) => normalizedConceptMatches(normalizeToken(match.concept), fields.title)) || directMatches.length >= 2 || directEvidence.matches.some((match) => match.source === 'company'));
+  // Subject dominance for an anchored generic role: in a direct article, generic concepts add at most a quarter of
+  // their evidence (28 × 0.25 = 7). One subject match in the title (22 × 1.1–1.25 = 24–27.5) therefore outweighs
+  // every generic concept matching at once, so strategy + finance + growth cannot lift a thin subject match above
+  // a strong one. Articles without a subject match are adjacent, keep their full adjacent score (capped as before)
+  // and always rank after direct ones.
+  const adjacentWeight = subjectAnchored && meaningfulDirect ? 0.25 : 1;
   const baseScore = directScore + adjacentScore * adjacentWeight + roleBonus + companyBonus + exceptionalBonus;
   const preRecencyScore = Math.max(0, Math.round(baseScore - negativePenalty));
   const postRecencyScore = Math.max(0, Math.round(baseScore * recencyMultiplier + freshness - negativePenalty));
   const rawScore = postRecencyScore;
-  const meaningfulDirect = directMatches.length > 0 && directScore >= 8 && (directEvidence.matches.some((match) => normalizedConceptMatches(normalizeToken(match.concept), fields.title)) || directMatches.length >= 2 || directEvidence.matches.some((match) => match.source === 'company'));
   const meaningfulAdjacent = adjacentMatches.length > 0 && adjacentScore >= 8;
   const relevanceType: RelevanceResult['relevanceType'] = meaningfulDirect ? 'direct' : meaningfulAdjacent ? 'adjacent' : rawScore > 0 ? 'weak' : 'none';
   const score = calibrateRelevanceScore(rawScore, relevanceType);

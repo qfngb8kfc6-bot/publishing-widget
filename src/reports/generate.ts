@@ -1,4 +1,4 @@
-import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
+import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, roleSubjectLabel, roleSubjectTerms, subjectMatcher, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { aiResponseDiagnostics, AIProviderError, type AIResponseDiagnostics } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
@@ -71,9 +71,28 @@ function isProfessionalAIProvider(provider: AIRecommendationLayer['provider']): 
 }
 
 function createIntent(profile: ReturnType<typeof buildProfessionalProfile>, publisherId: string): Intent {
+  const answers = { companyUrl: profile.companyUrl, companyDomain: profile.companyDomain, companyName: profile.companyName ?? profile.company.name ?? '', jobTitle: profile.jobTitle };
+  const subjectTerms = roleSubjectTerms(profile.role);
+  const onSubject = subjectMatcher(profile.role);
+  if (subjectTerms && onSubject) {
+    // A generic titled role preselects on its subject: subject concepts at full weight, everything else
+    // (leadership themes, company activities, generic AI search terms) at adjacent weight only.
+    const subjectInterests = [...new Set([...subjectTerms, ...profile.directInterests.filter(onSubject)])];
+    return {
+      publisherId,
+      answers,
+      queryText: profile.semanticQueries.join(' '),
+      keywords: profile.searchTerms.filter(onSubject),
+      interests: subjectInterests,
+      personas: [roleSubjectLabel(profile.role)!],
+      directInterests: subjectInterests,
+      adjacentInterests: [...new Set([...profile.adjacentInterests, ...profile.professionalInterests.filter((value) => !onSubject(value))])],
+      excludedConcepts: profile.excludedConcepts,
+    };
+  }
   return {
     publisherId,
-    answers: { companyUrl: profile.companyUrl, companyDomain: profile.companyDomain, companyName: profile.companyName ?? profile.company.name ?? '', jobTitle: profile.jobTitle },
+    answers,
     queryText: profile.semanticQueries.join(' '),
     keywords: profile.searchTerms,
     interests: profile.professionalInterests,
@@ -86,16 +105,18 @@ function createIntent(profile: ReturnType<typeof buildProfessionalProfile>, publ
 
 function createEnrichedIntent(profile: ReturnType<typeof buildProfessionalProfile>, publisherId: string): EnrichedIntent {
   const baseIntent = createIntent(profile, publisherId);
+  const subjectTerms = roleSubjectTerms(profile.role);
   return {
     ...baseIntent,
     baseIntent,
-    primaryThemes: profile.professionalInterests.slice(0, 24),
-    relatedThemes: profile.retrieval.topicConcepts.slice(0, 32),
-    searchTerms: profile.searchTerms.slice(0, 48),
+    primaryThemes: (subjectTerms ? baseIntent.directInterests ?? [] : profile.professionalInterests).slice(0, 24),
+    relatedThemes: (subjectTerms ? baseIntent.adjacentInterests ?? [] : profile.retrieval.topicConcepts).slice(0, 32),
+    searchTerms: baseIntent.keywords.slice(0, 48),
     entities: profile.entities.slice(0, 24),
     excludedConcepts: profile.excludedConcepts.slice(0, 24),
-    persona: profile.role.function,
+    persona: roleSubjectLabel(profile.role) ?? profile.role.function,
     industry: profile.company.industry,
+    ...(subjectTerms ? { subject: roleSubjectLabel(profile.role), subjectTerms: subjectTerms.slice(0, 24) } : {}),
   };
 }
 

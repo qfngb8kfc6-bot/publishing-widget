@@ -36,6 +36,9 @@ export interface EnrichedIntent extends Intent {
   excludedConcepts: string[];
   persona: string;
   industry?: string;
+  /** Generic titled roles: the title subject the reader works on, and its vocabulary. */
+  subject?: string;
+  subjectTerms?: string[];
 }
 
 export interface SemanticCandidate {
@@ -104,6 +107,8 @@ export interface AIProfessionalProfileEnhancement {
   searchTerms?: string[];
   semanticQueries?: string[];
   excludedConcepts?: string[];
+  /** Generic titled roles only: news vocabulary for the title subject (subtopics, synonyms, typical terms). */
+  subjectVocabulary?: string[];
 }
 
 export interface ReportContentRequest {

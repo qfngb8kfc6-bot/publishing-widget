@@ -1,4 +1,4 @@
-import { normalizeToken } from '../core';
+import { normalizeToken, roleSubjectTerms } from '../core';
 import type { ProfessionalProfile } from '../core';
 import type { ReportRecord } from './types';
 
@@ -50,6 +50,8 @@ export function profileForTheme(profile: ProfessionalProfile, theme: string): Pr
   ]).filter((value) => normalizeToken(value) !== normalizeToken(theme));
   const expandedTerms = unique([...themeTerms, ...contextTerms]).slice(0, 48);
   const themeConcepts = themeTerms.map((concept, index) => ({ concept, weight: index === 0 ? 1.25 : 1.05, relevanceType: 'direct' as const, source: 'role' as const }));
+  // A role anchored on its title subject treats the chosen theme as part of that subject for this search.
+  const subjectTerms = roleSubjectTerms(profile.role);
   return {
     ...profile,
     professionalInterests: unique([...profile.professionalInterests, ...themeTerms]),
@@ -57,7 +59,7 @@ export function profileForTheme(profile: ProfessionalProfile, theme: string): Pr
     likelyInformationNeeds: add(profile.likelyInformationNeeds, theme),
     searchTerms: unique([...profile.searchTerms, ...expandedTerms]),
     semanticQueries: add(profile.semanticQueries, theme),
-    role: { ...profile.role, professionalThemes: add(profile.role.professionalThemes, theme) },
+    role: { ...profile.role, professionalThemes: add(profile.role.professionalThemes, theme), ...(subjectTerms ? { subjectTerms: unique([...subjectTerms, ...themeTerms]) } : {}) },
     retrieval: {
       ...retrieval,
       keywordQueries: unique([...retrieval.keywordQueries, ...expandedTerms]),
