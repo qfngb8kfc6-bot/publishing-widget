@@ -278,7 +278,9 @@ function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: P
   const directScore = directEvidence.score;
   const adjacentScore = adjacentEvidence.score;
   const roleBonus = Math.min(10, roleMatches.length * PROFESSIONAL_SCORE_WEIGHTS.roleBonus);
-  const companyBonus = company.score;
+  // A company-name match only adds weight in proportion to the article's role evidence: a story that merely
+  // mentions the reader's company must not outrank an on-topic story about another company.
+  const companyBonus = company.score * Math.min(1, directScore / PROFESSIONAL_SCORE_WEIGHTS.directTitle);
   const negativePenalty = Math.min(45, negativeTitle.length * 28 + negativeMetadata.length * 18 + negativeBody.length * 10);
   const exceptionalBonus = company.matches.length > 0 && directEvidence.matches.filter((match) => match.source === 'role').length >= 3 && normalizedConceptMatches(companyLabel, fields.title) ? 26 : 0;
   const recencyMultiplier = hasValidPublishedAt ? recencyMultiplierForAge(ageDays) : UNKNOWN_DATE_RECENCY_MULTIPLIER;

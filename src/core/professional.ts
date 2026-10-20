@@ -1,7 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 
-export const PROFESSIONAL_PROFILE_VERSION = '1.3';
-export const RANKING_VERSION = '1.2';
+export const PROFESSIONAL_PROFILE_VERSION = '1.4';
+export const RANKING_VERSION = '1.3';
 
 export interface CompanyContext {
   domain: string;
@@ -34,6 +34,13 @@ export interface RoleContext {
   decisionAreas?: string[];
   technologies?: string[];
   confidence: 'inferred' | 'high';
+  /**
+   * dedicated: a concept profile written for this kind of role. generic: only the catch-all leadership or
+   * professional fallback matched, so the role's own topic comes from its title and AI enrichment.
+   */
+  roleSource?: 'dedicated' | 'generic';
+  /** Subject words from a generic title, e.g. "sustainability" in "Head of Sustainability". */
+  titleTopics?: string[];
 }
 
 export type RelevanceType = 'direct' | 'adjacent';
@@ -81,6 +88,8 @@ export interface ProfessionalProfile {
 
 interface RoleRule {
   test: RegExp;
+  /** Catch-all rules match on seniority words, not on what the person works on. */
+  generic?: boolean;
   function: string;
   responsibilities: string[];
   direct: string[];
@@ -98,7 +107,7 @@ const ROLE_RULES: RoleRule[] = [
   { test: /research|scientist|academic|laboratory|lab/i, function: 'Research', responsibilities: ['research design', 'evidence review', 'knowledge development'], direct: ['science', 'evidence', 'methodology', 'measurement', 'data', 'research'], adjacent: ['technology', 'climate', 'ecology', 'health', 'innovation'], exclusions: ['generic finance', 'generic marketing'] },
   { test: /operations|operational|delivery|process|supply chain/i, function: 'Operations', responsibilities: ['process improvement', 'delivery planning', 'operational resilience'], direct: ['operations', 'processes', 'delivery', 'systems', 'workflow', 'efficiency', 'supply chain'], adjacent: ['automation', 'manufacturing', 'logistics', 'technology', 'resilience'], exclusions: ['astronomy', 'observatories', 'marine science'] },
   { test: /retail|merchandising|store|omnichannel|category|sales/i, function: 'Retail', responsibilities: ['retail operations', 'commercial planning', 'customer and channel performance'], direct: ['retail operations', 'stores', 'omnichannel', 'distribution', 'merchandising', 'sales performance', 'consumer behavior', 'markets', 'expansion', 'category performance', 'retail strategy'], adjacent: ['strategy', 'growth', 'pricing', 'channel strategy', 'market positioning', 'supply chain', 'ecommerce', 'brand', 'customer experience'], exclusions: ['astronomy', 'observatories', 'marine science'] },
-  { test: /chief|ceo|cto|cfo|director|vp|vice president|head of|executive|founder/i, function: 'Leadership', responsibilities: ['strategic planning', 'organisational decisions', 'risk management'], direct: ['strategy', 'technology', 'markets', 'operations', 'regulation', 'growth', 'leadership', 'risk'], adjacent: ['industry context', 'sustainability', 'AI', 'finance', 'innovation'], exclusions: ['astronomy', 'observatories'] },
+  { test: /chief|ceo|cto|cfo|director|vp|vice president|head of|executive|founder/i, generic: true, function: 'Leadership', responsibilities: ['strategic planning', 'organisational decisions', 'risk management'], direct: ['strategy', 'technology', 'markets', 'operations', 'regulation', 'growth', 'leadership', 'risk'], adjacent: ['industry context', 'sustainability', 'AI', 'finance', 'innovation'], exclusions: ['astronomy', 'observatories'] },
 ];
 
 function unique(values: string[]): string[] {
@@ -113,16 +122,38 @@ export function normalizeJobTitle(value: string): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, 160);
 }
 
+const SENIORITY_WORDS = /\b(global|group|regional|senior|sr|junior|jr|deputy|associate|assistant|interim|acting|head|heads|director|directors|vp|svp|evp|vice|president|chief|lead|leader|manager|officer|executive|specialist|coordinator|partner|principal|of|for|and|the|at|in|ceo|cfo|cto|coo|founder|co)\b/gi;
+
+/**
+ * Subject words from a title that matched only a catch-all rule: "Head of Sustainability" → sustainability,
+ * "Chief Legal Officer" → legal, "Head of Legal & Compliance" → legal, compliance. Seniority words are removed;
+ * what remains is what the person works on.
+ */
+export function titleTopics(title: string): string[] {
+  return unique(title.split(/[&,/+|]|\band\b/i)
+    .map((part) => part.replace(SENIORITY_WORDS, ' ').replace(/[^\p{L}\p{N}\s-]/gu, ' ').replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter((part) => part.length >= 3 && part.split(' ').length <= 3 && !GENERIC_CONCEPTS.has(normalizeToken(part))));
+}
+
 export function analyzeRole(jobTitle: string): RoleContext {
   const rawTitle = normalizeJobTitle(jobTitle);
   const rule = ROLE_RULES.find((candidate) => candidate.test.test(rawTitle));
-  const fallback: RoleRule = { test: /.*/, function: 'Professional', responsibilities: ['professional development', 'decision support'], direct: ['decision support', 'professional practice'], adjacent: ['business', 'technology'], exclusions: [] };
+  const fallback: RoleRule = { test: /.*/, generic: true, function: 'Professional', responsibilities: ['professional development', 'decision support'], direct: ['decision support', 'professional practice'], adjacent: ['business', 'technology'], exclusions: [] };
   const match = rule ?? fallback;
-  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities: match.responsibilities, professionalThemes: [...match.direct, ...match.adjacent], directThemes: match.direct, adjacentThemes: match.adjacent, confidence: rule ? 'high' : 'inferred' };
+  const generic = Boolean(match.generic);
+  const topics = generic ? titleTopics(rawTitle) : [];
+  // A generic role with a subject in its title ("Head of Sustainability") is about that subject; the catch-all
+  // leadership concepts become adjacent context rather than the role's core.
+  const directThemes = topics.length ? topics : match.direct;
+  const adjacentThemes = topics.length ? unique([...match.direct, ...match.adjacent]) : match.adjacent;
+  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities: match.responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics } : {}) };
 }
 
 function ruleFor(role: RoleContext): RoleRule {
-  return ROLE_RULES.find((candidate) => candidate.function === role.function) ?? { test: /.*/, function: role.function, responsibilities: role.responsibilities, direct: role.professionalThemes.slice(0, 6), adjacent: role.professionalThemes.slice(6), exclusions: [] };
+  const rule = ROLE_RULES.find((candidate) => candidate.function === role.function) ?? { test: /.*/, function: role.function, responsibilities: role.responsibilities, direct: role.professionalThemes.slice(0, 6), adjacent: role.professionalThemes.slice(6), exclusions: [] };
+  // Title topics replace a generic rule's direct concepts; its own direct concepts move to adjacent.
+  if (role.titleTopics?.length) return { ...rule, direct: role.titleTopics, adjacent: unique([...rule.direct, ...rule.adjacent]) };
+  return rule;
 }
 
 function companyConcepts(company: CompanyContext, rule: RoleRule, title: string): { direct: string[]; adjacent: string[] } {
@@ -142,7 +173,8 @@ function companyConcepts(company: CompanyContext, rule: RoleRule, title: string)
 
 function buildConcepts(role: RoleContext, company: CompanyContext, directInterests: string[], adjacentInterests: string[], exclusions: string[]): RetrievalConcept[] {
   const rule = ruleFor(role);
-  const roleDirect = specific([...rule.direct, ...role.responsibilities]);
+  // For a titled generic role the catch-all responsibilities (strategic planning, ...) are context, not core.
+  const roleDirect = specific(role.titleTopics?.length ? rule.direct : [...rule.direct, ...role.responsibilities]);
   const roleAdjacent = specific(rule.adjacent);
   const roleConcepts = [
     ...roleDirect.map((concept) => ({ concept, weight: 1.25, relevanceType: 'direct' as const, source: 'role' as const })),

@@ -112,13 +112,22 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
     ...companyConcepts,
     ...roleConcepts,
   ].filter(isSpecificConcept);
-  const deterministicDirect = profile.directInterests?.length ? profile.directInterests : profile.professionalInterests;
+  // Roles without a dedicated concept profile take their core retrieval concepts from validated enrichment:
+  // short, specific role themes, decision areas, search terms, interests and responsibilities, concise first.
+  const exclusionKeys = new Set([...(profile.retrieval?.exclusions ?? []), ...(enhancement.excludedConcepts ?? [])].map(normalizeToken));
+  const aiRoleConcepts = profile.role.roleSource === 'generic'
+    ? [...new Map([...(personEnhancement?.themes ?? []), ...(personEnhancement?.decisionAreas ?? []), ...(enhancement.searchTerms ?? []), ...(enhancement.professionalInterests ?? []), ...(personEnhancement?.responsibilities ?? [])]
+      .map((concept) => concept.replace(/\s+/g, ' ').trim())
+      .filter((concept) => isSpecificConcept(concept) && concept.length <= 40 && concept.split(' ').length <= 3 && !exclusionKeys.has(normalizeToken(concept)))
+      .map((concept) => [normalizeToken(concept), concept] as const)).values()].slice(0, 24)
+    : [];
+  const deterministicDirect = appendUnique(profile.directInterests?.length ? profile.directInterests : profile.professionalInterests, aiRoleConcepts, 48);
   const verifiedCompanySignals = [...profile.company.topics, ...(profile.company.technologies ?? []), ...(companyEnhancement?.technologies ?? [])];
   const aiDirect = [...new Set([
     ...companyConcepts.filter((concept) => isSpecificConcept(concept)),
     ...aiConcepts.filter((concept) => deterministicDirect.some((base) => overlapsConcept(base, concept)) || verifiedCompanySignals.some((base) => overlapsConcept(base, concept))),
   ])].slice(0, 16);
-  const aiAdjacent = [...new Set(aiConcepts.filter((concept) => !aiDirect.some((direct) => overlapsConcept(direct, concept))))].slice(0, 16);
+  const aiAdjacent = [...new Set(aiConcepts.filter((concept) => !aiDirect.some((direct) => overlapsConcept(direct, concept)) && !aiRoleConcepts.some((roleConcept) => normalizeToken(roleConcept) === normalizeToken(concept))))].slice(0, 16);
   const directInterests = appendUnique(deterministicDirect, aiDirect, 32);
   const adjacentInterests = appendUnique(profile.adjacentInterests ?? [], aiAdjacent, 32);
   // Deterministic direct concepts always lead the profile. This prevents a
@@ -129,11 +138,14 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
   const entities = appendUnique(profile.entities, enhancement.relevantEntities, 32);
   const likelyInformationNeeds = appendUnique(profile.likelyInformationNeeds, enhancement.likelyInformationNeeds, 32);
   const existingConcepts = profile.retrieval.concepts ?? [];
+  const roleConceptAdditions = aiRoleConcepts.map((concept) => ({ concept, weight: 1.1, relevanceType: 'direct' as const, source: 'role' as const }));
   const additions = [
     ...aiDirect.map((concept) => ({ concept, weight: 0.7, relevanceType: 'direct' as const, source: 'company' as const })),
     ...aiAdjacent.map((concept) => ({ concept, weight: 0.45, relevanceType: 'adjacent' as const, source: 'company' as const })),
   ];
-  const concepts = [...existingConcepts, ...additions]
+  // Promoted role concepts come first so they win over the same concept already present as adjacent.
+  const ordered = roleConceptAdditions.length ? [...existingConcepts.filter((item) => item.relevanceType === 'direct'), ...roleConceptAdditions, ...existingConcepts.filter((item) => item.relevanceType !== 'direct')] : existingConcepts;
+  const concepts = [...ordered, ...additions]
     .filter((item, index, values) => values.findIndex((candidate) => normalizeToken(candidate.concept) === normalizeToken(item.concept)) === index)
     .slice(0, 64);
   const retrieval = {
