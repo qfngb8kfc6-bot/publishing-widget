@@ -19,11 +19,17 @@ const themesFor = (profile: ReturnType<typeof buildProfessionalProfile>) => repo
 describe('report themes', () => {
   it('gives a generic titled role subject themes only, never strategy, markets or operations', () => {
     const base = buildProfessionalProfile(company('lululemon.com', 'Lululemon', 'sporting goods', []), 'Head of Legal');
-    const withoutAI = themesFor(base);
-    expect(withoutAI[0]).toBe('legal');
-    expect(withoutAI.join(' ')).not.toMatch(/strategy|markets|operations|growth/);
+    // Without AI vocabulary only the genuine subject term remains: no "legal risk" or "legal reporting".
+    expect(themesFor(base)).toEqual(['legal']);
+    expect(themesFor(buildProfessionalProfile(company('lululemon.com', 'Lululemon', 'sporting goods', []), 'Head of Legal & Compliance'))).toEqual(['legal', 'compliance']);
     const withAI = themesFor(mergeProfessionalProfileEnhancement(base, legalEnrichment)!);
     expect(withAI).toEqual(['legal', 'litigation', 'lawsuit', 'trademark']);
+  });
+
+  it('never turns a filler or leadership word from the vocabulary into a theme', () => {
+    const base = buildProfessionalProfile(company('puma.com', 'Puma', 'sporting goods', []), 'Head of Sustainability');
+    const merged = mergeProfessionalProfileEnhancement(base, { subjectVocabulary: ['reporting', 'risk', 'growth', 'emissions', 'impact report', 'carbon'] })!;
+    expect(themesFor(merged)).toEqual(['sustainability', 'emissions', 'impact report', 'carbon']);
   });
 
   it('keeps dedicated roles on their existing themes', () => {
