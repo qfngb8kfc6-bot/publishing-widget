@@ -196,6 +196,11 @@ export interface ValidatedSemanticResult {
   rationale?: string;
 }
 
+/**
+ * Rerank output is compact: {"results":[{"id":"…","score":0-100}]}. Only supplied IDs and in-range numeric scores
+ * are accepted; any other fields are ignored. A bare array and the legacy articleId/semanticScore keys are
+ * still accepted for safety.
+ */
 export function validateSemanticResults(raw: unknown, candidates: SemanticCandidate[]): ValidatedSemanticResult[] {
   const value = record(raw);
   const list = Array.isArray(raw) ? raw : Array.isArray(value?.results) ? value.results : [];
@@ -203,27 +208,11 @@ export function validateSemanticResults(raw: unknown, candidates: SemanticCandid
   const seen = new Set<string>();
   return list.flatMap((item) => {
     const result = record(item);
-    const articleId = result?.articleId;
-    const semanticScore = result?.semanticScore;
+    const articleId = typeof result?.id === 'string' ? result.id : result?.articleId;
+    const semanticScore = result?.score ?? result?.semanticScore;
     if (typeof articleId !== 'string' || !validIds.has(articleId) || seen.has(articleId) || typeof semanticScore !== 'number' || !Number.isFinite(semanticScore) || semanticScore < 0 || semanticScore > 100) return [];
-    const keep = result?.keep;
-    const relevanceType = result?.relevanceType;
-    const confidence = result?.confidence;
-    const rationale = result?.rationale;
-    if (keep !== undefined && typeof keep !== 'boolean') return [];
-    if (relevanceType !== undefined && relevanceType !== 'direct' && relevanceType !== 'adjacent') return [];
-    if (confidence !== undefined && (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 100)) return [];
-    if (rationale !== undefined && (typeof rationale !== 'string' || rationale.trim().length > 240)) return [];
     seen.add(articleId);
-    return [{
-      articleId,
-      semanticScore,
-      signals: strings(result?.signals, 3, 100),
-      ...(keep === undefined ? {} : { keep }),
-      ...(relevanceType === undefined ? {} : { relevanceType }),
-      ...(confidence === undefined ? {} : { confidence }),
-      ...(rationale === undefined ? {} : { rationale: rationale.trim() }),
-    }];
+    return [{ articleId, semanticScore, signals: [] }];
   });
 }
 

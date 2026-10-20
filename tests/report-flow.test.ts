@@ -265,8 +265,14 @@ describe('hosted report flow', () => {
     const { response, report } = await generateWithAI(new InflatedAdjacentAIProvider());
     expect(response.status).toBe(201);
     expect(report.recommendations.length).toBeGreaterThan(0);
-    expect(report.recommendations.every((item: any) => item.rankingMetadata.relevanceType === 'adjacent')).toBe(true);
-    expect(report.recommendations.every((item: any) => item.displayScore <= 59)).toBe(true);
+    const deterministic = await generateWithAI(new ConfigurableReportAIProvider('rerank'));
+    const deterministicTypes = new Map(deterministic.report.recommendations.map((item: any) => [item.articleId, item.rankingMetadata.relevanceType]));
+    // A maximal AI score never changes the deterministic relevance type, and adjacent matches stay capped.
+    for (const item of report.recommendations) {
+      if (deterministicTypes.has(item.articleId)) expect(item.rankingMetadata.relevanceType).toBe(deterministicTypes.get(item.articleId));
+      if (item.rankingMetadata.relevanceType === 'adjacent') expect(item.displayScore).toBeLessThanOrEqual(59);
+    }
+    expect(report.recommendations.some((item: any) => item.rankingMetadata.rankingMode === 'hybrid')).toBe(true);
   });
 
   it.each([
