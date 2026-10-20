@@ -49,6 +49,8 @@ export interface ReportRecord {
   summaryFallbackReason?: string;
   recommendations: ReportRecommendation[];
   sections?: EditorialSection[];
+  /** AI-written one-line description per theme card, keyed by theme. Absent when AI did not provide them. */
+  themeDescriptions?: Record<string, string>;
   generationVersion: string;
   rankingVersion: string;
   professionalProfileVersion: string;

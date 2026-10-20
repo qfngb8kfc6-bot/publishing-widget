@@ -1,6 +1,7 @@
-import { normalizeToken, tokenize, type Intent } from '../core';
+import { normalizeToken, subjectMatcher, subjectTermsFor, tokenize, type Intent } from '../core';
 import type { AIExplanationResult, AIProfessionalProfileEnhancement, AIReportContent, EnrichedIntent, ReportContentRequest, SemanticCandidate } from './types';
 import type { ProfessionalProfile } from '../core';
+import { normalizeAngle } from './angles';
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -62,12 +63,13 @@ export function validateProfessionalProfileEnhancement(raw: unknown): AIProfessi
     searchTerms: strings(value.searchTerms, 32, 80),
     semanticQueries: strings(value.semanticQueries, 8, 180),
     excludedConcepts: strings(value.excludedConcepts, 16, 80),
+    subjectVocabulary: strings(value.subjectVocabulary, 24, 40),
   };
   const hasValues = Boolean(
     result.company && Object.values(result.company).some((item) => item !== undefined && (!Array.isArray(item) || item.length > 0))
       || result.person && Object.values(result.person).some((item) => item !== undefined && (!Array.isArray(item) || item.length > 0))
       || result.professionalInterests?.length || result.likelyInformationNeeds?.length || result.relevantEntities?.length
-      || result.searchTerms?.length || result.semanticQueries?.length || result.excludedConcepts?.length,
+      || result.searchTerms?.length || result.semanticQueries?.length || result.excludedConcepts?.length || result.subjectVocabulary?.length,
   );
   return hasValues ? result : null;
 }
@@ -77,6 +79,10 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
   if (!enhancement) return null;
   const companyEnhancement = enhancement.company;
   const personEnhancement = enhancement.person;
+  // A generic titled role is anchored on its title subject: the subject plus its validated news vocabulary.
+  const subjectTerms = profile.role.roleSource === 'generic' && profile.role.titleTopics?.length ? subjectTermsFor(profile.role, enhancement.subjectVocabulary) : undefined;
+  const subjectTest = subjectTerms ? subjectMatcher({ ...profile.role, subjectTerms }) : undefined;
+  const onSubject = (concept: string) => !subjectTest || subjectTest(concept);
   const company = {
     ...profile.company,
     industry: profile.company.industry ?? companyEnhancement?.industry,
@@ -91,12 +97,14 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
     ...profile.role,
     // Submitted title and deterministic function remain authoritative.
     seniority: profile.role.seniority ?? personEnhancement?.seniority,
-    responsibilities: appendUnique(profile.role.responsibilities, personEnhancement?.responsibilities),
-    decisionAreas: appendUnique(profile.role.decisionAreas ?? [], personEnhancement?.decisionAreas),
+    // Leadership duties ("strategic planning") do not describe an anchored role; only on-subject ones are kept.
+    responsibilities: appendUnique(profile.role.responsibilities, personEnhancement?.responsibilities?.filter(onSubject)),
+    decisionAreas: appendUnique(profile.role.decisionAreas ?? [], personEnhancement?.decisionAreas?.filter(onSubject)),
     technologies: appendUnique(profile.role.technologies ?? [], personEnhancement?.technologies),
     // The deterministic role foundation is stable. AI themes are classified
     // below as bounded direct/adjacent additions instead of replacing it.
     professionalThemes: profile.role.professionalThemes,
+    ...(subjectTerms ? { subjectTerms } : {}),
   };
   const companyConcepts = [
     ...(companyEnhancement?.activities ?? []),
@@ -114,11 +122,13 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
   ].filter(isSpecificConcept);
   // Roles without a dedicated concept profile take their core retrieval concepts from validated enrichment:
   // short, specific role themes, decision areas, search terms, interests and responsibilities, concise first.
+  // A titled generic role promotes its subject vocabulary first and only concepts anchored to its subject;
+  // leadership-flavoured ones (strategy, finance, governance) stay adjacent at most.
   const exclusionKeys = new Set([...(profile.retrieval?.exclusions ?? []), ...(enhancement.excludedConcepts ?? [])].map(normalizeToken));
   const aiRoleConcepts = profile.role.roleSource === 'generic'
-    ? [...new Map([...(personEnhancement?.themes ?? []), ...(personEnhancement?.decisionAreas ?? []), ...(enhancement.searchTerms ?? []), ...(enhancement.professionalInterests ?? []), ...(personEnhancement?.responsibilities ?? [])]
+    ? [...new Map([...(subjectTerms ?? []), ...(personEnhancement?.themes ?? []), ...(personEnhancement?.decisionAreas ?? []), ...(enhancement.searchTerms ?? []), ...(enhancement.professionalInterests ?? []), ...(personEnhancement?.responsibilities ?? [])]
       .map((concept) => concept.replace(/\s+/g, ' ').trim())
-      .filter((concept) => isSpecificConcept(concept) && concept.length <= 40 && concept.split(' ').length <= 3 && !exclusionKeys.has(normalizeToken(concept)))
+      .filter((concept) => isSpecificConcept(concept) && concept.length <= 40 && concept.split(' ').length <= 3 && !exclusionKeys.has(normalizeToken(concept)) && onSubject(concept))
       .map((concept) => [normalizeToken(concept), concept] as const)).values()].slice(0, 24)
     : [];
   const deterministicDirect = appendUnique(profile.directInterests?.length ? profile.directInterests : profile.professionalInterests, aiRoleConcepts, 48);
@@ -126,7 +136,7 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
   const aiDirect = [...new Set([
     ...companyConcepts.filter((concept) => isSpecificConcept(concept)),
     ...aiConcepts.filter((concept) => deterministicDirect.some((base) => overlapsConcept(base, concept)) || verifiedCompanySignals.some((base) => overlapsConcept(base, concept))),
-  ])].slice(0, 16);
+  ])].filter(onSubject).slice(0, 16);
   const aiAdjacent = [...new Set(aiConcepts.filter((concept) => !aiDirect.some((direct) => overlapsConcept(direct, concept)) && !aiRoleConcepts.some((roleConcept) => normalizeToken(roleConcept) === normalizeToken(concept))))].slice(0, 16);
   const directInterests = appendUnique(deterministicDirect, aiDirect, 32);
   const adjacentInterests = appendUnique(profile.adjacentInterests ?? [], aiAdjacent, 32);
@@ -181,7 +191,25 @@ export function validateReportContent(raw: unknown, request: ReportContentReques
   const summary = optionalString(value.summary, 1200);
   if (!summary && explanations.length === 0 && weakArticleIds.length === 0) return null;
   const citedArticleIds = summary && Array.isArray(value.citedArticleIds) ? [...new Set(value.citedArticleIds.filter((id): id is string => typeof id === 'string' && candidateIds.has(id)))] : [];
-  return { summary, explanations, ...(summary ? { citedArticleIds } : {}), ...(weakArticleIds.length ? { weakArticleIds } : {}) };
+  const themeDescriptions = validThemeDescriptions(value.themeDescriptions, request.themes ?? []);
+  return { summary, explanations, ...(summary ? { citedArticleIds } : {}), ...(weakArticleIds.length ? { weakArticleIds } : {}), ...(themeDescriptions ? { themeDescriptions } : {}) };
+}
+
+const THEME_DESCRIPTION_MAX_LENGTH = 160;
+
+/** One single-line description per supplied theme; unknown themes and over-long or empty lines are dropped. */
+function validThemeDescriptions(raw: unknown, themes: string[]): Record<string, string> | undefined {
+  if (!Array.isArray(raw) || themes.length === 0) return undefined;
+  const byKey = new Map(themes.map((theme) => [normalizeToken(theme), theme]));
+  const descriptions: Record<string, string> = {};
+  for (const item of raw) {
+    const entry = record(item);
+    const theme = typeof entry?.theme === 'string' ? byKey.get(normalizeToken(entry.theme)) : undefined;
+    const description = typeof entry?.description === 'string' ? entry.description.replace(/\s+/g, ' ').trim() : '';
+    if (!theme || !description || description.length > THEME_DESCRIPTION_MAX_LENGTH || descriptions[theme]) continue;
+    descriptions[theme] = description;
+  }
+  return Object.keys(descriptions).length ? descriptions : undefined;
 }
 
 export function sanitizeEnrichedIntent(raw: unknown, baseIntent: Intent): EnrichedIntent | null {
@@ -252,11 +280,9 @@ export interface ExplanationRejection {
   presentFields?: string[];
 }
 
-/** An angle is a short label (at most four words); anything else is dropped without rejecting the explanation. */
+/** An angle is one of ALLOWED_ANGLES: other labels map to the closest one, or are dropped without rejecting the explanation. */
 function validAngle(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const angle = value.replace(/\s+/g, ' ').trim().toLowerCase();
-  return angle && angle.length <= 40 && angle.split(' ').length <= 4 && /^[a-z][a-z -]*$/.test(angle) ? angle : undefined;
+  return normalizeAngle(value);
 }
 
 /** Model-chosen field names are logged only when they look like identifiers, so free text can never leak through a key. */
