@@ -10,8 +10,20 @@ export interface AIConfig {
   explanationsEnabled: boolean;
   timeoutMs: number;
   maxTokens: number;
+  /** Per-stage completion budgets; each falls back to maxTokens. */
+  stageMaxTokens?: AIStageMaxTokens;
+  /** Sent only when configured: some reasoning models reject a non-default temperature. */
+  temperature?: number;
+  /** Sent as reasoning_effort only when configured. */
+  reasoningEffort?: string;
   deterministicWeight: number;
   semanticWeight: number;
+}
+
+export interface AIStageMaxTokens {
+  profile?: number;
+  rerank?: number;
+  content?: number;
 }
 
 /** Compatibility retrieval shape for the optional AI reranker; not the persisted professional profile. */
@@ -36,6 +48,10 @@ export interface SemanticCandidate {
   deterministicScore: number;
   deterministicRelevanceType?: 'direct' | 'adjacent';
   relevanceSignals?: string[];
+  publishedAt?: string;
+  category?: string;
+  /** Profile concepts the deterministic scorer matched in this article. */
+  matchedConcepts?: string[];
 }
 
 export interface ExplanationRequest {
@@ -89,10 +105,14 @@ export interface ReportContentRequest {
   publisherId: string;
   profile: ProfessionalProfile;
   recommendations: Array<{
-    article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'>;
+    article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'> & Partial<Pick<NormalizedArticle, 'category' | 'summary'>>;
     deterministicExplanation: string;
     relevanceSignals: string[];
     semanticSignals: string[];
+    /** Profile concepts the deterministic scorer matched in this article. */
+    matchedConcepts?: string[];
+    /** Final relevance score used for ranking. */
+    score?: number;
   }>;
 }
 

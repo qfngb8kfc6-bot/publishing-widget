@@ -17,14 +17,30 @@ function numberEnv(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function nonNegativeEnv(name, fallback) {
+  const raw = process.env[name];
+  const value = Number(raw);
+  return raw !== undefined && raw.trim() !== '' && Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
 async function createAnalyticsStore() {
   if (!process.env.DATABASE_URL) return { store: undefined, reportStore: undefined, mode: 'memory' };
+  const max = numberEnv('DB_POOL_MAX', 10);
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    max: numberEnv('DB_POOL_MAX', 10),
+    max,
+    // Opening a connection costs several network round trips (TCP, TLS, auth), so keep a few warm instead of
+    // letting the idle timeout close every connection between requests.
+    min: Math.min(nonNegativeEnv('DB_POOL_MIN', 2), max),
+    keepAlive: true,
     connectionTimeoutMillis: numberEnv('DB_CONNECTION_TIMEOUT_MS', 5000),
     idleTimeoutMillis: numberEnv('DB_IDLE_TIMEOUT_MS', 30000),
     statement_timeout: numberEnv('DB_STATEMENT_TIMEOUT_MS', 10000),
+  });
+  let connectionsOpened = 0;
+  pool.on('connect', () => {
+    connectionsOpened += 1;
+    console.log(`[publisher-widget] db_connection_opened total=${connectionsOpened} poolSize=${pool.totalCount} idle=${pool.idleCount}`);
   });
   try {
     await pool.query('SELECT 1');

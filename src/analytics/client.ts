@@ -18,6 +18,7 @@ export class BatchingAnalyticsClient implements AnalyticsClient {
   private readonly maxBatchSize: number;
   private readonly fetchImpl?: typeof fetch;
   private readonly beacon?: (url: string, data: BodyInit | null) => boolean;
+  private readonly crossOrigin: boolean;
   private timer?: ReturnType<typeof setInterval>;
   private flushing = false;
 
@@ -26,7 +27,10 @@ export class BatchingAnalyticsClient implements AnalyticsClient {
     this.flushIntervalMs = options.flushIntervalMs ?? 2500;
     this.maxBatchSize = options.maxBatchSize ?? 12;
     this.fetchImpl = options.fetchImpl ?? (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined);
-    this.beacon = options.sendBeacon ?? (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function' ? navigator.sendBeacon.bind(navigator) : undefined);
+    this.crossOrigin = isCrossOrigin(this.endpoint);
+    // A JSON beacon to another origin is a credentialed CORS request the platform does not allow, so the browser
+    // would drop it silently. Cross-origin delivery uses keepalive fetch without credentials instead.
+    this.beacon = this.crossOrigin ? undefined : options.sendBeacon ?? (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function' ? navigator.sendBeacon.bind(navigator) : undefined);
     if (this.flushIntervalMs > 0 && typeof setInterval !== 'undefined') this.timer = setInterval(() => { void this.flush(); }, this.flushIntervalMs);
   }
 
@@ -43,7 +47,7 @@ export class BatchingAnalyticsClient implements AnalyticsClient {
     try {
       if (preferBeacon && this.beacon?.(this.endpoint, new Blob([body], { type: 'application/json' }))) return;
       if (!this.fetchImpl) return;
-      await this.fetchImpl(this.endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: preferBeacon });
+      await this.fetchImpl(this.endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: preferBeacon, ...(this.crossOrigin ? { credentials: 'omit' as const } : {}) });
     } catch {
       // Analytics delivery is best-effort. Consumer recommendations and navigation must continue.
     } finally {
@@ -69,4 +73,13 @@ export function attachAnalyticsPageLifecycle(client: AnalyticsClient): () => voi
     document.removeEventListener('visibilitychange', visibility);
     window.removeEventListener('pagehide', pagehide);
   };
+}
+
+function isCrossOrigin(endpoint: string): boolean {
+  if (typeof location === 'undefined' || !/^https?:\/\//i.test(endpoint)) return false;
+  try {
+    return new URL(endpoint).origin !== location.origin;
+  } catch {
+    return false;
+  }
 }

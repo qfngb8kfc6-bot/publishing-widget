@@ -10,6 +10,11 @@ export interface AIEnvironment {
   AI_EXPLANATIONS_ENABLED?: string;
   AI_TIMEOUT_MS?: string;
   AI_MAX_TOKENS?: string;
+  AI_PROFILE_MAX_TOKENS?: string;
+  AI_RERANK_MAX_TOKENS?: string;
+  AI_CONTENT_MAX_TOKENS?: string;
+  AI_TEMPERATURE?: string;
+  AI_REASONING_EFFORT?: string;
   AI_DETERMINISTIC_WEIGHT?: string;
   AI_SEMANTIC_WEIGHT?: string;
 }
@@ -51,7 +56,27 @@ export function createAIConfig(environment: AIEnvironment = {}): AIConfig {
     explanationsEnabled: environment.AI_EXPLANATIONS_ENABLED !== 'false',
     timeoutMs: numberOr(environment.AI_TIMEOUT_MS, defaultAIConfig.timeoutMs, 1),
     maxTokens: numberOr(environment.AI_MAX_TOKENS, defaultAIConfig.maxTokens, 1),
+    stageMaxTokens: {
+      profile: optionalNumber(environment.AI_PROFILE_MAX_TOKENS, 1),
+      rerank: optionalNumber(environment.AI_RERANK_MAX_TOKENS, 1),
+      content: optionalNumber(environment.AI_CONTENT_MAX_TOKENS, 1),
+    },
+    temperature: optionalNumber(environment.AI_TEMPERATURE, 0, 2),
+    reasoningEffort: reasoningEffort(environment.AI_REASONING_EFFORT),
     deterministicWeight: deterministicWeight / total,
     semanticWeight: semanticWeight / total,
   };
+}
+
+/** Unset, blank or out-of-range values mean "not configured", so the parameter is omitted from requests. */
+function optionalNumber(value: string | undefined, min: number, max = Number.POSITIVE_INFINITY): number | undefined {
+  if (value === undefined || !value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : undefined;
+}
+
+/** Accepts a single lowercase word such as minimal, low, medium or high; anything else is ignored. */
+function reasoningEffort(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && /^[a-z]{1,16}$/.test(normalized) ? normalized : undefined;
 }
