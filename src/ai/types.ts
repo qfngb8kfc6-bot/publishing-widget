@@ -64,7 +64,12 @@ export interface ExplanationRequest {
 export interface AIExplanationResult {
   articleId: string;
   explanation: string;
+  /** Two or three words naming why it matters, e.g. "supplier risk" or "competitor benchmark". */
+  angle?: string;
 }
+
+/** How an article relates to the reader's company, derived deterministically from profile and company data. */
+export type ArticleRelationship = 'own_company' | 'likely_competitor' | 'supplier_partner' | 'wider_market';
 
 export interface ProfessionalProfileEnhancementInput {
   publisherId: string;
@@ -113,11 +118,14 @@ export interface ReportContentRequest {
     matchedConcepts?: string[];
     /** Final relevance score used for ranking. */
     score?: number;
+    relationship?: ArticleRelationship;
   }>;
 }
 
 export interface AIReportContent {
   summary?: string;
+  /** Supplied article IDs the summary draws on. */
+  citedArticleIds?: string[];
   explanations?: AIExplanationResult[];
 }
 

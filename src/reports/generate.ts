@@ -13,6 +13,8 @@ import { profileForTheme } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
+import { articleRelationship } from './relationship';
+import { explanationQualityWarnings, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
 
 export const GENERATION_VERSION = '1.2';
@@ -271,6 +273,11 @@ export class ReportGenerationService {
       this.logger?.info('ai_performance', { ...base, aiDurationMs: Math.max(0, clockMs() - startedAt), aiSuccess: false, aiFallbackUsed: true, aiErrorCode: safeLogText(errorCode, 120), aiErrorMessage: safeLogText(error instanceof Error ? error.message : 'unknown', 300), ...aiDiagnosticFields(diagnostics) });
       return { errorCode: safeLogText(errorCode, 120) };
     }
+  }
+
+  /** One ai_quality_warning line per issue: scope, article ID and code only, never the text. */
+  private logQualityWarnings(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, scope: 'summary' | 'explanation', warnings: Array<{ code: ContentQualityCode; articleId?: string }>): void {
+    for (const warning of warnings) this.logger?.info('ai_quality_warning', { requestId: input.requestId, publisherId: input.publisherId, stage: scope, qualityCode: warning.code, articleId: warning.articleId ? safeLogText(warning.articleId, 200) : undefined });
   }
 
   /**
@@ -588,13 +595,13 @@ export class ReportGenerationService {
     return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
   }
 
-  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, string>()): ReportRecommendation[] {
+  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set()): ReportRecommendation[] {
     return ranked.map((item, index) => ({
       articleId: item.article.id,
       rank: index + 1,
       rawScore: item.finalScore,
       displayScore: displayRelevanceScore(item.finalScore),
-      explanation: explanationById.get(item.article.id) ?? explanation(profile, item),
+      explanation: explanationById.get(item.article.id)?.explanation ?? explanation(profile, item),
       article: item.article,
       rankingMetadata: {
         relevanceSignals: item.relevanceSignals,
@@ -608,6 +615,8 @@ export class ReportGenerationService {
         scoreComponents: item.scoreComponents,
         aiProvider: item.rankingMode === 'hybrid' ? this.ai?.provider.providerName : undefined,
         explanationSource: explanationById.has(item.article.id) ? 'ai' as const : 'deterministic' as const,
+        ...(explanationById.get(item.article.id)?.angle ? { angle: explanationById.get(item.article.id)!.angle } : {}),
+        ...(citedIds.has(item.article.id) ? { citedInSummary: true } : {}),
       },
     }));
   }
@@ -767,9 +776,11 @@ export class ReportGenerationService {
       semanticSignals: item.semanticSignals,
       matchedConcepts: [...item.directMatches, ...item.adjacentMatches],
       score: Math.round(item.finalScore),
+      relationship: articleRelationship(item.article, profile),
     }));
     let generatedSummary = reportSummary(profile, ranked.length);
-    const explanationById = new Map<string, string>();
+    const explanationById = new Map<string, { explanation: string; angle?: string }>();
+    let citedIds = new Set<string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
@@ -783,12 +794,17 @@ export class ReportGenerationService {
         if (!result) throw new Error('invalid_report_content');
         return result;
       }, { publisherId: input.publisherId, requestId: input.requestId });
-      if (validated?.summary) { generatedSummary = validated.summary; aiSummaryUsed = true; }
-      else summaryFallbackReason = errorCode ?? 'summary_missing';
+      if (validated?.summary) {
+        generatedSummary = validated.summary;
+        aiSummaryUsed = true;
+        citedIds = new Set(validated.citedArticleIds ?? []);
+        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(validated.summary, validated.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
+      } else summaryFallbackReason = errorCode ?? 'summary_missing';
       if (validated && this.ai!.config.explanationsEnabled) this.logExplanationRejections(input, contentRequest, validated.explanations ?? [], rejections);
       if (this.ai!.config.explanationsEnabled && validated) {
-        for (const item of validated.explanations ?? []) explanationById.set(item.articleId, item.explanation);
+        for (const item of validated.explanations ?? []) explanationById.set(item.articleId, { explanation: item.explanation, angle: item.angle });
         aiExplanationUsed = explanationById.size > 0;
+        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(validated.explanations ?? [], new Map(ranked.map((item) => [item.article.id, item.article.title]))));
       }
     }
     const aiExplanationMs = clockMs() - aiExplanationStartedAt;
@@ -811,7 +827,7 @@ export class ReportGenerationService {
     timing.aiExplanationsMs = aiExplanationMs;
     timing.briefingSummaryMs = aiExplanationMs;
     this.markStage(input, 'ai_complete');
-    const rawRecommendations = this.recommendationsFromRanked(profile, ranked, explanationById).map((recommendation) => ({
+    const rawRecommendations = this.recommendationsFromRanked(profile, ranked, explanationById, citedIds).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
         ...recommendation.rankingMetadata,

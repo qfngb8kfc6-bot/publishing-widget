@@ -11,7 +11,7 @@ const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>SGI</title>
 type Logged = { message: string; fields: Record<string, unknown> };
 
 function reference(body: { messages: Array<{ content: string }> }) {
-  return JSON.parse(body.messages[1].content.replace('BEGIN_REFERENCE_JSON\n', '').replace('\nEND_REFERENCE_JSON', '')) as { operation: string; payload: { articles?: Array<{ articleId: string }> } };
+  return JSON.parse(body.messages[1].content.replace('BEGIN_REFERENCE_JSON\n', '').replace('\nEND_REFERENCE_JSON', '')) as { operation: string; payload: { articles?: Array<{ id: string }> } };
 }
 
 function app(content: (articleIds: string[], system: string) => unknown) {
@@ -24,7 +24,7 @@ function app(content: (articleIds: string[], system: string) => unknown) {
       if (String(input) !== AI_ENDPOINT) return new Response(rss, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } });
       const body = JSON.parse(String(init?.body));
       const ref = reference(body);
-      const result = ref.operation === 'report-content' ? content((ref.payload.articles ?? []).map((article) => article.articleId), body.messages[0].content) : {};
+      const result = ref.operation === 'report-content' ? content((ref.payload.articles ?? []).map((article) => article.id), body.messages[0].content) : {};
       return Response.json({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: 'stop' }] });
     },
     companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sporting goods', description: 'Nike', topics: [], entities: ['Nike'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
@@ -58,7 +58,7 @@ describe('AI explanation validation', () => {
     let system = '';
     const { instance, logs } = app((ids, prompt) => { system = prompt; return { summary: 'Nike is consolidating European suppliers.', explanations: ids.map((articleId) => ({ articleId, explanation: 'A sourcing benchmark for procurement.' })) }; });
     const report = await generate(instance);
-    expect(system).toContain('{"articleId": "<a supplied articleId>", "explanation": "<one or two sentences>"}');
+    expect(system).toContain('{"articleId": "a1", "angle": "...", "explanation": "..."}');
     expect(report.recommendations.every((item) => item.rankingMetadata.explanationSource === 'ai')).toBe(true);
     expect(logs.filter((entry) => entry.message === 'ai_explanation_rejected')).toHaveLength(0);
   });

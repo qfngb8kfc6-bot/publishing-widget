@@ -112,6 +112,8 @@ export interface ServerLogFields {
   /** Article the rejected AI explanation was for (an ID, never explanation text). */
   articleId?: string;
   rejectReason?: string;
+  /** ai_quality_warning code: banned_phrase, duplicate_opening, too_long, no_specific_fact, too_few_citations, restates_reader. */
+  qualityCode?: string;
   /** Index prebuild: articles indexed, synchronous time spent and number of event-loop slices. */
   articleCount?: number;
   busyMs?: number;
@@ -141,7 +143,7 @@ export function safeLogText(value: unknown, limit = 4_000): string | undefined {
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'index_prebuild_complete', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
+    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'index_prebuild_complete', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
     if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };

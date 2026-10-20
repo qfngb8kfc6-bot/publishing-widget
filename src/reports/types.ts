@@ -21,6 +21,10 @@ export interface ReportRecommendation {
     aiProvider?: string;
     /** Whether "why this matters" came from the AI content call or the deterministic template. */
     explanationSource?: 'ai' | 'deterministic';
+    /** Two or three words naming why the AI explanation says the article matters. */
+    angle?: string;
+    /** True when the AI briefing summary cites this article. */
+    citedInSummary?: boolean;
     editorialSection?: EditorialSectionId;
   };
 }

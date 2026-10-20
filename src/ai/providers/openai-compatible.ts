@@ -64,6 +64,42 @@ function resolveRerankAliases(raw: unknown, aliases: ReadonlyMap<string, string>
   return raw;
 }
 
+/** The reader the briefing is written for: role and company context only, never the full stored profile. */
+function readerContext(profile: ReportContentRequest['profile']) {
+  return {
+    jobTitle: profile.jobTitle,
+    roleFunction: profile.role?.function,
+    responsibilities: profile.role?.responsibilities?.slice(0, 6),
+    company: profile.companyName ?? profile.company?.name,
+    industry: profile.company?.industry,
+    companyDescription: clipText(profile.company?.description, 300),
+    priorities: profile.directInterests?.slice(0, 8),
+  };
+}
+
+function resolveContentAliases(raw: unknown, aliases: ReadonlyMap<string, string>): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const content = raw as Record<string, unknown>;
+  const resolve = (id: unknown) => (typeof id === 'string' && aliases.has(id) ? aliases.get(id) : id);
+  return {
+    ...content,
+    ...(Array.isArray(content.citedArticleIds) ? { citedArticleIds: content.citedArticleIds.map(resolve) } : {}),
+    ...(Array.isArray(content.explanations) ? { explanations: content.explanations.map((item) => (item && typeof item === 'object' && !Array.isArray(item) ? { ...(item as Record<string, unknown>), articleId: resolve((item as Record<string, unknown>).articleId) } : item)) } : {}),
+  };
+}
+
+/** Writing rules for the briefing summary and per-article explanations. Grounding rules come first and are absolute. */
+export const REPORT_CONTENT_INSTRUCTIONS = [
+  'You write a briefing note for one professional reader, using only the supplied articles.',
+  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}]} with exactly one explanation per supplied article.',
+  'GROUNDING: use only facts stated in each article\'s title and description. Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.',
+  'SUMMARY: 3-4 sentences, like an analyst\'s briefing note. Open with the strongest pattern across the articles, backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. citedArticleIds lists every article the summary draws on.',
+  'EXPLANATIONS: 1-2 sentences, 25-35 words, never more than 45. Start from one specific fact in that article (a company, number, place or action), then state what it means for the reader through one angle. angle is 2-3 words, for example competitor benchmark, supplier risk, regulatory exposure, cost signal, sourcing shift, capacity signal, compliance pressure, leadership move, market signal or channel shift. Vary the wording: no two explanations may start with the same three words.',
+  'NEVER write "the most relevant articles", "focus on", "the profile", "this briefing", "This article", "This matters", "relevant because", "relevant to your work", "your role as", "maps to", "aligns with" or "directly relevant". Never restate the reader\'s job title and company, and never just list themes or topics.',
+  'EXAMPLES (placeholder companies, not from the articles). Bad: "This article is relevant because it focuses on supplier risk, which maps to your role." Good, angle "sourcing shift": "Acme Apparel moved 30% of its footwear output to two new vendors in Vietnam, a benchmark for how fast a single-region supply base can be diversified."',
+  'Bad: "This matters because it centers on retail expansion and aligns with the profile." Good, angle "competitor benchmark": "Northwind Sports opened 12 owned stores in Germany while cutting wholesale accounts; watch whether that squeezes shelf space and terms for brands still selling through those partners."',
+].join(' ');
+
 const STAGE_BY_OPERATION: Record<string, keyof AIStageMaxTokens> = {
   'professional-profile-enrichment': 'profile',
   'semantic-reranking': 'rerank',
@@ -163,11 +199,20 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
     }, `Return a JSON array with articleId and explanation. Use one or two concise sentences. Explanations must be supported only by the supplied user answers and article fields.`);
   }
 
+  /**
+   * One batched call writes the summary and every explanation. Articles are sent under short aliases (a1, a2, …)
+   * so long publisher IDs do not cost output tokens; aliases are mapped back before validation.
+   */
   async generateReportContent(input: ReportContentRequest): Promise<unknown> {
-    return this.requestJson('report-content', {
-      profile: input.profile,
-      articles: input.recommendations.map((recommendation) => projectArticle(recommendation.article, recommendation.matchedConcepts, recommendation.score)),
-    }, 'Return a JSON object with summary and explanations. summary must be a concise briefing based only on the supplied professional profile and articles. explanations must be an array of objects exactly of the form {"articleId": "<a supplied articleId>", "explanation": "<one or two sentences>"}, where explanation is one or two concise sentences explaining why that known article matters. Use only supplied article evidence and profile signals. Never invent article IDs, facts, URLs, companies, responsibilities or events.');
+    const aliases = new Map(input.recommendations.map((recommendation, index) => [`a${index + 1}`, recommendation.article.id]));
+    const raw = await this.requestJson('report-content', {
+      reader: readerContext(input.profile),
+      articles: input.recommendations.map((recommendation, index) => {
+        const { articleId: _articleId, ...projection } = projectArticle(recommendation.article, recommendation.matchedConcepts, recommendation.score);
+        return { id: `a${index + 1}`, ...projection, relationship: recommendation.relationship };
+      }),
+    }, REPORT_CONTENT_INSTRUCTIONS);
+    return attachAIResponseDiagnostics(resolveContentAliases(raw, aliases), aiResponseDiagnostics(raw) ?? {});
   }
 
   async explain(article: ExplanationRequest['article'], intent: EnrichedIntent, relevance: ExplanationRequest['relevance']): Promise<string> {
