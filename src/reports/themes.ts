@@ -1,4 +1,4 @@
-import { normalizeToken, roleSubjectTerms, subjectMatcher } from '../core';
+import { normalizeToken, roleSubjectTerms } from '../core';
 import type { ProfessionalProfile } from '../core';
 import type { ReportRecord } from './types';
 
@@ -31,12 +31,12 @@ function expandedThemeTerms(theme: string): string[] {
 /** The same bounded theme list is used by the report UI and the focused-search API. */
 export function reportThemes(report: Pick<ReportRecord, 'professionalProfile'>): string[] {
   const profile = report.professionalProfile;
-  const onSubject = subjectMatcher(profile.role);
-  if (onSubject) {
-    // A role anchored on its title subject gets themes about that subject only: its direct subject concepts
-    // first, never the catch-all leadership themes (strategy, markets, operations).
-    const subjectConcepts = (profile.retrieval.concepts ?? []).filter((concept) => concept.relevanceType === 'direct' && onSubject(concept.concept)).map((concept) => concept.concept);
-    return unique([...subjectConcepts, ...profile.professionalInterests.filter(onSubject), ...profile.likelyInformationNeeds.filter(onSubject)]).slice(0, 4);
+  const subjectTerms = roleSubjectTerms(profile.role);
+  if (subjectTerms) {
+    // A role anchored on its title subject gets only genuine subject terms as themes: the title topic and the
+    // validated AI vocabulary. Without vocabulary that is just the topic; fewer themes beat compounds like
+    // "legal reporting" or generic words (risk, growth, reporting) driving a theme search.
+    return unique(subjectTerms).slice(0, 4);
   }
   return unique([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes]).slice(0, 4);
 }

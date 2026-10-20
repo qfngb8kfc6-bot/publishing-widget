@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { analyzeRole, buildProfessionalProfile, scoreProfessionalArticle, titleTopics, type NormalizedArticle } from '../src/core';
 import { mergeProfessionalProfileEnhancement } from '../src/ai/validation';
 import { profileForTheme } from '../src/reports/themes';
-import { SUBJECT_VOCABULARY_INSTRUCTION } from '../src/ai/providers/openai-compatible';
+import { PROFILE_ENRICHMENT_INSTRUCTION, SUBJECT_VOCABULARY_INSTRUCTION } from '../src/ai/providers/openai-compatible';
 import { createProductionApp } from '../src/server/production';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import { MemoryPublisherStore } from '../src/publishers/store';
@@ -147,14 +147,17 @@ describe('anchored profile in AI calls', () => {
         const body = JSON.parse(String(init?.body));
         const ref = JSON.parse(body.messages[1].content.replace('BEGIN_REFERENCE_JSON\n', '').replace('\nEND_REFERENCE_JSON', ''));
         seen[ref.operation] = { system: body.messages[0].content, payload: ref.payload };
-        const content = ref.operation === 'professional-profile-enrichment' ? productionLikeEnrichment : {};
+        const { subjectVocabulary: terms, ...main } = productionLikeEnrichment;
+        const content = ref.operation === 'professional-profile-enrichment' ? main : ref.operation === 'subject-vocabulary' ? { terms } : {};
         return Response.json({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }] });
       },
       companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Puma', industry: 'sporting goods', topics: [], entities: ['Puma'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
     });
     const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'puma.com', jobTitle: 'Head of Sustainability' }) }));
     expect(response.status).toBe(201);
-    expect(seen['professional-profile-enrichment'].system).toContain(SUBJECT_VOCABULARY_INSTRUCTION);
+    expect(seen['professional-profile-enrichment'].system).toContain(PROFILE_ENRICHMENT_INSTRUCTION);
+    expect(seen['subject-vocabulary'].system).toContain(SUBJECT_VOCABULARY_INSTRUCTION);
+    expect(seen['subject-vocabulary'].payload).toMatchObject({ jobTitle: 'Head of Sustainability', subject: ['sustainability'] });
     const intent = seen['semantic-reranking'].payload.enrichedIntent;
     expect(intent).toMatchObject({ subject: 'sustainability', persona: 'sustainability' });
     expect(intent.subjectTerms).toEqual(expect.arrayContaining(['sustainability', 'emissions', 'greenwashing']));

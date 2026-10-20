@@ -116,6 +116,9 @@ export interface ServerLogFields {
   rejectReason?: string;
   /** catalogue_refresh_complete: time spent writing the persisted snapshot (0 when unchanged). */
   snapshotSaveMs?: number;
+  /** enrichment_retry: comma-separated operations retried in the background and whether the result is complete. */
+  retryOperations?: string;
+  retrySuccess?: boolean;
   /** own_company_share: share and count of main-report recommendations about the reader's own company, and how
    * many own-company articles the ~60% cap moved out in favour of other qualifying articles. */
   ownCompanyShare?: number;
@@ -159,7 +162,7 @@ export function safeLogText(value: unknown, limit = 4_000): string | undefined {
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'own_company_share', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
+    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'own_company_share', 'enrichment_retry', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
     if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };

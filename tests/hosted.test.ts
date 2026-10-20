@@ -141,7 +141,7 @@ describe('hosted professional experience', () => {
       if (url.includes('/api/analytics/events')) return Response.json({ accepted: true });
       if (url.includes('/themes/')) {
         const theme = decodeURIComponent(url.split('/themes/')[1].split('/search')[0]);
-        return Response.json({ theme, recommendations: theme === report.professionalProfile.professionalInterests[0] ? report.recommendations.slice(1, 2) : [] });
+        return Response.json({ theme, recommendations: theme === report.professionalProfile.professionalInterests[0] ? report.recommendations.slice(1, 2).map((item: { article: Record<string, unknown> }) => ({ ...item, article: { ...item.article, categories: [] } })) : [] });
       }
       return Response.json(report);
     }));
@@ -160,6 +160,12 @@ describe('hosted professional experience', () => {
     expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(false);
     expect(document.querySelector('.theme-results-heading')?.textContent).toContain(report.professionalProfile.professionalInterests[0]);
     expect(document.querySelector('.theme-results .story-card')).not.toBeNull();
+    // A theme result without an AI explanation has no "Why this matters to you" box; main-report cards keep theirs.
+    expect(document.querySelector('.theme-results .why')).toBeNull();
+    // An article without a category shows no label rather than a placeholder.
+    expect(document.querySelector('.theme-results .story-meta')?.textContent).not.toContain('Coverage');
+    expect(document.querySelector('.theme-results .story-summary')).not.toBeNull();
+    expect(document.querySelectorAll('.why').length).toBeGreaterThan(0);
 
     await buttons[1].click();
     await new Promise((resolve) => setTimeout(resolve, 0));

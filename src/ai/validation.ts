@@ -74,6 +74,11 @@ export function validateProfessionalProfileEnhancement(raw: unknown): AIProfessi
   return hasValues ? result : null;
 }
 
+/** Subject vocabulary from its own call: {"terms": [...]}, at most 30 short strings. */
+export function validateSubjectVocabulary(raw: unknown): string[] {
+  return strings(record(raw)?.terms, 30, 40);
+}
+
 export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile, raw: unknown): ProfessionalProfile | null {
   const enhancement = validateProfessionalProfileEnhancement(raw);
   if (!enhancement) return null;

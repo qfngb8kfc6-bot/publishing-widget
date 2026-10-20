@@ -278,7 +278,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); } };
+  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); } };
 }
 
 export async function runConfiguredAIHealthCheck(serverEnvironment: Record<string, string | undefined> = {}, fetchImpl: typeof fetch = fetch): Promise<{ status: 'disabled' | 'ok'; provider?: string }> {

@@ -1,6 +1,6 @@
 import { normalizeToken, tokenize } from './intent';
 
-export const PROFESSIONAL_PROFILE_VERSION = '1.5';
+export const PROFESSIONAL_PROFILE_VERSION = '1.6';
 export const RANKING_VERSION = '1.4';
 
 export interface CompanyContext {
@@ -128,6 +128,9 @@ function specific(values: string[]): string[] {
  * Business-management words a catch-all leadership title brings with it. They describe how a senior person works,
  * not what their title subject is, so they never anchor a concept to that subject.
  */
+/** Filler words that describe a kind of coverage, not a subject; never a subject term or theme on their own. */
+const FILLER_WORDS = new Set(['benchmark', 'benchmarks', 'developments', 'news', 'program', 'programme', 'report', 'reporting', 'reports', 'trends', 'update', 'updates']);
+
 const LEADERSHIP_WORDS = new Set(['board', 'business', 'corporate', 'decision', 'decisions', 'executive', 'finance', 'financial', 'governance', 'growth', 'leader', 'leaders', 'leadership', 'management', 'market', 'markets', 'operational', 'operations', 'organisation', 'organisational', 'organization', 'organizational', 'performance', 'planning', 'results', 'risk', 'risks', 'strategic', 'strategy']);
 
 function wordsMatch(left: string, right: string): boolean {
@@ -166,7 +169,7 @@ export function subjectTermsFor(role: RoleContext, vocabulary: string[] = []): s
     .filter((term) => {
       const key = normalizeToken(term);
       if (!key || key.length > 40 || key.split(' ').length > 3 || GENERIC_CONCEPTS.has(key)) return false;
-      return topicKeys.has(key) || !key.split(' ').every((word) => LEADERSHIP_WORDS.has(word));
+      return topicKeys.has(key) || !key.split(' ').every((word) => LEADERSHIP_WORDS.has(word) || FILLER_WORDS.has(word));
     });
   return unique([...topics, ...accepted]).slice(0, 32);
 }
@@ -222,9 +225,9 @@ export function analyzeRole(jobTitle: string): RoleContext {
   // leadership concepts become adjacent context rather than the role's core.
   const directThemes = topics.length ? topics : match.direct;
   const adjacentThemes = topics.length ? unique([...match.direct, ...match.adjacent]) : match.adjacent;
-  // Its responsibilities are the subject's too, not the catch-all "strategic planning, organisational decisions".
-  const label = topics.join(' and ');
-  const responsibilities = topics.length ? [`${label} risk`, `${label} regulation`, `${label} reporting`] : match.responsibilities;
+  // Its responsibility is the subject itself, not the catch-all "strategic planning, organisational decisions"
+  // and not invented compounds ("legal reporting") that would surface as themes.
+  const responsibilities = topics.length ? topics : match.responsibilities;
   return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics, subjectTerms: topics } : {}) };
 }
 

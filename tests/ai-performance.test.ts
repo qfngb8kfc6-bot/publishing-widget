@@ -138,10 +138,15 @@ describe('production AI performance safeguards', () => {
     const app = aiApp(new NeverRespondsAIProvider(), { info: (message, fields) => events.push({ message, fields }), error: () => undefined }, '20');
     const response = await generate(app);
     expect(response.status).toBe(201);
-    const aiEvents = events.filter((event) => event.message === 'ai_performance');
+    await app.flushEnrichmentRetries();
+    const allAiEvents = events.filter((event) => event.message === 'ai_performance');
+    // The failed profile enrichment is retried once in the background and is not cached.
+    expect(allAiEvents.filter((event) => event.fields?.aiRetryCount === 1).map((event) => event.fields?.aiOperation)).toEqual(['professional_profile_enrichment']);
+    expect(events.find((event) => event.message === 'enrichment_retry')?.fields).toMatchObject({ retryOperations: 'professional_profile_enrichment', retrySuccess: false });
+    const aiEvents = allAiEvents.filter((event) => event.fields?.aiRetryCount === 0);
     expect(aiEvents).toHaveLength(3);
     expect(aiEvents.every((event) => event.fields?.publisherId === 'sgi-europe' && typeof event.fields?.requestId === 'string')).toBe(true);
-    expect(aiEvents.every((event) => event.fields?.aiSuccess === false && event.fields?.aiFallbackUsed === true && event.fields?.aiRetryCount === 0)).toBe(true);
+    expect(aiEvents.every((event) => event.fields?.aiSuccess === false && event.fields?.aiFallbackUsed === true)).toBe(true);
   });
 
   it('times every awaited generation span and logs any single span over one second', async () => {

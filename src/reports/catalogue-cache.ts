@@ -138,7 +138,7 @@ interface CacheEntry {
  * Equal fingerprints mean the persisted snapshot is already current and need not be rewritten.
  */
 export async function catalogueFingerprint(articles: readonly NormalizedArticle[]): Promise<string> {
-  const parts = await mapInSlices(articles, (article) => `${article.id}\u0001${article.url}\u0001${article.publishedAt ?? ''}\u0001${article.updatedAt ?? ''}\u0001${article.title}\u0001${article.description?.length ?? 0}\u0001${article.imageUrl ?? ''}`);
+  const parts = await mapInSlices(articles, (article) => `${article.id}\u0001${article.url}\u0001${article.publishedAt ?? ''}\u0001${article.updatedAt ?? ''}\u0001${article.title}\u0001${article.description?.length ?? 0}\u0001${article.imageUrl ?? ''}\u0001${article.categories.join('|')}`);
   let hash = 0x811c9dc5;
   for (const part of parts) {
     for (let index = 0; index < part.length; index += 1) {

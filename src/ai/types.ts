@@ -158,8 +158,18 @@ export interface AIProvider extends IntentEnhancer, RerankingProvider, AIExplana
   readonly providerName: string;
 }
 
+export interface SubjectVocabularyInput {
+  publisherId: string;
+  jobTitle: string;
+  titleTopics: string[];
+  industry?: string;
+  companyName?: string;
+}
+
 export interface ProfessionalAIProvider extends AIProvider {
   enhanceProfessionalProfile(input: ProfessionalProfileEnhancementInput): Promise<unknown>;
+  /** Generic titled roles: {"terms": [...]} news vocabulary for the title subject. Optional for providers. */
+  generateSubjectVocabulary?(input: SubjectVocabularyInput): Promise<unknown>;
   generateReportContent(input: ReportContentRequest): Promise<unknown>;
 }
 
