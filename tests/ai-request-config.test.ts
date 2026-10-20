@@ -59,7 +59,7 @@ describe('AI request parameters', () => {
   it('asks the reranker for compact {"results":[{"id","score"}]} output and accepts that shape or a bare array', async () => {
     const { provider, captured } = providerFor({});
     await provider.rerank({} as never, []);
-    expect(captured[0].system).toContain('{"results":[{"id":"a1","score":87}]}');
+    expect(captured[0].system).toContain('{"results":[{"id":"a1","score":87},{"id":"a2","score":20,"weak":true}]}');
     expect(captured[0].system).toContain('Include no other fields');
     const candidates = [{ articleId: 'a1', title: 'Nike stores' }] as SemanticCandidate[];
     const result = { id: 'a1', score: 80 };

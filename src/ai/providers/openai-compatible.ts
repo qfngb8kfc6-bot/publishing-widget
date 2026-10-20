@@ -90,6 +90,7 @@ function resolveContentAliases(raw: unknown, aliases: ReadonlyMap<string, string
 
 /** Writing rules shared by every content call. Grounding rules come first and are absolute. */
 const REPORT_CONTENT_RULES = [
+  'FIT: if an article does not genuinely help this reader, return {"articleId": "...", "fit": "weak"} for it instead of an explanation, and do not build the summary on it. Never stretch a weak fit into a justification.',
   'GROUNDING: use only facts stated in each article\'s title and description. Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.',
   'SUMMARY: 3-4 sentences, like an analyst\'s briefing note. Open with the strongest pattern across the articles, backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. citedArticleIds lists every article the summary draws on.',
   'EXPLANATIONS: 1-2 sentences, 25-35 words, never more than 45. Start from one specific fact in that article (a company, number, place or action), then state what it means for the reader through one angle. angle is 2-3 words, for example competitor benchmark, supplier risk, regulatory exposure, cost signal, sourcing shift, capacity signal, compliance pressure, leadership move, market signal or channel shift. Vary the wording: no two explanations may start with the same three words.',
@@ -101,14 +102,14 @@ const REPORT_CONTENT_RULES = [
 /** Summary plus explanations (the whole report, or part A of a split request). */
 export const REPORT_CONTENT_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
-  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}]} with exactly one explanation per supplied article.',
+  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}, {"articleId": "a2", "fit": "weak"}]} with exactly one entry per supplied article.',
   ...REPORT_CONTENT_RULES,
 ].join(' ');
 
 /** Explanations only (part B of a split request): same rules, no summary. */
 export const REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
-  'Return ONLY JSON: {"explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}]} with exactly one explanation per supplied article. Do not write a summary; ignore the SUMMARY rules below.',
+  'Return ONLY JSON: {"explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}, {"articleId": "a2", "fit": "weak"}]} with exactly one entry per supplied article. Do not write a summary; ignore the SUMMARY rules below.',
   ...REPORT_CONTENT_RULES,
 ].join(' ');
 
@@ -196,7 +197,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
         const { articleId: _articleId, ...projection } = projectArticle({ id: candidate.articleId, title: candidate.title, description: candidate.description, contentSnippet: candidate.contentSnippet, publishedAt: candidate.publishedAt, category: candidate.category, categories: candidate.categories }, candidate.matchedConcepts, candidate.deterministicScore);
         return { id: `a${index + 1}`, ...projection, relevanceType: candidate.deterministicRelevanceType };
       }),
-    }, 'Return ONLY a JSON object of the form {"results":[{"id":"a1","score":87}]}: one entry per candidate worth keeping, where id is the supplied candidate id and score is its relevance from 0 to 100. Include no other fields: no reasons, explanations or signals. Direct matches must outrank merely adjacent matches. Do not reward generic topical overlap. Only use candidate ids supplied in candidates.');
+    }, 'Return ONLY a JSON object of the form {"results":[{"id":"a1","score":87},{"id":"a2","score":20,"weak":true}]}: one entry per candidate, where id is the supplied candidate id and score is its relevance from 0 to 100. Add "weak":true only when the article does not genuinely help this reader. Include no other fields: no reasons, explanations or signals. Direct matches must outrank merely adjacent matches. Do not reward generic topical overlap. Only use candidate ids supplied in candidates.');
     return attachAIResponseDiagnostics(resolveRerankAliases(raw, aliases), aiResponseDiagnostics(raw) ?? {});
   }
 

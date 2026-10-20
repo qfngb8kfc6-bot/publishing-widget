@@ -25,6 +25,8 @@ export interface ReportRecommendation {
     angle?: string;
     /** True when the AI briefing summary cites this article. */
     citedInSummary?: boolean;
+    /** Flagged as a weak fit but kept so the report has a minimum number of recommendations. */
+    lowerConfidence?: boolean;
     editorialSection?: EditorialSectionId;
   };
 }

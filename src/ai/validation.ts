@@ -172,13 +172,16 @@ export function validateReportContent(raw: unknown, request: ReportContentReques
   const value = record(raw);
   if (!value) return null;
   const candidateIds = new Set(request.recommendations.map((item) => item.article.id));
+  // {"articleId", "fit": "weak"} is an honest "this does not help the reader", not a missing explanation.
+  const isWeakFit = (item: unknown) => { const entry = record(item); return entry?.fit === 'weak' && typeof entry.articleId === 'string' && candidateIds.has(entry.articleId); };
+  const weakArticleIds = Array.isArray(value.explanations) ? [...new Set(value.explanations.filter(isWeakFit).map((item) => record(item)!.articleId as string))] : [];
   if (value.explanations === undefined) onReject?.({ reason: 'explanations_missing', presentFields: fieldNames(value) });
   else if (!Array.isArray(value.explanations)) onReject?.({ reason: 'explanations_not_array', presentFields: fieldNames(value) });
-  const explanations = validateExplanationResults(value.explanations, candidateIds, onReject);
+  const explanations = validateExplanationResults(Array.isArray(value.explanations) ? value.explanations.filter((item) => !isWeakFit(item)) : value.explanations, candidateIds, onReject);
   const summary = optionalString(value.summary, 1200);
-  if (!summary && explanations.length === 0) return null;
+  if (!summary && explanations.length === 0 && weakArticleIds.length === 0) return null;
   const citedArticleIds = summary && Array.isArray(value.citedArticleIds) ? [...new Set(value.citedArticleIds.filter((id): id is string => typeof id === 'string' && candidateIds.has(id)))] : [];
-  return { summary, explanations, ...(summary ? { citedArticleIds } : {}) };
+  return { summary, explanations, ...(summary ? { citedArticleIds } : {}), ...(weakArticleIds.length ? { weakArticleIds } : {}) };
 }
 
 export function sanitizeEnrichedIntent(raw: unknown, baseIntent: Intent): EnrichedIntent | null {
@@ -215,6 +218,8 @@ export interface ValidatedSemanticResult {
   relevanceType?: 'direct' | 'adjacent';
   confidence?: number;
   rationale?: string;
+  /** The reranker judged that this article does not genuinely help the reader. */
+  weak?: boolean;
 }
 
 /**
@@ -233,7 +238,7 @@ export function validateSemanticResults(raw: unknown, candidates: SemanticCandid
     const semanticScore = result?.score ?? result?.semanticScore;
     if (typeof articleId !== 'string' || !validIds.has(articleId) || seen.has(articleId) || typeof semanticScore !== 'number' || !Number.isFinite(semanticScore) || semanticScore < 0 || semanticScore > 100) return [];
     seen.add(articleId);
-    return [{ articleId, semanticScore, signals: [] }];
+    return [{ articleId, semanticScore, signals: [], ...(result?.weak === true ? { weak: true } : {}) }];
   });
 }
 

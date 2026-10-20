@@ -133,6 +133,23 @@ interface RankedCandidate {
   directMatches: string[];
   adjacentMatches: string[];
   scoreComponents?: RelevanceScoreComponents;
+  /** The AI reranker flagged this article as not genuinely helping the reader. */
+  weakFit?: boolean;
+}
+
+/** Fewest recommendations a report keeps; below this, weak-fit articles stay but are marked lower confidence. */
+const MIN_REPORT_RECOMMENDATIONS = 3;
+
+/**
+ * Removes weak-fit articles (quality over quantity). If that would leave fewer than the minimum, the strongest
+ * weak articles stay in rank order and are returned as lower confidence.
+ */
+function removeWeakFits(ranked: RankedCandidate[], weakIds: ReadonlySet<string>): { kept: RankedCandidate[]; removed: RankedCandidate[]; lowerConfidenceIds: Set<string> } {
+  const strong = ranked.filter((item) => !weakIds.has(item.article.id));
+  const weak = ranked.filter((item) => weakIds.has(item.article.id));
+  const retainedWeak = weak.slice(0, Math.max(0, MIN_REPORT_RECOMMENDATIONS - strong.length));
+  const retained = new Set([...strong, ...retainedWeak]);
+  return { kept: ranked.filter((item) => retained.has(item)), removed: weak.filter((item) => !retained.has(item)), lowerConfidenceIds: new Set(retainedWeak.map((item) => item.article.id)) };
 }
 
 /** Outcome of an optional AI stage: a validated value, or the reason it fell back. */
@@ -565,7 +582,7 @@ export class ReportGenerationService {
           const relevanceType = result.relevanceType === 'adjacent' ? 'adjacent' as const : semantic.relevanceType ?? result.relevanceType;
           const finalScore = calibrateRelevanceScore(combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight }), relevanceType);
           if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) return [];
-          return [{ ...result, semanticScore, semanticSignals: semantic.signals ?? [], finalScore, rankingMode: 'hybrid' as const, relevanceType, confidence: semantic.confidence ?? result.confidence, index }];
+          return [{ ...result, semanticScore, semanticSignals: semantic.signals ?? [], finalScore, rankingMode: 'hybrid' as const, ...(semantic.weak ? { weakFit: true } : {}), relevanceType, confidence: semantic.confidence ?? result.confidence, index }];
         });
         const aiRanked = aiRankedCandidates
           .sort((a, b) => (a.relevanceType === b.relevanceType
@@ -598,7 +615,7 @@ export class ReportGenerationService {
     return { ranked, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
   }
 
-  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set()): ReportRecommendation[] {
+  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set(), lowerConfidenceIds: ReadonlySet<string> = new Set()): ReportRecommendation[] {
     return ranked.map((item, index) => ({
       articleId: item.article.id,
       rank: index + 1,
@@ -620,6 +637,7 @@ export class ReportGenerationService {
         explanationSource: explanationById.has(item.article.id) ? 'ai' as const : 'deterministic' as const,
         ...(explanationById.get(item.article.id)?.angle ? { angle: explanationById.get(item.article.id)!.angle } : {}),
         ...(citedIds.has(item.article.id) ? { citedInSummary: true } : {}),
+        ...(lowerConfidenceIds.has(item.article.id) ? { lowerConfidence: true } : {}),
       },
     }));
   }
@@ -772,7 +790,11 @@ export class ReportGenerationService {
     const aiAvailable = this.canUseAI(definition);
     this.trackTimed(timing, 'retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
     this.trackTimed(timing, 'ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
-    const deterministicRecommendations = ranked.map((item) => ({
+    // Rerank weak fits leave before the content call so the summary is never built on them.
+    const rerankWeakIds = new Set(ranked.filter((item) => item.weakFit).map((item) => item.article.id));
+    const afterRerank = removeWeakFits(ranked, rerankWeakIds);
+    const contentRanked = afterRerank.kept;
+    const deterministicRecommendations = contentRanked.map((item) => ({
       article: item.article,
       deterministicExplanation: explanation(profile, item),
       relevanceSignals: item.relevanceSignals,
@@ -784,6 +806,7 @@ export class ReportGenerationService {
     let generatedSummary = reportSummary(profile, ranked.length);
     const explanationById = new Map<string, { explanation: string; angle?: string }>();
     let citedIds = new Set<string>();
+    const contentWeakIds = new Set<string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
@@ -813,10 +836,11 @@ export class ReportGenerationService {
         citedIds = new Set(partA.value.citedArticleIds ?? []);
         this.logQualityWarnings(input, 'summary', summaryQualityWarnings(partA.value.summary, partA.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
       } else summaryFallbackReason = partA.errorCode ?? 'summary_missing';
+      for (const outcome of outcomes) for (const articleId of outcome.value?.weakArticleIds ?? []) contentWeakIds.add(articleId);
       if (explanationsEnabled) {
         const accepted = outcomes.flatMap((outcome) => {
           if (!outcome.value) return [];
-          this.logExplanationRejections(input, outcome.request, outcome.value.explanations ?? [], outcome.rejections);
+          this.logExplanationRejections(input, outcome.request, [...(outcome.value.explanations ?? []), ...(outcome.value.weakArticleIds ?? []).map((articleId) => ({ articleId }))], outcome.rejections);
           return outcome.value.explanations ?? [];
         });
         for (const item of accepted) explanationById.set(item.articleId, { explanation: item.explanation, angle: item.angle });
@@ -825,6 +849,10 @@ export class ReportGenerationService {
       }
     }
     const aiExplanationMs = clockMs() - aiExplanationStartedAt;
+    const afterContent = removeWeakFits(contentRanked, contentWeakIds);
+    const weakFit = { kept: afterContent.kept, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
+    if (!aiSummaryUsed) generatedSummary = reportSummary(profile, weakFit.kept.length);
+    if (rerankWeakIds.size || contentWeakIds.size) this.logger?.info('weak_fit_removed', { requestId: input.requestId, publisherId: input.publisherId, weakFlagged: new Set([...rerankWeakIds, ...contentWeakIds]).size, weakFromRerank: rerankWeakIds.size, weakFromContent: contentWeakIds.size, weakRemoved: afterRerank.removed.length + afterContent.removed.length, weakKeptLowerConfidence: weakFit.lowerConfidenceIds.size, finalRecommendationCount: weakFit.kept.length });
     timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
     timing.catalogueStale = ranking.timings.catalogueStale;
@@ -844,7 +872,7 @@ export class ReportGenerationService {
     timing.aiExplanationsMs = aiExplanationMs;
     timing.briefingSummaryMs = aiExplanationMs;
     this.markStage(input, 'ai_complete');
-    const rawRecommendations = this.recommendationsFromRanked(profile, ranked, explanationById, citedIds).map((recommendation) => ({
+    const rawRecommendations = this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
         ...recommendation.rankingMetadata,
