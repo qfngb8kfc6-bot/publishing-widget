@@ -160,6 +160,10 @@ describe('hosted professional experience', () => {
     expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(false);
     expect(document.querySelector('.theme-results-heading')?.textContent).toContain(report.professionalProfile.professionalInterests[0]);
     expect(document.querySelector('.theme-results .story-card')).not.toBeNull();
+    // A theme result without an AI explanation has no "Why this matters to you" box; main-report cards keep theirs.
+    expect(document.querySelector('.theme-results .why')).toBeNull();
+    expect(document.querySelector('.theme-results .story-summary')).not.toBeNull();
+    expect(document.querySelectorAll('.why').length).toBeGreaterThan(0);
 
     await buttons[1].click();
     await new Promise((resolve) => setTimeout(resolve, 0));
