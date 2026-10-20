@@ -1,5 +1,5 @@
 import { AIProviderError } from '../provider';
-import type { AIProvider, EnrichedIntent, ExplanationRequest, ProfessionalAIProvider, ProfessionalProfileEnhancementInput, ReportContentRequest, SemanticCandidate } from '../types';
+import type { AIProvider, EnrichedIntent, ExplanationRequest, ProfessionalAIProvider, ProfessionalProfileEnhancementInput, ReportContentRequest, SemanticCandidate, SubjectVocabularyInput } from '../types';
 
 export interface AIProxyClientConfig {
   baseUrl: string;
@@ -20,6 +20,7 @@ export class HttpAIProvider implements AIProvider, ProfessionalAIProvider {
 
   enhanceIntent(intent: Parameters<AIProvider['enhanceIntent']>[0]): Promise<unknown> { return this.call('enrich', { intent }); }
   enhanceProfessionalProfile(input: ProfessionalProfileEnhancementInput): Promise<unknown> { return this.call('profile', { input }); }
+  generateSubjectVocabulary(input: SubjectVocabularyInput): Promise<unknown> { return this.call('vocabulary', { input }); }
   rerank(intent: EnrichedIntent, candidates: SemanticCandidate[]): Promise<unknown> { return this.call('rerank', { intent, candidates }); }
   explainMany(requests: ExplanationRequest[]): Promise<unknown> { return this.call('explain', { requests }); }
   generateReportContent(input: ReportContentRequest): Promise<unknown> { return this.call('content', { input }); }

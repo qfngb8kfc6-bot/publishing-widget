@@ -1,7 +1,7 @@
 import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, roleSubjectLabel, roleSubjectTerms, subjectMatcher, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { aiResponseDiagnostics, AIProviderError, type AIResponseDiagnostics } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
-import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
+import { mergeProfessionalProfileEnhancement, validateProfessionalProfileEnhancement, validateReportContent, validateSubjectVocabulary, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
 import { BoundedCompanyInputResolver, classifyCompanyInput, type CompanyContextProvider, type CompanyInputResolver, type ResolvedCompanyInput } from '../server/company';
 import { WIDGET_VERSION } from '../version';
@@ -28,6 +28,10 @@ const SLOW_SPAN_MS = 1_000;
 
 /** Recommendations explained by content call A (which also writes the summary); the rest go to call B. */
 const CONTENT_PART_A_SIZE = 7;
+const ENRICHED_PROFILE_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface EnrichmentParts { main?: unknown; vocabulary?: string[] }
+interface EnrichmentResult { profile?: ReturnType<typeof buildProfessionalProfile>; complete: boolean; needsVocabulary: boolean; parts: EnrichmentParts }
 
 /** Bound on queued background analytics writes so an unavailable store cannot grow memory without limit. */
 const MAX_PENDING_ANALYTICS_WRITES = 500;
@@ -212,6 +216,7 @@ export class ReportGenerationService {
   private analyticsQueue: Promise<void> = Promise.resolve();
   private pendingAnalyticsWrites = 0;
   private readonly enrichedProfileInFlight = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
+  private readonly enrichmentRetries = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
 
   constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver, private readonly catalogueCache = new PublisherCatalogueCache()) {
     this.companyResolver = companyResolver ?? new BoundedCompanyInputResolver();
@@ -312,13 +317,13 @@ export class ReportGenerationService {
    * Runs one optional AI stage under the capped timeout. `observe` records the provider's response diagnostics
    * (HTTP status, finish reason, token usage) for ai_performance; prompts and headers are never logged.
    */
-  private async runAI<T>(operation: string, work: (observe: ObserveAIResponse) => Promise<T>, context: Pick<ServerLogFields, 'requestId' | 'publisherId' | 'part'> = {}): Promise<AIOutcome<T>> {
+  private async runAI<T>(operation: string, work: (observe: ObserveAIResponse) => Promise<T>, context: Pick<ServerLogFields, 'requestId' | 'publisherId' | 'part' | 'aiRetryCount'> = {}): Promise<AIOutcome<T>> {
     const requestStart = new Date().toISOString();
     const startedAt = clockMs();
     const timeoutMs = this.aiTimeoutMs();
     let observed: AIResponseDiagnostics | undefined;
     const observe: ObserveAIResponse = (raw) => { observed = aiResponseDiagnostics(raw) ?? observed; return raw; };
-    const base = { ...context, aiOperation: operation, aiModel: this.ai?.config.model, aiRequestStart: requestStart, aiTimeoutMs: timeoutMs, aiRetryCount: 0 };
+    const base = { aiRetryCount: 0, ...context, aiOperation: operation, aiModel: this.ai?.config.model, aiRequestStart: requestStart, aiTimeoutMs: timeoutMs };
     try {
       const value = await withTimeout(work(observe), timeoutMs);
       this.logger?.info('ai_performance', { ...base, aiDurationMs: Math.max(0, clockMs() - startedAt), aiSuccess: true, aiFallbackUsed: false, ...aiDiagnosticFields(observed) });
@@ -365,20 +370,69 @@ export class ReportGenerationService {
     this.enrichedProfileCache.delete(key);
     const pending = this.enrichedProfileInFlight.get(key);
     if (pending) return (await pending) ?? null;
-    const operation = this.runAI('professional_profile_enrichment', async (observe) => {
-      const raw = observe(await (this.ai!.provider as ProfessionalAIProvider).enhanceProfessionalProfile({ publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile }));
-      const merged = mergeProfessionalProfileEnhancement(profile, raw);
-      if (!merged) throw new Error('invalid_profile_enrichment');
-      return merged;
-    }, { publisherId, requestId }).then((outcome) => outcome.value);
-    this.enrichedProfileInFlight.set(key, operation);
+    const operation = this.runEnrichment(publisherId, normalized, company, profile, requestId);
+    this.enrichedProfileInFlight.set(key, operation.then((result) => result.profile));
     try {
-      const enriched = await operation;
-      if (enriched) this.enrichedProfileCache.set(key, { profile: enriched, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
-      return enriched ?? null;
+      const result = await operation;
+      // Only a complete enrichment is cached; a failed or partial one is retried once in the background so the
+      // next visitor finds a warm cache instead of the same fallback.
+      if (result.complete && result.profile) this.enrichedProfileCache.set(key, { profile: result.profile, expiresAt: Date.now() + ENRICHED_PROFILE_TTL_MS });
+      else this.retryEnrichmentInBackground(key, publisherId, normalized, company, profile, requestId, result);
+      return result.profile ?? null;
     } finally {
-      this.enrichedProfileInFlight.delete(key);
+      if (this.enrichedProfileInFlight.get(key) !== this.enrichmentRetries.get(key)) this.enrichedProfileInFlight.delete(key);
     }
+  }
+
+  /**
+   * The main enrichment and, for a generic titled role, the subject vocabulary run as two parallel calls, each
+   * under its own AI time cap. Whichever succeeds is merged; `reuse` carries a part that already succeeded.
+   */
+  private async runEnrichment(publisherId: string, normalized: ResolvedCompanyInput, company: Awaited<ReturnType<CompanyContextProvider['getContext']>>, profile: ReturnType<typeof buildProfessionalProfile>, requestId?: string, reuse: EnrichmentParts = {}, retryCount = 0): Promise<EnrichmentResult> {
+    const provider = this.ai!.provider as ProfessionalAIProvider;
+    const titleTopics = roleSubjectTerms(profile.role) ? profile.role.titleTopics ?? [] : [];
+    const needsVocabulary = titleTopics.length > 0 && typeof provider.generateSubjectVocabulary === 'function';
+    const context = { publisherId, requestId, aiRetryCount: retryCount };
+    const [main, vocabulary] = await Promise.all([
+      reuse.main ? Promise.resolve(reuse.main) : this.runAI('professional_profile_enrichment', async (observe) => {
+        const raw = observe(await provider.enhanceProfessionalProfile({ publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile }));
+        if (!validateProfessionalProfileEnhancement(raw)) throw new Error('invalid_profile_enrichment');
+        return raw;
+      }, context).then((outcome) => outcome.value),
+      !needsVocabulary || reuse.vocabulary ? Promise.resolve(reuse.vocabulary) : this.runAI('subject_vocabulary', async (observe) => {
+        const terms = validateSubjectVocabulary(observe(await provider.generateSubjectVocabulary!({ publisherId, jobTitle: profile.jobTitle, titleTopics, industry: company.industry, companyName: profile.companyName ?? company.name })));
+        if (!terms.length) throw new Error('invalid_subject_vocabulary');
+        return terms;
+      }, context).then((outcome) => outcome.value),
+    ]);
+    const parts: EnrichmentParts = { main, vocabulary };
+    const raw = { ...(main && typeof main === 'object' ? main : {}), ...(vocabulary ? { subjectVocabulary: vocabulary } : {}) };
+    const merged = main || vocabulary ? mergeProfessionalProfileEnhancement(profile, raw) : null;
+    return { profile: merged ?? undefined, complete: Boolean(main) && (!needsVocabulary || Boolean(vocabulary)), needsVocabulary, parts };
+  }
+
+  /** One background retry of the parts that failed; a complete result warms the cache. Logs enrichment_retry. */
+  private retryEnrichmentInBackground(key: string, publisherId: string, normalized: ResolvedCompanyInput, company: Awaited<ReturnType<CompanyContextProvider['getContext']>>, profile: ReturnType<typeof buildProfessionalProfile>, requestId: string | undefined, first: EnrichmentResult): void {
+    if (this.enrichmentRetries.has(key)) return;
+    const retryOperations = [first.parts.main ? undefined : 'professional_profile_enrichment', !first.needsVocabulary || first.parts.vocabulary ? undefined : 'subject_vocabulary'].filter(Boolean).join(',');
+    const retry = this.runEnrichment(publisherId, normalized, company, profile, requestId, first.parts, 1)
+      .then((result) => {
+        if (result.complete && result.profile) this.enrichedProfileCache.set(key, { profile: result.profile, expiresAt: Date.now() + ENRICHED_PROFILE_TTL_MS });
+        this.logger?.info('enrichment_retry', { requestId, publisherId, retryOperations, retrySuccess: result.complete });
+        return result.profile;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.enrichmentRetries.delete(key);
+        if (this.enrichedProfileInFlight.get(key) === retry) this.enrichedProfileInFlight.delete(key);
+      });
+    this.enrichmentRetries.set(key, retry);
+    this.enrichedProfileInFlight.set(key, retry);
+  }
+
+  /** Resolves when background enrichment retries have finished (tests and graceful shutdown). */
+  async flushEnrichmentRetries(): Promise<void> {
+    await Promise.all([...this.enrichmentRetries.values()]);
   }
 
   /**
