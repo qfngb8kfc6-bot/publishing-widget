@@ -346,13 +346,24 @@ function feedAuthor(value: string | undefined): string | undefined {
   return cleaned || undefined;
 }
 
-function feedSection(url: string | undefined): string | undefined {
+const MAX_SECTION_WORDS = 4;
+
+/**
+ * Section label from a section/slug/id URL (/retail/nike-opens-stores/123.article → Retail). A shorter path such as
+ * /slug/123.article starts with the headline slug, and a long first segment is a headline, not a section; both give
+ * no label so the feed's own <category> (or nothing) is used instead.
+ */
+export function feedSection(url: string | undefined): string | undefined {
   if (!url) return undefined;
   try {
-    const segment = new URL(url).pathname.split('/').filter(Boolean)[0];
-    if (!segment) return undefined;
+    const segments = new URL(url).pathname.split('/').filter(Boolean);
+    if (segments.length < 3) return undefined;
+    const segment = segments[0];
     const known: Record<string, string> = { csr: 'CSR', 'csr-and-sustainability': 'CSR and Sustainability' };
-    return known[segment.toLowerCase()] ?? segment.split(/[-_]+/).map((word) => word ? `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}` : '').join(' ');
+    if (known[segment.toLowerCase()]) return known[segment.toLowerCase()];
+    const words = segment.split(/[-_]+/).filter(Boolean);
+    if (!words.length || words.length > MAX_SECTION_WORDS) return undefined;
+    return words.map((word) => `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`).join(' ');
   } catch {
     return undefined;
   }

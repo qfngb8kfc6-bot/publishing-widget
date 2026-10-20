@@ -131,9 +131,9 @@ function storyMarkup(recommendation: ReportRecommendation, manifest: PublisherMa
   const article = recommendation.article;
   const title = escapeHtml(article.title);
   const description = escapeHtml(article.description ?? article.summary ?? article.contentSnippet ?? '');
-  const category = escapeHtml(article.categories[0] ?? 'Coverage');
+  const category = article.categories[0] ? escapeHtml(article.categories[0]) : '';
   const date = formatDate(article.publishedAt);
-  return `<article class="${featured ? 'featured-story' : 'story-card'}" data-story-card="${escapeHtml(article.id)}">${articleImage(article, manifest)}<div class="story-body"><div class="story-meta"><span class="match-badge">${recommendation.displayScore}% match</span><span>${category}</span>${date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''}</div><h3>${title}</h3>${description ? `<p class="story-summary">${description}</p>` : ''}${showWhy ? `<div class="why"><span class="why-icon" aria-hidden="true">✦</span><div><strong>Why this matters to you</strong><p>${escapeHtml(recommendation.explanation)}</p></div></div>` : ''}${articleLink(article, manifest)}</div></article>`;
+  return `<article class="${featured ? 'featured-story' : 'story-card'}" data-story-card="${escapeHtml(article.id)}">${articleImage(article, manifest)}<div class="story-body"><div class="story-meta"><span class="match-badge">${recommendation.displayScore}% match</span>${category ? `<span>${category}</span>` : ''}${date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''}</div><h3>${title}</h3>${description ? `<p class="story-summary">${description}</p>` : ''}${showWhy ? `<div class="why"><span class="why-icon" aria-hidden="true">✦</span><div><strong>Why this matters to you</strong><p>${escapeHtml(recommendation.explanation)}</p></div></div>` : ''}${articleLink(article, manifest)}</div></article>`;
 }
 
 /** The AI-written line for a theme card, or the standard text when AI did not provide one. */
