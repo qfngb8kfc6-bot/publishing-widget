@@ -24,6 +24,9 @@ function clockMs(): number { return typeof performance !== 'undefined' ? perform
 /** Any single generation span above this is logged individually so untimed stalls are visible in production. */
 const SLOW_SPAN_MS = 1_000;
 
+/** Recommendations explained by content call A (which also writes the summary); the rest go to call B. */
+const CONTENT_PART_A_SIZE = 7;
+
 /** Bound on queued background analytics writes so an unavailable store cannot grow memory without limit. */
 const MAX_PENDING_ANALYTICS_WRITES = 500;
 
@@ -256,7 +259,7 @@ export class ReportGenerationService {
    * Runs one optional AI stage under the capped timeout. `observe` records the provider's response diagnostics
    * (HTTP status, finish reason, token usage) for ai_performance; prompts and headers are never logged.
    */
-  private async runAI<T>(operation: string, work: (observe: ObserveAIResponse) => Promise<T>, context: Pick<ServerLogFields, 'requestId' | 'publisherId'> = {}): Promise<AIOutcome<T>> {
+  private async runAI<T>(operation: string, work: (observe: ObserveAIResponse) => Promise<T>, context: Pick<ServerLogFields, 'requestId' | 'publisherId' | 'part'> = {}): Promise<AIOutcome<T>> {
     const requestStart = new Date().toISOString();
     const startedAt = clockMs();
     const timeoutMs = this.aiTimeoutMs();
@@ -786,25 +789,39 @@ export class ReportGenerationService {
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
     const aiExplanationStartedAt = clockMs();
     if (aiAvailable && ranked.length > 0) {
-      const contentRequest: ReportContentRequest = { publisherId: input.publisherId, profile, recommendations: deterministicRecommendations };
-      const rejections: Array<ExplanationRejection | ExplanationShapeIssue> = [];
-      const { value: validated, errorCode } = await this.runAI('report_content', async (observe) => {
-        const raw = observe(await (this.ai!.provider as ProfessionalAIProvider).generateReportContent(contentRequest));
-        const result = validateReportContent(raw, contentRequest, (rejection) => rejections.push(rejection));
-        if (!result) throw new Error('invalid_report_content');
-        return result;
-      }, { publisherId: input.publisherId, requestId: input.requestId });
-      if (validated?.summary) {
-        generatedSummary = validated.summary;
+      // Two batched calls in parallel keep each inside the AI time cap: A writes the summary and the first
+      // explanations, B (only when needed) the remaining explanations. Each falls back independently.
+      const explanationsEnabled = this.ai!.config.explanationsEnabled;
+      const parts: Array<{ part: 'A' | 'B'; request: ReportContentRequest }> = [
+        { part: 'A', request: { publisherId: input.publisherId, profile, recommendations: deterministicRecommendations.slice(0, CONTENT_PART_A_SIZE) } },
+        ...(explanationsEnabled && deterministicRecommendations.length > CONTENT_PART_A_SIZE ? [{ part: 'B' as const, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: deterministicRecommendations.slice(CONTENT_PART_A_SIZE) } }] : []),
+      ];
+      const outcomes = await Promise.all(parts.map(async ({ part, request }) => {
+        const rejections: Array<ExplanationRejection | ExplanationShapeIssue> = [];
+        const outcome = await this.runAI('report_content', async (observe) => {
+          const raw = observe(await (this.ai!.provider as ProfessionalAIProvider).generateReportContent(request));
+          const result = validateReportContent(raw, request, (rejection) => rejections.push(rejection));
+          if (!result) throw new Error('invalid_report_content');
+          return result;
+        }, { publisherId: input.publisherId, requestId: input.requestId, part });
+        return { part, request, rejections, ...outcome };
+      }));
+      const partA = outcomes.find((outcome) => outcome.part === 'A')!;
+      if (partA.value?.summary) {
+        generatedSummary = partA.value.summary;
         aiSummaryUsed = true;
-        citedIds = new Set(validated.citedArticleIds ?? []);
-        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(validated.summary, validated.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
-      } else summaryFallbackReason = errorCode ?? 'summary_missing';
-      if (validated && this.ai!.config.explanationsEnabled) this.logExplanationRejections(input, contentRequest, validated.explanations ?? [], rejections);
-      if (this.ai!.config.explanationsEnabled && validated) {
-        for (const item of validated.explanations ?? []) explanationById.set(item.articleId, { explanation: item.explanation, angle: item.angle });
+        citedIds = new Set(partA.value.citedArticleIds ?? []);
+        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(partA.value.summary, partA.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
+      } else summaryFallbackReason = partA.errorCode ?? 'summary_missing';
+      if (explanationsEnabled) {
+        const accepted = outcomes.flatMap((outcome) => {
+          if (!outcome.value) return [];
+          this.logExplanationRejections(input, outcome.request, outcome.value.explanations ?? [], outcome.rejections);
+          return outcome.value.explanations ?? [];
+        });
+        for (const item of accepted) explanationById.set(item.articleId, { explanation: item.explanation, angle: item.angle });
         aiExplanationUsed = explanationById.size > 0;
-        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(validated.explanations ?? [], new Map(ranked.map((item) => [item.article.id, item.article.title]))));
+        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map(ranked.map((item) => [item.article.id, item.article.title]))));
       }
     }
     const aiExplanationMs = clockMs() - aiExplanationStartedAt;

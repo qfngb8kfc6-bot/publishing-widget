@@ -108,6 +108,8 @@ export interface AIProfessionalProfileEnhancement {
 
 export interface ReportContentRequest {
   publisherId: string;
+  /** false for an explanations-only part of a split content request (no summary is written). Default true. */
+  includeSummary?: boolean;
   profile: ProfessionalProfile;
   recommendations: Array<{
     article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'> & Partial<Pick<NormalizedArticle, 'category' | 'summary'>>;

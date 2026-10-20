@@ -88,16 +88,28 @@ function resolveContentAliases(raw: unknown, aliases: ReadonlyMap<string, string
   };
 }
 
-/** Writing rules for the briefing summary and per-article explanations. Grounding rules come first and are absolute. */
-export const REPORT_CONTENT_INSTRUCTIONS = [
-  'You write a briefing note for one professional reader, using only the supplied articles.',
-  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}]} with exactly one explanation per supplied article.',
+/** Writing rules shared by every content call. Grounding rules come first and are absolute. */
+const REPORT_CONTENT_RULES = [
   'GROUNDING: use only facts stated in each article\'s title and description. Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.',
   'SUMMARY: 3-4 sentences, like an analyst\'s briefing note. Open with the strongest pattern across the articles, backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. citedArticleIds lists every article the summary draws on.',
   'EXPLANATIONS: 1-2 sentences, 25-35 words, never more than 45. Start from one specific fact in that article (a company, number, place or action), then state what it means for the reader through one angle. angle is 2-3 words, for example competitor benchmark, supplier risk, regulatory exposure, cost signal, sourcing shift, capacity signal, compliance pressure, leadership move, market signal or channel shift. Vary the wording: no two explanations may start with the same three words.',
   'NEVER write "the most relevant articles", "focus on", "the profile", "this briefing", "This article", "This matters", "relevant because", "relevant to your work", "your role as", "maps to", "aligns with" or "directly relevant". Never restate the reader\'s job title and company, and never just list themes or topics.',
   'EXAMPLES (placeholder companies, not from the articles). Bad: "This article is relevant because it focuses on supplier risk, which maps to your role." Good, angle "sourcing shift": "Acme Apparel moved 30% of its footwear output to two new vendors in Vietnam, a benchmark for how fast a single-region supply base can be diversified."',
   'Bad: "This matters because it centers on retail expansion and aligns with the profile." Good, angle "competitor benchmark": "Northwind Sports opened 12 owned stores in Germany while cutting wholesale accounts; watch whether that squeezes shelf space and terms for brands still selling through those partners."',
+];
+
+/** Summary plus explanations (the whole report, or part A of a split request). */
+export const REPORT_CONTENT_INSTRUCTIONS = [
+  'You write a briefing note for one professional reader, using only the supplied articles.',
+  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}]} with exactly one explanation per supplied article.',
+  ...REPORT_CONTENT_RULES,
+].join(' ');
+
+/** Explanations only (part B of a split request): same rules, no summary. */
+export const REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS = [
+  'You write a briefing note for one professional reader, using only the supplied articles.',
+  'Return ONLY JSON: {"explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}]} with exactly one explanation per supplied article. Do not write a summary; ignore the SUMMARY rules below.',
+  ...REPORT_CONTENT_RULES,
 ].join(' ');
 
 const STAGE_BY_OPERATION: Record<string, keyof AIStageMaxTokens> = {
@@ -211,7 +223,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
         const { articleId: _articleId, ...projection } = projectArticle(recommendation.article, recommendation.matchedConcepts, recommendation.score);
         return { id: `a${index + 1}`, ...projection, relationship: recommendation.relationship };
       }),
-    }, REPORT_CONTENT_INSTRUCTIONS);
+    }, input.includeSummary === false ? REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS : REPORT_CONTENT_INSTRUCTIONS);
     return attachAIResponseDiagnostics(resolveContentAliases(raw, aliases), aiResponseDiagnostics(raw) ?? {});
   }
 

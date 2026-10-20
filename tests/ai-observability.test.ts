@@ -117,10 +117,13 @@ describe('report AI provenance and ai_performance diagnostics', () => {
     const report = await generate(app);
     expect(report.summarySource).toBe('ai');
     expect(report.summaryFallbackReason).toBeUndefined();
+    // Eight recommendations are split into content calls A (7) and B (1); each explains its first article.
+    const contentCalls = logs.filter((entry) => entry.message === 'ai_performance' && entry.fields.aiOperation === 'report_content');
+    expect(contentCalls.map((entry) => entry.fields.part).sort()).toEqual(['A', 'B']);
     const sources = report.recommendations.map((item) => item.rankingMetadata.explanationSource);
-    expect(sources.filter((source) => source === 'ai')).toHaveLength(1);
-    expect(sources.filter((source) => source === 'deterministic')).toHaveLength(report.recommendations.length - 1);
-    expect(logs.find((entry) => entry.message === 'ai_performance' && entry.fields.aiOperation === 'report_content')?.fields).toMatchObject({ aiSuccess: true, aiHttpStatus: 200, aiFinishReason: 'stop', aiPromptTokens: 1200, aiCompletionTokens: 300, aiReasoningTokens: 120 });
+    expect(sources.filter((source) => source === 'ai')).toHaveLength(contentCalls.length);
+    expect(sources.filter((source) => source === 'deterministic')).toHaveLength(report.recommendations.length - contentCalls.length);
+    expect(contentCalls.find((entry) => entry.fields.part === 'A')?.fields).toMatchObject({ aiSuccess: true, aiHttpStatus: 200, aiFinishReason: 'stop', aiPromptTokens: 1200, aiCompletionTokens: 300, aiReasoningTokens: 120 });
     await app.flushAnalytics();
     const generated = (await analyticsStore.query({ publisherId: 'sgi-europe' })).find((event) => event.name === 'report_generated');
     expect(generated?.metadata).toMatchObject({ aiSummaryUsed: true, aiExplanationUsed: true });

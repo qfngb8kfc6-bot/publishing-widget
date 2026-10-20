@@ -64,7 +64,9 @@ describe('AI explanation validation', () => {
   });
 
   it('logs a reason code for each kind of rejected or missing explanation', async () => {
-    const { instance, logs } = app((ids) => ({
+    // Part B (explanations only) gets valid output so the malformed list is exercised once, by part A.
+    let partASize = 0;
+    const { instance, logs } = app((ids, system) => system.includes('Do not write a summary') ? { explanations: ids.map((articleId) => ({ articleId, explanation: 'Valid.' })) } : (partASize = ids.length, {
       summary: 'Summary.',
       explanations: [
         { articleId: ids[0], explanation: 'Accepted.' },
@@ -78,9 +80,10 @@ describe('AI explanation validation', () => {
       ],
     }));
     const report = await generate(instance);
+    expect(partASize).toBe(7);
     const reasons = logs.filter((entry) => entry.message === 'ai_explanation_rejected').map((entry) => [entry.fields.rejectReason, entry.fields.articleId]);
     expect(reasons).toEqual(expect.arrayContaining([
-      ['duplicate_article_id', report.recommendations.find((item) => item.rankingMetadata.explanationSource === 'ai')?.articleId],
+      ['duplicate_article_id', report.recommendations[0].articleId],
       ['unknown_article_id', 'https://www.sgieurope.com/invented/1.article'],
       ['explanation_too_long', expect.any(String)],
       ['empty_explanation', expect.any(String)],
@@ -92,7 +95,7 @@ describe('AI explanation validation', () => {
     expect(textAsKey?.fields.presentFields).toBe('<other>,articleId');
     expect(JSON.stringify(logs)).not.toContain('Supplier consolidation');
     const notReturned = reasons.filter(([reason]) => reason === 'not_returned');
-    expect(notReturned).toHaveLength(report.recommendations.length - 4);
+    expect(notReturned).toHaveLength(partASize - 4);
   });
 
   it('logs when explanations are missing or not an array', async () => {
