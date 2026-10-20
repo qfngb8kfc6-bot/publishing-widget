@@ -318,6 +318,21 @@ export class ReportGenerationService {
     }
   }
 
+  /**
+   * Loads every enabled archive publisher's catalogue (snapshot or source) ahead of the first request, which
+   * also starts background index prebuilding. Publishers are warmed one at a time; failures are left for the
+   * request path to retry and report.
+   */
+  async prewarmCatalogues(): Promise<string[]> {
+    const warmed: string[] = [];
+    for (const definition of this.registry.list()) {
+      const publisherId = definition.config.publisherId;
+      if (definition.manifest?.enabled === false) continue;
+      if (await this.warmCatalogue(definition, publisherId)) warmed.push(publisherId);
+    }
+    return warmed;
+  }
+
   /** Starts catalogue preparation independently of optional profile enrichment. */
   private async warmCatalogue(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string): Promise<CatalogueCacheDiagnostics | undefined> {
     const runtimeInfo = this.runtimeDiagnostics?.(publisherId);

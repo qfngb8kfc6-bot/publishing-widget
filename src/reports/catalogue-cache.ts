@@ -17,14 +17,50 @@ export interface CatalogueCacheDiagnostics extends ContentTimingDiagnostics {
  * Only the entry's own article objects are memoized, so one publisher's index never serves another's articles.
  */
 export class CatalogueArticleIndex {
+  private readonly articles: readonly NormalizedArticle[];
   private readonly members: ReadonlySet<NormalizedArticle>;
+  private cancelled = false;
   /** Shared by both index kinds; dropped with this catalogue version. */
   private readonly dictionary = new TokenDictionary();
   private readonly preselection = new Map<NormalizedArticle, FeedPreselectionFields>();
   private readonly professional = new Map<NormalizedArticle, ProfessionalFieldIndexes>();
 
   constructor(articles: readonly NormalizedArticle[]) {
+    this.articles = articles;
     this.members = new Set(articles);
+  }
+
+  /** Stops an in-progress prebuild, e.g. when a refresh replaces this catalogue version. */
+  cancel(): void {
+    this.cancelled = true;
+  }
+
+  /**
+   * Builds both index kinds for every article off the request path, in short slices that yield to the event
+   * loop so requests are never blocked for long. It uses the same memoized builders as requests, so a request
+   * arriving mid-build reuses what is built, computes the rest itself, and gets identical results.
+   */
+  async prebuild(options: IndexPrebuildOptions = {}): Promise<IndexPrebuildStats> {
+    const sliceMs = Math.max(1, options.sliceMs ?? 15);
+    const yieldToEventLoop = options.yieldToEventLoop ?? defaultYield;
+    const clock = options.clock ?? defaultClock;
+    const startedAt = clock();
+    let busyMs = 0;
+    let slices = 0;
+    let index = 0;
+    while (index < this.articles.length && !this.cancelled) {
+      const sliceStartedAt = clock();
+      do {
+        const article = this.articles[index];
+        this.preselectionFields(article);
+        this.professionalFields(article);
+        index += 1;
+      } while (index < this.articles.length && clock() - sliceStartedAt < sliceMs);
+      busyMs += clock() - sliceStartedAt;
+      slices += 1;
+      if (index < this.articles.length) await yieldToEventLoop();
+    }
+    return { articleCount: this.articles.length, indexedArticles: index, durationMs: clock() - startedAt, busyMs, slices, cancelled: this.cancelled && index < this.articles.length };
   }
 
   readonly preselectionFields = (article: NormalizedArticle): FeedPreselectionFields => {
@@ -46,6 +82,25 @@ export class CatalogueArticleIndex {
   }
 }
 
+export interface IndexPrebuildOptions {
+  /** Longest stretch of synchronous indexing before yielding to the event loop. */
+  sliceMs?: number;
+  yieldToEventLoop?: () => Promise<void>;
+  clock?: () => number;
+}
+
+export interface IndexPrebuildStats {
+  articleCount: number;
+  indexedArticles: number;
+  durationMs: number;
+  busyMs: number;
+  slices: number;
+  cancelled: boolean;
+}
+
+const defaultYield = (): Promise<void> => new Promise((resolve) => (typeof setImmediate === 'function' ? setImmediate(resolve) : setTimeout(resolve, 0)));
+const defaultClock = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
 export interface CatalogueCacheResult {
   articles: NormalizedArticle[];
   index: CatalogueArticleIndex;
@@ -59,6 +114,9 @@ export interface PublisherCatalogueCacheOptions {
   now?: () => number;
   snapshotStore?: CatalogueSnapshotStore;
   onRefreshError?: (publisherId: string, error: unknown, background: boolean) => void;
+  /** Build match indexes in the background after every load, refresh or snapshot hydration. */
+  prebuildIndexes?: boolean | IndexPrebuildOptions;
+  onIndexPrebuilt?: (publisherId: string, stats: IndexPrebuildStats & { trigger: 'load' | 'snapshot' }) => void;
 }
 
 interface CacheEntry {
@@ -82,6 +140,8 @@ export class PublisherCatalogueCache {
   private readonly now: () => number;
   private readonly snapshotStore?: CatalogueSnapshotStore;
   private readonly onRefreshError?: PublisherCatalogueCacheOptions['onRefreshError'];
+  private readonly prebuildOptions?: IndexPrebuildOptions;
+  private readonly onIndexPrebuilt?: PublisherCatalogueCacheOptions['onIndexPrebuilt'];
 
   constructor(options: PublisherCatalogueCacheOptions = {}) {
     this.ttlMs = Math.max(0, options.ttlMs ?? 5 * 60 * 1000);
@@ -90,6 +150,8 @@ export class PublisherCatalogueCache {
     this.now = options.now ?? Date.now;
     this.snapshotStore = options.snapshotStore;
     this.onRefreshError = options.onRefreshError;
+    this.prebuildOptions = options.prebuildIndexes === true ? {} : options.prebuildIndexes || undefined;
+    this.onIndexPrebuilt = options.onIndexPrebuilt;
   }
 
   async get(publisherId: string, key: string, loader: CatalogueLoader): Promise<CatalogueCacheResult> {
@@ -121,13 +183,26 @@ export class PublisherCatalogueCache {
   }
 
   invalidatePublisher(publisherId: string): void {
+    this.entries.get(publisherId)?.index.cancel();
     this.entries.delete(publisherId);
     for (const key of this.inFlight.keys()) if (key.startsWith(`${publisherId}:`)) this.inFlight.delete(key);
   }
 
   clear(): void {
+    for (const entry of this.entries.values()) entry.index.cancel();
     this.entries.clear();
     this.inFlight.clear();
+  }
+
+  /** Makes an entry current, cancels the replaced version's prebuild and starts this version's. */
+  private install(entry: CacheEntry, trigger: 'load' | 'snapshot'): void {
+    const previous = this.entries.get(entry.publisherId);
+    if (previous && previous !== entry) previous.index.cancel();
+    this.entries.set(entry.publisherId, entry);
+    if (!this.prebuildOptions) return;
+    void entry.index.prebuild(this.prebuildOptions)
+      .then((stats) => { if (!stats.cancelled) this.onIndexPrebuilt?.(entry.publisherId, { ...stats, trigger }); })
+      .catch((error) => this.onRefreshError?.(entry.publisherId, error, true));
   }
 
   private warm(entry: CacheEntry, age: number): CatalogueCacheResult {
@@ -148,7 +223,7 @@ export class PublisherCatalogueCache {
           const refreshedAt = Date.parse(snapshot.refreshedAt);
           if (Number.isFinite(refreshedAt)) {
             const entry: CacheEntry = { publisherId, key, refreshedAt, articles: snapshot.articles, index: new CatalogueArticleIndex(snapshot.articles), timings: {} };
-            this.entries.set(publisherId, entry);
+            this.install(entry, 'snapshot');
             const age = Math.max(0, this.now() - refreshedAt);
             if (age < this.maxStaleMs) return { articles: entry.articles, index: entry.index, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueSnapshotLookupMs: Math.max(0, Date.now() - snapshotStartedAt), catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'snapshot', catalogueStale: age >= this.ttlMs } };
           }
@@ -177,7 +252,7 @@ export class PublisherCatalogueCache {
       if (loaded.articles.length > this.maxArticles) throw new Error('catalogue_exceeds_cache_bound');
       const refreshedAt = this.now();
       const entry: CacheEntry = { publisherId, key, refreshedAt, articles: loaded.articles, index: new CatalogueArticleIndex(loaded.articles), timings: loaded.timings ?? {} };
-      this.entries.set(publisherId, entry);
+      this.install(entry, 'load');
       if (this.snapshotStore) {
         const snapshot: CatalogueSnapshot = { publisherId, sourceKey: key, articles: loaded.articles, refreshedAt: new Date(refreshedAt).toISOString() };
         void Promise.resolve().then(() => this.snapshotStore!.save(snapshot)).catch((error) => this.onRefreshError?.(publisherId, error, true));
