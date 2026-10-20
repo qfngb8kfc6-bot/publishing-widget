@@ -1,4 +1,4 @@
-import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
+import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { aiResponseDiagnostics, AIProviderError, type AIResponseDiagnostics } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
 import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
@@ -372,10 +372,8 @@ export class ReportGenerationService {
       const result = await this.catalogueCache.get(publisherId, cacheKey, async () => {
         const raw = await archiveAdapter.loadCatalogue!({ limit, onDebug: undefined });
         const normalizationStartedAt = clockMs();
-        const normalized = raw.flatMap((item) => {
-          const article = definition.adapter.normalizeArticle(item);
-          return article ? [article] : [];
-        });
+        // Normalized in slices so a large catalogue refresh never blocks the event loop for long.
+        const normalized = (await mapInSlices(raw, (item) => definition.adapter.normalizeArticle(item))).filter((article): article is NormalizedArticle => Boolean(article));
         const seen = new Set<string>();
         const unique = normalized.filter((article) => {
           const keys = articleIdentityKeys(article);
@@ -416,10 +414,7 @@ export class ReportGenerationService {
           const normalizeStartedAt = clockMs();
           let normalized: NormalizedArticle[];
           try {
-            normalized = raw.flatMap((item) => {
-              const article = definition.adapter.normalizeArticle(item);
-              return article ? [article] : [];
-            });
+            normalized = (await mapInSlices(raw, (item) => definition.adapter.normalizeArticle(item))).filter((article): article is NormalizedArticle => Boolean(article));
           } catch (error) {
             annotateGenerationFailure(error, 'ranking');
             throw error;

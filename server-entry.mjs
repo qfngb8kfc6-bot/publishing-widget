@@ -105,6 +105,16 @@ async function start() {
   };
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
   process.once('SIGINT', () => void shutdown('SIGINT'));
+  // Any synchronous stall delays every timer, including the AI time cap, and every in-flight database reply.
+  // Log stalls so a slow request can be matched to what blocked the process at the time.
+  const stallThresholdMs = numberEnv('EVENT_LOOP_STALL_LOG_MS', 200);
+  let lastTick = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const stallMs = now - lastTick - 100;
+    if (stallMs >= stallThresholdMs) console.log(`[publisher-widget] event_loop_blocked durationMs=${stallMs}`);
+    lastTick = now;
+  }, 100).unref();
   server.listen(port, host, () => {
     console.log(`[publisher-widget] server listening host=${host} port=${port} environment=${environment} analyticsStore=${analyticsStoreMode}`);
     // Load catalogues (and so start background index builds) before the first visitor needs them.

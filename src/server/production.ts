@@ -125,6 +125,13 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     snapshotStore: options.catalogueSnapshotStore,
     // Match indexes are built in the background after every catalogue load so first requests do not pay for them.
     prebuildIndexes: serverEnvironment.PUBLISHER_INDEX_PREBUILD !== 'false',
+    onRefreshComplete: (publisherId, report) => logger.info('catalogue_refresh_complete', {
+      publisherId,
+      durationMs: Math.round(report.refreshMs),
+      articleCount: report.articleCount,
+      operation: `snapshot_${report.snapshot}`,
+      snapshotSaveMs: Math.round(report.snapshotSaveMs),
+    }),
     onIndexPrebuilt: (publisherId, stats) => logger.info('index_prebuild_complete', {
       publisherId,
       stage: stats.trigger,

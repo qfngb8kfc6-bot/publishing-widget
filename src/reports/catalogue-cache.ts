@@ -1,6 +1,6 @@
-import { compactProfessionalFieldIndexes, professionalFieldIndexes, TokenDictionary, type NormalizedArticle, type ProfessionalFieldIndexes } from '../core';
+import { compactProfessionalFieldIndexes, mapInSlices, professionalFieldIndexes, TokenDictionary, type NormalizedArticle, type ProfessionalFieldIndexes } from '../core';
 import { compactFeedPreselectionFields, feedPreselectionFields, type ContentTimingDiagnostics, type FeedPreselectionFields } from '../publishers/content';
-import type { CatalogueSnapshot, CatalogueSnapshotStore } from './catalogue-snapshot';
+import type { CatalogueSnapshotStore } from './catalogue-snapshot';
 
 export interface CatalogueCacheDiagnostics extends ContentTimingDiagnostics {
   catalogueSnapshotLookupMs?: number;
@@ -117,6 +117,8 @@ export interface PublisherCatalogueCacheOptions {
   /** Build match indexes in the background after every load, refresh or snapshot hydration. */
   prebuildIndexes?: boolean | IndexPrebuildOptions;
   onIndexPrebuilt?: (publisherId: string, stats: IndexPrebuildStats & { trigger: 'load' | 'snapshot' }) => void;
+  /** Called once per source refresh, after any snapshot write has finished. */
+  onRefreshComplete?: (publisherId: string, report: CatalogueRefreshReport) => void;
 }
 
 interface CacheEntry {
@@ -126,6 +128,39 @@ interface CacheEntry {
   articles: NormalizedArticle[];
   index: CatalogueArticleIndex;
   timings: ContentTimingDiagnostics;
+  /** True once this version is known to be stored as the persisted snapshot. */
+  snapshotPersisted?: boolean;
+  fingerprint?: Promise<string>;
+}
+
+/**
+ * Cheap content fingerprint (FNV-1a over ID, dates, title and description length), computed in slices.
+ * Equal fingerprints mean the persisted snapshot is already current and need not be rewritten.
+ */
+export async function catalogueFingerprint(articles: readonly NormalizedArticle[]): Promise<string> {
+  const parts = await mapInSlices(articles, (article) => `${article.id}\u0001${article.url}\u0001${article.publishedAt ?? ''}\u0001${article.updatedAt ?? ''}\u0001${article.title}\u0001${article.description?.length ?? 0}\u0001${article.imageUrl ?? ''}`);
+  let hash = 0x811c9dc5;
+  for (const part of parts) {
+    for (let index = 0; index < part.length; index += 1) {
+      hash ^= part.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    hash ^= 0x0a;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${articles.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function entryFingerprint(entry: CacheEntry): Promise<string> {
+  entry.fingerprint ??= catalogueFingerprint(entry.articles);
+  return entry.fingerprint;
+}
+
+export interface CatalogueRefreshReport {
+  articleCount: number;
+  refreshMs: number;
+  snapshot: 'saved' | 'unchanged' | 'failed' | 'none';
+  snapshotSaveMs: number;
 }
 
 type CatalogueLoader = () => Promise<{ articles: NormalizedArticle[]; timings?: ContentTimingDiagnostics }>;
@@ -142,6 +177,7 @@ export class PublisherCatalogueCache {
   private readonly onRefreshError?: PublisherCatalogueCacheOptions['onRefreshError'];
   private readonly prebuildOptions?: IndexPrebuildOptions;
   private readonly onIndexPrebuilt?: PublisherCatalogueCacheOptions['onIndexPrebuilt'];
+  private readonly onRefreshComplete?: PublisherCatalogueCacheOptions['onRefreshComplete'];
 
   constructor(options: PublisherCatalogueCacheOptions = {}) {
     this.ttlMs = Math.max(0, options.ttlMs ?? 5 * 60 * 1000);
@@ -152,6 +188,7 @@ export class PublisherCatalogueCache {
     this.onRefreshError = options.onRefreshError;
     this.prebuildOptions = options.prebuildIndexes === true ? {} : options.prebuildIndexes || undefined;
     this.onIndexPrebuilt = options.onIndexPrebuilt;
+    this.onRefreshComplete = options.onRefreshComplete;
   }
 
   async get(publisherId: string, key: string, loader: CatalogueLoader): Promise<CatalogueCacheResult> {
@@ -194,6 +231,33 @@ export class PublisherCatalogueCache {
     this.inFlight.clear();
   }
 
+  /**
+   * Writes the snapshot in the background, but only when the catalogue changed: rewriting an unchanged
+   * multi-megabyte snapshot on every refresh costs serialization time and a long database write for nothing.
+   */
+  private async persistSnapshot(entry: CacheEntry, previous: CacheEntry | undefined, refreshMs: number): Promise<void> {
+    const report: CatalogueRefreshReport = { articleCount: entry.articles.length, refreshMs, snapshot: 'none', snapshotSaveMs: 0 };
+    if (this.snapshotStore) {
+      const startedAt = this.now();
+      try {
+        const unchanged = Boolean(previous?.snapshotPersisted && previous.key === entry.key && await entryFingerprint(previous) === await entryFingerprint(entry));
+        if (unchanged) {
+          entry.snapshotPersisted = true;
+          report.snapshot = 'unchanged';
+        } else {
+          await this.snapshotStore.save({ publisherId: entry.publisherId, sourceKey: entry.key, articles: entry.articles, refreshedAt: new Date(entry.refreshedAt).toISOString() });
+          entry.snapshotPersisted = true;
+          report.snapshot = 'saved';
+        }
+      } catch (error) {
+        report.snapshot = 'failed';
+        this.onRefreshError?.(entry.publisherId, error, true);
+      }
+      report.snapshotSaveMs = Math.max(0, this.now() - startedAt);
+    }
+    this.onRefreshComplete?.(entry.publisherId, report);
+  }
+
   /** Makes an entry current, cancels the replaced version's prebuild and starts this version's. */
   private install(entry: CacheEntry, trigger: 'load' | 'snapshot'): void {
     const previous = this.entries.get(entry.publisherId);
@@ -222,7 +286,7 @@ export class PublisherCatalogueCache {
         if (snapshot && snapshot.articles.length <= this.maxArticles && snapshot.articles.every((article) => article && article.publisherId === publisherId && typeof article.id === 'string' && typeof article.url === 'string')) {
           const refreshedAt = Date.parse(snapshot.refreshedAt);
           if (Number.isFinite(refreshedAt)) {
-            const entry: CacheEntry = { publisherId, key, refreshedAt, articles: snapshot.articles, index: new CatalogueArticleIndex(snapshot.articles), timings: {} };
+            const entry: CacheEntry = { publisherId, key, refreshedAt, articles: snapshot.articles, index: new CatalogueArticleIndex(snapshot.articles), timings: {}, snapshotPersisted: true };
             this.install(entry, 'snapshot');
             const age = Math.max(0, this.now() - refreshedAt);
             if (age < this.maxStaleMs) return { articles: entry.articles, index: entry.index, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueSnapshotLookupMs: Math.max(0, Date.now() - snapshotStartedAt), catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'snapshot', catalogueStale: age >= this.ttlMs } };
@@ -253,10 +317,7 @@ export class PublisherCatalogueCache {
       const refreshedAt = this.now();
       const entry: CacheEntry = { publisherId, key, refreshedAt, articles: loaded.articles, index: new CatalogueArticleIndex(loaded.articles), timings: loaded.timings ?? {} };
       this.install(entry, 'load');
-      if (this.snapshotStore) {
-        const snapshot: CatalogueSnapshot = { publisherId, sourceKey: key, articles: loaded.articles, refreshedAt: new Date(refreshedAt).toISOString() };
-        void Promise.resolve().then(() => this.snapshotStore!.save(snapshot)).catch((error) => this.onRefreshError?.(publisherId, error, true));
-      }
+      void this.persistSnapshot(entry, existing, Math.max(0, this.now() - startedAt));
       return { articles: loaded.articles, index: entry.index, diagnostics: { ...(loaded.timings ?? {}), catalogueCacheHit: false, catalogueCacheAgeMs: 0, catalogueRefreshMs: Math.max(0, this.now() - startedAt), catalogueRefreshReason: reason } };
     } catch (error) {
       if (existing && existing.key === key) {
