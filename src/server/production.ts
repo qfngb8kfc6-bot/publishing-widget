@@ -54,6 +54,7 @@ export { PostgresReportStore } from '../reports/store';
 export { PostgresPublisherStore } from '../publishers/store';
 export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 export { resolveCommitSha } from './health';
+export { explanationQualityWarnings, summaryQualityWarnings } from '../ai/content-quality';
 
 function jsonError(error: string, status: number, requestId: string): Response {
   return Response.json({ error, requestId }, { status, headers: { 'X-Request-ID': requestId } });

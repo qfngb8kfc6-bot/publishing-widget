@@ -21,6 +21,7 @@
     "publisher:embed": "node scripts/publisher-embed.mjs",
     "db:migrate": "node scripts/db-migrate.mjs",
     "analytics:check": "node scripts/analytics-check.mjs",
+    "sample:briefings": "npm run build:server && node scripts/sample-briefings.mjs",
     "ai:check": "npm run build:server && node scripts/ai-check.mjs",
     "release:check": "npm run typecheck && npm test && npm run build && npm run scan:secrets && node scripts/release-check.mjs",
     "ci": "npm run typecheck && npm test && npm run build && npm run scan:secrets",
