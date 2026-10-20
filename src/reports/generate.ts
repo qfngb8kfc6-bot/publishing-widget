@@ -1,7 +1,7 @@
 import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { aiResponseDiagnostics, AIProviderError, type AIResponseDiagnostics } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
-import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults } from '../ai/validation';
+import { mergeProfessionalProfileEnhancement, validateReportContent, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
 import { BoundedCompanyInputResolver, classifyCompanyInput, type CompanyContextProvider, type CompanyInputResolver, type ResolvedCompanyInput } from '../server/company';
 import { WIDGET_VERSION } from '../version';
@@ -270,6 +270,23 @@ export class ReportGenerationService {
       const diagnostics = error instanceof AIProviderError && Object.keys(error.diagnostics).length ? error.diagnostics : observed;
       this.logger?.info('ai_performance', { ...base, aiDurationMs: Math.max(0, clockMs() - startedAt), aiSuccess: false, aiFallbackUsed: true, aiErrorCode: safeLogText(errorCode, 120), aiErrorMessage: safeLogText(error instanceof Error ? error.message : 'unknown', 300), ...aiDiagnosticFields(diagnostics) });
       return { errorCode: safeLogText(errorCode, 120) };
+    }
+  }
+
+  /**
+   * One ai_explanation_rejected line per discarded explanation, plus not_returned for requested articles the
+   * model never explained. Logs article IDs, reason codes and field names only, never explanation text.
+   */
+  private logExplanationRejections(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, request: ReportContentRequest, accepted: Array<{ articleId: string }>, rejections: Array<ExplanationRejection | ExplanationShapeIssue>): void {
+    const base = { requestId: input.requestId, publisherId: input.publisherId };
+    const mentioned = new Set(accepted.map((item) => item.articleId));
+    for (const rejection of rejections) {
+      const articleId = 'articleId' in rejection ? rejection.articleId : undefined;
+      if (articleId) mentioned.add(articleId);
+      this.logger?.info('ai_explanation_rejected', { ...base, rejectReason: rejection.reason, articleId: articleId ? safeLogText(articleId, 200) : undefined, presentFields: rejection.presentFields ? safeLogText(rejection.presentFields.join(','), 200) : undefined });
+    }
+    for (const recommendation of request.recommendations) {
+      if (!mentioned.has(recommendation.article.id)) this.logger?.info('ai_explanation_rejected', { ...base, rejectReason: 'not_returned', articleId: safeLogText(recommendation.article.id, 200) });
     }
   }
 
@@ -744,14 +761,16 @@ export class ReportGenerationService {
     const aiExplanationStartedAt = clockMs();
     if (aiAvailable && ranked.length > 0) {
       const contentRequest: ReportContentRequest = { publisherId: input.publisherId, profile, recommendations: deterministicRecommendations };
+      const rejections: Array<ExplanationRejection | ExplanationShapeIssue> = [];
       const { value: validated, errorCode } = await this.runAI('report_content', async (observe) => {
         const raw = observe(await (this.ai!.provider as ProfessionalAIProvider).generateReportContent(contentRequest));
-        const result = validateReportContent(raw, contentRequest);
+        const result = validateReportContent(raw, contentRequest, (rejection) => rejections.push(rejection));
         if (!result) throw new Error('invalid_report_content');
         return result;
       }, { publisherId: input.publisherId, requestId: input.requestId });
       if (validated?.summary) { generatedSummary = validated.summary; aiSummaryUsed = true; }
       else summaryFallbackReason = errorCode ?? 'summary_missing';
+      if (validated && this.ai!.config.explanationsEnabled) this.logExplanationRejections(input, contentRequest, validated.explanations ?? [], rejections);
       if (this.ai!.config.explanationsEnabled && validated) {
         for (const item of validated.explanations ?? []) explanationById.set(item.articleId, item.explanation);
         aiExplanationUsed = explanationById.size > 0;

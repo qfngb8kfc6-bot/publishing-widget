@@ -74,17 +74,15 @@ describe('optional AI intelligence layer', () => {
     expect(enriched?.keywords).toContain('marine');
   });
 
-  it('validates scores, rejects unknown IDs, and limits signals', () => {
+  it('validates scores and rejects unknown or duplicate IDs; AI signals are not accepted', () => {
     const valid = validateSemanticResults([{ articleId: 'article-1', semanticScore: 91, signals: ['hybrid propulsion', 'marine', 'manufacturing', 'ignored'] }, { articleId: 'unknown', semanticScore: 100, signals: [] }, { articleId: 'article-1', semanticScore: 92, signals: [] }, { articleId: 'article-1', semanticScore: 101, signals: [] }], [candidate]);
-    expect(valid).toEqual([{ articleId: 'article-1', semanticScore: 91, signals: ['hybrid propulsion', 'marine', 'manufacturing'] }]);
+    expect(valid).toEqual([{ articleId: 'article-1', semanticScore: 91, signals: [] }]);
   });
 
-  it('accepts only bounded AI keep and relevance metadata', () => {
-    expect(validateSemanticResults([
-      { articleId: 'article-1', semanticScore: 72, relevanceType: 'adjacent', confidence: 68, keep: false, rationale: 'Only an adjacent connection.', signals: ['marine'] },
-      { articleId: 'article-1', semanticScore: 80, relevanceType: 'invented', keep: true },
-    ], [candidate])).toEqual([{ articleId: 'article-1', semanticScore: 72, signals: ['marine'], keep: false, relevanceType: 'adjacent', confidence: 68, rationale: 'Only an adjacent connection.' }]);
-    expect(validateSemanticResults([{ articleId: 'article-1', semanticScore: 70, keep: 'yes' }], [candidate])).toEqual([]);
+  it('accepts compact {id, score} rerank output and ignores any other fields', () => {
+    expect(validateSemanticResults({ results: [{ id: 'article-1', score: 72, relevanceType: 'adjacent', confidence: 68, keep: false, rationale: 'ignored', signals: ['marine'] }] }, [candidate])).toEqual([{ articleId: 'article-1', semanticScore: 72, signals: [] }]);
+    expect(validateSemanticResults({ results: [{ id: 'article-1', score: '72' }] }, [candidate])).toEqual([]);
+    expect(validateSemanticResults({ results: [{ id: 'article-1', score: -1 }, { id: 'unknown', score: 50 }] }, [candidate])).toEqual([]);
   });
 
   it('uses a stable weighted hybrid score rather than replacing deterministic relevance', () => {

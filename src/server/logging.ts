@@ -109,6 +109,11 @@ export interface ServerLogFields {
   aiErrorCode?: string;
   /** Sanitized provider or validation error, at most 300 characters. */
   aiErrorMessage?: string;
+  /** Article the rejected AI explanation was for (an ID, never explanation text). */
+  articleId?: string;
+  rejectReason?: string;
+  /** Comma-separated field names present on the rejected item or response. */
+  presentFields?: string;
   aiHttpStatus?: number;
   aiFinishReason?: string;
   aiPromptTokens?: number;
@@ -132,7 +137,7 @@ export function safeLogText(value: unknown, limit = 4_000): string | undefined {
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    const safeProductionDiagnostic = ['ai_performance', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
+    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
     if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };

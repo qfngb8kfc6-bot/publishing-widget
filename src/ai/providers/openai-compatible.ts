@@ -1,4 +1,4 @@
-import { AIProviderError, attachAIResponseDiagnostics, type AIResponseDiagnostics } from '../provider';
+import { aiResponseDiagnostics, AIProviderError, attachAIResponseDiagnostics, type AIResponseDiagnostics } from '../provider';
 import { validateExplanationResults, validateSemanticResults, sanitizeEnrichedIntent } from '../validation';
 import type { AIProvider, AIStageMaxTokens, EnrichedIntent, ExplanationRequest, ProfessionalAIProvider, ProfessionalProfileEnhancementInput, ReportContentRequest, SemanticCandidate } from '../types';
 import type { Intent } from '../../core';
@@ -50,6 +50,18 @@ function projectArticle(article: { id: string; title: string; description?: stri
     matchedConcepts: matchedConcepts?.length ? [...new Set(matchedConcepts)].slice(0, 8) : undefined,
     score,
   };
+}
+
+/** Maps aliased rerank ids back to publisher article IDs; unknown ids are left unchanged for the validator to reject. */
+function resolveRerankAliases(raw: unknown, aliases: ReadonlyMap<string, string>): unknown {
+  const resolve = (item: unknown) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const entry = item as Record<string, unknown>;
+    return typeof entry.id === 'string' && aliases.has(entry.id) ? { ...entry, id: aliases.get(entry.id) } : entry;
+  };
+  if (Array.isArray(raw)) return raw.map(resolve);
+  if (raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>).results)) return { ...(raw as Record<string, unknown>), results: ((raw as Record<string, unknown>).results as unknown[]).map(resolve) };
+  return raw;
 }
 
 const STAGE_BY_OPERATION: Record<string, keyof AIStageMaxTokens> = {
@@ -123,14 +135,21 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
     return sanitizeEnrichedIntent(raw, intent) ?? raw;
   }
 
+  /**
+   * Candidates are sent under short aliases (a1, a2, …) so the compact {"id","score"} output stays small even
+   * when publisher IDs are long URLs. Aliases are mapped back here; anything unrecognised is left for the
+   * validator to discard, so the model can still only reference supplied articles.
+   */
   async rerank(intent: EnrichedIntent, candidates: SemanticCandidate[]): Promise<unknown> {
-    return this.requestJson('semantic-reranking', {
+    const aliases = new Map(candidates.map((candidate, index) => [`a${index + 1}`, candidate.articleId]));
+    const raw = await this.requestJson('semantic-reranking', {
       enrichedIntent: intent,
-      candidates: candidates.map((candidate) => ({
-        ...projectArticle({ id: candidate.articleId, title: candidate.title, description: candidate.description, contentSnippet: candidate.contentSnippet, publishedAt: candidate.publishedAt, category: candidate.category, categories: candidate.categories }, candidate.matchedConcepts, candidate.deterministicScore),
-        relevanceType: candidate.deterministicRelevanceType,
-      })),
-    }, `Return a JSON object of the form {"results": [...]} where results is an array of objects with articleId, semanticScore from 0 to 100, relevanceType (direct or adjacent), confidence from 0 to 100, keep (boolean), rationale, and up to three concise grounded signals. You may return fewer results and set keep false for weak or conflicting candidates. Direct matches must outrank merely adjacent matches. Do not reward generic topical overlap. Only use article IDs supplied in candidates.`);
+      candidates: candidates.map((candidate, index) => {
+        const { articleId: _articleId, ...projection } = projectArticle({ id: candidate.articleId, title: candidate.title, description: candidate.description, contentSnippet: candidate.contentSnippet, publishedAt: candidate.publishedAt, category: candidate.category, categories: candidate.categories }, candidate.matchedConcepts, candidate.deterministicScore);
+        return { id: `a${index + 1}`, ...projection, relevanceType: candidate.deterministicRelevanceType };
+      }),
+    }, 'Return ONLY a JSON object of the form {"results":[{"id":"a1","score":87}]}: one entry per candidate worth keeping, where id is the supplied candidate id and score is its relevance from 0 to 100. Include no other fields: no reasons, explanations or signals. Direct matches must outrank merely adjacent matches. Do not reward generic topical overlap. Only use candidate ids supplied in candidates.');
+    return attachAIResponseDiagnostics(resolveRerankAliases(raw, aliases), aiResponseDiagnostics(raw) ?? {});
   }
 
   async explainMany(requests: ExplanationRequest[]): Promise<unknown> {
@@ -148,7 +167,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
     return this.requestJson('report-content', {
       profile: input.profile,
       articles: input.recommendations.map((recommendation) => projectArticle(recommendation.article, recommendation.matchedConcepts, recommendation.score)),
-    }, 'Return a JSON object with summary and explanations. summary must be a concise briefing based only on the supplied professional profile and articles. explanations must be an array of objects with articleId and one or two concise sentences explaining why that known article matters. Use only supplied article evidence and profile signals. Never invent article IDs, facts, URLs, companies, responsibilities or events.');
+    }, 'Return a JSON object with summary and explanations. summary must be a concise briefing based only on the supplied professional profile and articles. explanations must be an array of objects exactly of the form {"articleId": "<a supplied articleId>", "explanation": "<one or two sentences>"}, where explanation is one or two concise sentences explaining why that known article matters. Use only supplied article evidence and profile signals. Never invent article IDs, facts, URLs, companies, responsibilities or events.');
   }
 
   async explain(article: ExplanationRequest['article'], intent: EnrichedIntent, relevance: ExplanationRequest['relevance']): Promise<string> {

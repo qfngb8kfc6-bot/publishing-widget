@@ -56,12 +56,13 @@ describe('AI request parameters', () => {
     expect(captured.map(({ body }) => body.max_completion_tokens)).toEqual([1500, 1200, 4000]);
   });
 
-  it('asks the reranker for {"results":[...]} and accepts that shape or a bare array', async () => {
+  it('asks the reranker for compact {"results":[{"id","score"}]} output and accepts that shape or a bare array', async () => {
     const { provider, captured } = providerFor({});
     await provider.rerank({} as never, []);
-    expect(captured[0].system).toContain('{"results": [...]}');
+    expect(captured[0].system).toContain('{"results":[{"id":"a1","score":87}]}');
+    expect(captured[0].system).toContain('Include no other fields');
     const candidates = [{ articleId: 'a1', title: 'Nike stores' }] as SemanticCandidate[];
-    const result = { articleId: 'a1', semanticScore: 80, keep: true };
+    const result = { id: 'a1', score: 80 };
     expect(validateSemanticResults({ results: [result] }, candidates)).toHaveLength(1);
     expect(validateSemanticResults([result], candidates)).toHaveLength(1);
     expect(validateSemanticResults({ rankings: [result] }, candidates)).toHaveLength(0);
@@ -89,12 +90,47 @@ describe('AI article payloads', () => {
     for (const absent of ['searchText', 'provenance', 'canonicalUrl', 'https://www.sgieurope.com', 'deterministicExplanation', 'TAILSENTINEL']) expect(sent).not.toContain(absent);
   });
 
-  it('sends the rerank call the same projection plus the deterministic relevance type', async () => {
+  it('sends the rerank call the same projection under a short alias plus the deterministic relevance type', async () => {
     const { provider, captured } = providerFor({});
     await provider.rerank({} as never, [{ articleId: 'a1', title: article.title, description: longText, categories: article.categories, tags: article.tags, contentSnippet: longText, deterministicScore: 74, deterministicRelevanceType: 'direct', relevanceSignals: ['directly matches stores'], publishedAt: article.publishedAt, category: 'Retail', matchedConcepts: ['stores'] }]);
     const [projected] = payload(captured).candidates;
-    expect(Object.keys(projected).every((key) => [...allowed, 'relevanceType'].includes(key))).toBe(true);
-    expect(projected).toMatchObject({ articleId: 'a1', score: 74, relevanceType: 'direct', matchedConcepts: ['stores'] });
+    expect(Object.keys(projected).every((key) => [...allowed.filter((field) => field !== 'articleId'), 'id', 'relevanceType'].includes(key))).toBe(true);
+    expect(projected).toMatchObject({ id: 'a1', score: 74, relevanceType: 'direct', matchedConcepts: ['stores'] });
     expect(projected.description.length).toBeLessThanOrEqual(601);
+  });
+});
+
+describe('compact rerank output', () => {
+  const longIds = Array.from({ length: 12 }, (_, index) => `https://www.sgieurope.com/retail/nike-reshapes-european-distribution-and-store-network-${index}/12${String(index).padStart(4, '0')}.article`);
+  const candidates = longIds.map((articleId, index) => ({ articleId, title: `Story ${index}`, description: 'Retail stores and distribution', categories: [], tags: [], deterministicScore: 60 + index })) as SemanticCandidate[];
+
+  function rerankProvider(content: string) {
+    const config = createAIConfig({ AI_ENABLED: 'true', AI_API_KEY: 'sk-test-key-123456', AI_MODEL: 'test-model', AI_ENDPOINT: 'https://ai.example.test/v1/chat/completions' });
+    let sent = '';
+    const provider = new OpenAICompatibleProvider({ endpoint: config.endpoint, apiKey: config.apiKey!, model: config.model, timeoutMs: 1_000, maxTokens: config.maxTokens }, async (_input, init) => {
+      sent = String(init?.body);
+      return Response.json({ choices: [{ message: { content }, finish_reason: 'stop' }] });
+    });
+    return { provider, sentBody: () => sent };
+  }
+
+  it('fits 12 results in well under 200 completion tokens by using short candidate aliases', async () => {
+    const compact = JSON.stringify({ results: candidates.map((_, index) => ({ id: `a${index + 1}`, score: 99 - index })) });
+    const withPublisherIds = JSON.stringify({ results: candidates.map((candidate, index) => ({ id: candidate.articleId, score: 99 - index })) });
+    // About four characters per token for JSON like this; the aliased form is a fraction of the budget.
+    expect(Math.ceil(compact.length / 4)).toBeLessThan(120);
+    expect(Math.ceil(withPublisherIds.length / 4)).toBeGreaterThan(300);
+    const { provider, sentBody } = rerankProvider(compact);
+    const raw = await provider.rerank({} as never, candidates);
+    expect(sentBody()).not.toContain('sgieurope.com/retail');
+    const results = validateSemanticResults(raw, candidates);
+    expect(results.map((result) => result.articleId)).toEqual(longIds);
+    expect(results.map((result) => result.semanticScore)).toEqual(candidates.map((_, index) => 99 - index));
+  });
+
+  it('drops unknown aliases and publisher IDs that were never supplied', async () => {
+    const { provider } = rerankProvider(JSON.stringify({ results: [{ id: 'a2', score: 70 }, { id: 'a99', score: 90 }, { id: 'https://www.sgieurope.com/invented/1.article', score: 95 }] }));
+    const results = validateSemanticResults(await provider.rerank({} as never, candidates), candidates);
+    expect(results).toEqual([{ articleId: longIds[1], semanticScore: 70, signals: [] }]);
   });
 });
