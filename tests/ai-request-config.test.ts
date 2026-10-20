@@ -83,8 +83,8 @@ describe('AI article payloads', () => {
     const { provider, captured } = providerFor({});
     await provider.generateReportContent({ publisherId: 'sgi-europe', profile: {} as never, recommendations: [{ article: article as never, deterministicExplanation: 'Directly matches stores, relevant to your work.', relevanceSignals: ['directly matches stores'], semanticSignals: [], matchedConcepts: ['stores', 'distribution', 'stores'], score: 82 }] });
     const [projected] = payload(captured).articles;
-    expect(Object.keys(projected).every((key) => allowed.includes(key))).toBe(true);
-    expect(projected).toMatchObject({ articleId: 'a1', title: article.title, publishedAt: article.publishedAt, category: 'Retail', matchedConcepts: ['stores', 'distribution'], score: 82 });
+    expect(Object.keys(projected).every((key) => [...allowed.filter((field) => field !== 'articleId'), 'id', 'relationship'].includes(key))).toBe(true);
+    expect(projected).toMatchObject({ id: 'a1', title: article.title, publishedAt: article.publishedAt, category: 'Retail', matchedConcepts: ['stores', 'distribution'], score: 82 });
     expect(projected.description.length).toBeLessThanOrEqual(601);
     const sent = (captured[0].body.messages as Array<{ content: string }>)[1].content;
     for (const absent of ['searchText', 'provenance', 'canonicalUrl', 'https://www.sgieurope.com', 'deterministicExplanation', 'TAILSENTINEL']) expect(sent).not.toContain(absent);

@@ -54,6 +54,7 @@ export { PostgresReportStore } from '../reports/store';
 export { PostgresPublisherStore } from '../publishers/store';
 export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 export { resolveCommitSha } from './health';
+export { explanationQualityWarnings, summaryQualityWarnings } from '../ai/content-quality';
 
 function jsonError(error: string, status: number, requestId: string): Response {
   return Response.json({ error, requestId }, { status, headers: { 'X-Request-ID': requestId } });
@@ -122,6 +123,16 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     ttlMs: options.catalogueCacheTtlMs ?? Number(serverEnvironment.PUBLISHER_CATALOGUE_CACHE_TTL_MS ?? 5 * 60 * 1000),
     maxStaleMs: options.catalogueCacheMaxStaleMs ?? Number(serverEnvironment.PUBLISHER_CATALOGUE_MAX_STALE_MS ?? 24 * 60 * 60 * 1000),
     snapshotStore: options.catalogueSnapshotStore,
+    // Match indexes are built in the background after every catalogue load so first requests do not pay for them.
+    prebuildIndexes: serverEnvironment.PUBLISHER_INDEX_PREBUILD !== 'false',
+    onIndexPrebuilt: (publisherId, stats) => logger.info('index_prebuild_complete', {
+      publisherId,
+      stage: stats.trigger,
+      durationMs: Math.round(stats.durationMs),
+      busyMs: Math.round(stats.busyMs),
+      articleCount: stats.articleCount,
+      slices: stats.slices,
+    }),
     onRefreshError: (publisherId, error, background) => logger.error('catalogue_refresh_failed', {
       publisherId,
       stage: 'catalogue_refresh',
@@ -260,7 +271,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics() };
+  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); } };
 }
 
 export async function runConfiguredAIHealthCheck(serverEnvironment: Record<string, string | undefined> = {}, fetchImpl: typeof fetch = fetch): Promise<{ status: 'disabled' | 'ok'; provider?: string }> {

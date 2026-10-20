@@ -64,7 +64,12 @@ export interface ExplanationRequest {
 export interface AIExplanationResult {
   articleId: string;
   explanation: string;
+  /** Two or three words naming why it matters, e.g. "supplier risk" or "competitor benchmark". */
+  angle?: string;
 }
+
+/** How an article relates to the reader's company, derived deterministically from profile and company data. */
+export type ArticleRelationship = 'own_company' | 'likely_competitor' | 'supplier_partner' | 'wider_market';
 
 export interface ProfessionalProfileEnhancementInput {
   publisherId: string;
@@ -103,6 +108,8 @@ export interface AIProfessionalProfileEnhancement {
 
 export interface ReportContentRequest {
   publisherId: string;
+  /** false for an explanations-only part of a split content request (no summary is written). Default true. */
+  includeSummary?: boolean;
   profile: ProfessionalProfile;
   recommendations: Array<{
     article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'> & Partial<Pick<NormalizedArticle, 'category' | 'summary'>>;
@@ -113,11 +120,14 @@ export interface ReportContentRequest {
     matchedConcepts?: string[];
     /** Final relevance score used for ranking. */
     score?: number;
+    relationship?: ArticleRelationship;
   }>;
 }
 
 export interface AIReportContent {
   summary?: string;
+  /** Supplied article IDs the summary draws on. */
+  citedArticleIds?: string[];
   explanations?: AIExplanationResult[];
 }
 

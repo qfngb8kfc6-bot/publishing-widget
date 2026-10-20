@@ -165,7 +165,8 @@ export function validateReportContent(raw: unknown, request: ReportContentReques
   const explanations = validateExplanationResults(value.explanations, candidateIds, onReject);
   const summary = optionalString(value.summary, 1200);
   if (!summary && explanations.length === 0) return null;
-  return { summary, explanations };
+  const citedArticleIds = summary && Array.isArray(value.citedArticleIds) ? [...new Set(value.citedArticleIds.filter((id): id is string => typeof id === 'string' && candidateIds.has(id)))] : [];
+  return { summary, explanations, ...(summary ? { citedArticleIds } : {}) };
 }
 
 export function sanitizeEnrichedIntent(raw: unknown, baseIntent: Intent): EnrichedIntent | null {
@@ -234,6 +235,13 @@ export interface ExplanationRejection {
   presentFields?: string[];
 }
 
+/** An angle is a short label (at most four words); anything else is dropped without rejecting the explanation. */
+function validAngle(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const angle = value.replace(/\s+/g, ' ').trim().toLowerCase();
+  return angle && angle.length <= 40 && angle.split(' ').length <= 4 && /^[a-z][a-z -]*$/.test(angle) ? angle : undefined;
+}
+
 /** Model-chosen field names are logged only when they look like identifiers, so free text can never leak through a key. */
 function fieldNames(value: Record<string, unknown>): string[] {
   return [...new Set(Object.keys(value).map((key) => (/^[A-Za-z_][A-Za-z0-9_]{0,40}$/.test(key) ? key : '<other>')))].sort();
@@ -256,6 +264,7 @@ export function validateExplanationResults(raw: unknown, candidateIds: Set<strin
     if (!explanation.trim()) return reject('empty_explanation', articleId);
     if (explanation.length > 600) return reject('explanation_too_long', articleId);
     seen.add(articleId);
-    return [{ articleId, explanation: explanation.trim() }];
+    const angle = validAngle(result.angle);
+    return [{ articleId, explanation: explanation.trim(), ...(angle ? { angle } : {}) }];
   });
 }

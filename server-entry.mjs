@@ -105,7 +105,15 @@ async function start() {
   };
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
   process.once('SIGINT', () => void shutdown('SIGINT'));
-  server.listen(port, host, () => console.log(`[publisher-widget] server listening host=${host} port=${port} environment=${environment} analyticsStore=${analyticsStoreMode}`));
+  server.listen(port, host, () => {
+    console.log(`[publisher-widget] server listening host=${host} port=${port} environment=${environment} analyticsStore=${analyticsStoreMode}`);
+    // Load catalogues (and so start background index builds) before the first visitor needs them.
+    if (process.env.PUBLISHER_CATALOGUE_PREWARM === 'false') return;
+    const startedAt = Date.now();
+    app.prewarmCatalogues()
+      .then((publishers) => console.log(`[publisher-widget] catalogue_prewarm_complete publishers=${publishers.join(',') || 'none'} durationMs=${Date.now() - startedAt}`))
+      .catch((error) => console.error(`[publisher-widget] catalogue_prewarm_failed error=${error instanceof Error ? error.name : 'unknown'}`));
+  });
 }
 
 void start();
