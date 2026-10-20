@@ -15,6 +15,7 @@ import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
 import { articleRelationship } from './relationship';
 import { explanationQualityWarnings, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
+import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
 
 export const GENERATION_VERSION = '1.2';
@@ -845,7 +846,10 @@ export class ReportGenerationService {
         });
         for (const item of accepted) explanationById.set(item.articleId, { explanation: item.explanation, angle: item.angle });
         aiExplanationUsed = explanationById.size > 0;
-        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map(ranked.map((item) => [item.article.id, item.article.title]))));
+        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map(ranked.map((item) => {
+          const timing = articleTiming(item.article.publishedAt);
+          return [item.article.id, { title: item.article.title, olderYear: timing.older ? timing.published : undefined }];
+        }))));
       }
     }
     const aiExplanationMs = clockMs() - aiExplanationStartedAt;

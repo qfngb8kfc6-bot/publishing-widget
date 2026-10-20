@@ -34,10 +34,26 @@ interface AIArticleProjection {
   articleId: string;
   title: string;
   description?: string;
-  publishedAt?: string;
+  /** Publication year, e.g. "2019". */
+  published?: string;
+  /** True when the article is more than OLDER_ARTICLE_MONTHS old: write it as precedent, not as current news. */
+  older?: true;
   category?: string;
   matchedConcepts?: string[];
   score?: number;
+}
+
+/** Articles older than this are context or precedent; the summary's pattern should come from newer ones. */
+export const OLDER_ARTICLE_MONTHS = 18;
+
+/** Publication year and an explicit "older" flag, computed here so the model never has to do date arithmetic. */
+export function articleTiming(publishedAt: string | undefined, now = Date.now()): { published?: string; older?: true } {
+  const time = publishedAt ? Date.parse(publishedAt) : Number.NaN;
+  if (!Number.isFinite(time)) return {};
+  const published = String(new Date(time).getUTCFullYear());
+  const cutoff = new Date(now);
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - OLDER_ARTICLE_MONTHS);
+  return { published, ...(time < cutoff.getTime() ? { older: true as const } : {}) };
 }
 
 function projectArticle(article: { id: string; title: string; description?: string; summary?: string; contentSnippet?: string; publishedAt?: string; category?: string; categories?: string[] }, matchedConcepts: string[] | undefined, score: number | undefined): AIArticleProjection {
@@ -45,7 +61,7 @@ function projectArticle(article: { id: string; title: string; description?: stri
     articleId: article.id,
     title: article.title,
     description: clipText(article.description ?? article.summary ?? article.contentSnippet),
-    publishedAt: article.publishedAt,
+    ...articleTiming(article.publishedAt),
     category: article.category ?? article.categories?.[0],
     matchedConcepts: matchedConcepts?.length ? [...new Set(matchedConcepts)].slice(0, 8) : undefined,
     score,
@@ -67,6 +83,7 @@ function resolveRerankAliases(raw: unknown, aliases: ReadonlyMap<string, string>
 /** The reader the briefing is written for: role and company context only, never the full stored profile. */
 function readerContext(profile: ReportContentRequest['profile']) {
   return {
+    today: new Date().toISOString().slice(0, 7),
     jobTitle: profile.jobTitle,
     roleFunction: profile.role?.function,
     responsibilities: profile.role?.responsibilities?.slice(0, 6),
@@ -92,7 +109,8 @@ function resolveContentAliases(raw: unknown, aliases: ReadonlyMap<string, string
 const REPORT_CONTENT_RULES = [
   'FIT: if an article does not genuinely help this reader, return {"articleId": "...", "fit": "weak"} for it instead of an explanation, and do not build the summary on it. Never stretch a weak fit into a justification.',
   'GROUNDING: use only facts stated in each article\'s title and description. Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.',
-  'SUMMARY: 3-4 sentences, like an analyst\'s briefing note. Open with the strongest pattern across the articles, backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. citedArticleIds lists every article the summary draws on.',
+  'DATES: each article has published (its year) and older:true when it is more than 18 months old (today is reader.today). For an older article, anchor the fact in time ("In 2019, Decathlon ...") and present it as precedent or context, never as a current plan or current news.',
+  'SUMMARY: 3-4 sentences, like an analyst\'s briefing note, addressed to the reader directly (you, your team), never in the third person ("for a retailer", "for a product manager"). Build the opening pattern primarily from articles that are not older; use older articles only as supporting context, dated. Open with the strongest pattern across the articles, backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. citedArticleIds lists every article the summary draws on.',
   'EXPLANATIONS: 1-2 sentences, 25-35 words, never more than 45. Start from one specific fact in that article (a company, number, place or action), then state what it means for the reader through one angle. angle is 2-3 words, for example competitor benchmark, supplier risk, regulatory exposure, cost signal, sourcing shift, capacity signal, compliance pressure, leadership move, market signal or channel shift. Vary the wording: no two explanations may start with the same three words.',
   'NEVER write "the most relevant articles", "focus on", "the profile", "this briefing", "This article", "This matters", "relevant because", "relevant to your work", "your role as", "maps to", "aligns with" or "directly relevant". Never restate the reader\'s job title and company, and never just list themes or topics.',
   'EXAMPLES (placeholder companies, not from the articles). Bad: "This article is relevant because it focuses on supplier risk, which maps to your role." Good, angle "sourcing shift": "Acme Apparel moved 30% of its footwear output to two new vendors in Vietnam, a benchmark for how fast a single-region supply base can be diversified."',

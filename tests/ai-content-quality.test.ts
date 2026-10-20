@@ -63,7 +63,7 @@ describe('content call inputs and stored output', () => {
     const { instance, payload } = app(() => ({ summary: 'S.', explanations: [] }));
     const report = await generate(instance);
     const sent = payload()!;
-    expect(Object.keys(sent.reader).sort()).toEqual(['company', 'companyDescription', 'industry', 'jobTitle', 'priorities', 'responsibilities', 'roleFunction']);
+    expect(Object.keys(sent.reader).sort()).toEqual(['company', 'companyDescription', 'industry', 'jobTitle', 'priorities', 'responsibilities', 'roleFunction', 'today']);
     expect(sent.articles.map((article) => article.id)).toEqual(report.recommendations.map((_, index) => `a${index + 1}`));
     const relationships = new Map(sent.articles.map((article) => [article.title, article.relationship]));
     expect(relationships.get('Nike opens 12 owned stores in Germany')).toBe('own_company');
@@ -112,7 +112,7 @@ describe('quality heuristics', () => {
   });
 
   it('flags summaries that use banned phrases, cite too few articles or restate the reader', () => {
-    expect(summaryQualityWarnings('The most relevant articles focus on sourcing for a Head of Procurement at Nike.', ['a1'], { jobTitle: 'Head of Procurement', companyName: 'Nike' })).toEqual(['banned_phrase', 'too_few_citations', 'restates_reader']);
+    expect(summaryQualityWarnings('The most relevant articles focus on sourcing for a Head of Procurement at Nike.', ['a1'], { jobTitle: 'Head of Procurement', companyName: 'Nike' })).toEqual(['banned_phrase', 'too_few_citations', 'restates_reader', 'third_person_reader']);
     expect(summaryQualityWarnings('Acme and Northwind are both diversifying suppliers; watch freight costs.', ['a1', 'a2', 'a3'], { jobTitle: 'Head of Procurement', companyName: 'Nike' })).toEqual([]);
   });
 });
