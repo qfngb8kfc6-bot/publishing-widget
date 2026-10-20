@@ -128,6 +128,8 @@ export interface AIReportContent {
   summary?: string;
   /** Supplied article IDs the summary draws on. */
   citedArticleIds?: string[];
+  /** Articles the model marked fit:"weak" instead of explaining. */
+  weakArticleIds?: string[];
   explanations?: AIExplanationResult[];
 }
 

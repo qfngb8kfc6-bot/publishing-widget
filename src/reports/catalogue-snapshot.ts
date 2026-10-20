@@ -1,4 +1,4 @@
-import type { NormalizedArticle } from '../core';
+import { mapInSlices, type NormalizedArticle } from '../core';
 
 export interface CatalogueSnapshot {
   publisherId: string;
@@ -43,9 +43,11 @@ export class PostgresCatalogueSnapshotStore implements CatalogueSnapshotStore {
   }
 
   async save(snapshot: CatalogueSnapshot): Promise<void> {
+    // Serialized article by article in slices: one JSON.stringify of a large catalogue blocks for seconds.
+    const articlesJson = `[${(await mapInSlices(snapshot.articles, (article) => JSON.stringify(article))).join(',')}]`;
     await this.client.query(
       `INSERT INTO publisher_catalogue_snapshots (publisher_id, source_key, articles_json, item_count, refreshed_at, updated_at) VALUES ($1, $2, $3::jsonb, $4, $5, NOW()) ON CONFLICT (publisher_id) DO UPDATE SET source_key = EXCLUDED.source_key, articles_json = EXCLUDED.articles_json, item_count = EXCLUDED.item_count, refreshed_at = EXCLUDED.refreshed_at, updated_at = NOW()`,
-      [snapshot.publisherId, snapshot.sourceKey, JSON.stringify(snapshot.articles), snapshot.articles.length, snapshot.refreshedAt],
+      [snapshot.publisherId, snapshot.sourceKey, articlesJson, snapshot.articles.length, snapshot.refreshedAt],
     );
   }
 }

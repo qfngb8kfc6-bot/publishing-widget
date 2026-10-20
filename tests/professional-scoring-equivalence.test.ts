@@ -96,7 +96,9 @@ function referenceScoreProfessionalArticle(article: NormalizedArticle, profile: 
   const directScore = directEvidence.score;
   const adjacentScore = adjacentEvidence.score;
   const roleBonus = Math.min(10, roleMatches.length * PROFESSIONAL_SCORE_WEIGHTS.roleBonus);
-  const companyBonus = company.score;
+  // Ranking 1.3 deliberately scales the company bonus by role evidence; the reference carries the same rule so
+  // this test keeps checking only that indexing does not change results.
+  const companyBonus = company.score * Math.min(1, directScore / PROFESSIONAL_SCORE_WEIGHTS.directTitle);
   const negativePenalty = Math.min(45, negativeTitle.length * 28 + negativeMetadata.length * 18 + negativeBody.length * 10);
   const exceptionalBonus = company.matches.length > 0 && directEvidence.matches.filter((match) => match.source === 'role').length >= 3 && referencePhraseMatches(profile.companyName ?? profile.companyDomain, fields.title) ? 26 : 0;
   const recencyMultiplier = hasValidPublishedAt ? recencyMultiplierForAge(ageDays) : UNKNOWN_DATE_RECENCY_MULTIPLIER;

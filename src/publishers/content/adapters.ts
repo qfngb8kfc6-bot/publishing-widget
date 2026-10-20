@@ -1,4 +1,4 @@
-import { compactFieldIndexes, normalizeToken, tokenize, type ContentSourceHealth, type TextMatchIndex, type TokenDictionary, type Intent, type NormalizedArticle, type PublisherArticle, type SearchOptions } from '../../core';
+import { compactFieldIndexes, mapInSlices, normalizeToken, tokenize, type ContentSourceHealth, type TextMatchIndex, type TokenDictionary, type Intent, type NormalizedArticle, type PublisherArticle, type SearchOptions } from '../../core';
 import { getField, normalizeMappedArticle, normalizeRecords, type CanonicalNormalizationOptions } from './normalize';
 import { csvRecords } from './csv';
 import { assertSafePublicUrl, ContentSourceError, fetchText, safeSourceFetch } from './security';
@@ -358,25 +358,35 @@ function feedSection(url: string | undefined): string | undefined {
   }
 }
 
+function feedBlocks(xml: string, type: 'rss' | 'atom'): string[] {
+  return type === 'atom' ? xmlBlocks(xml, 'entry') : xmlBlocks(xml, 'item');
+}
+
+function feedRecord(block: string, type: 'rss' | 'atom', deriveCategoryFromUrl: boolean): RawRecord {
+  const linkTag = block.match(/<link\b[^>]*>/i)?.[0];
+  const link = (linkTag && xmlAttribute(linkTag, 'href')) ?? xmlFirstText(block, ['link']);
+  const section = deriveCategoryFromUrl ? feedSection(link) : undefined;
+  return {
+    id: xmlFirstText(block, type === 'atom' ? ['id', 'guid'] : ['guid', 'id']),
+    guid: xmlFirstText(block, ['guid', 'id']),
+    title: xmlFirstText(block, ['title']),
+    url: link,
+    description: xmlFirstText(block, ['content:encoded', 'content', 'summary', 'description']),
+    body: xmlFirstText(block, ['content:encoded', 'content']),
+    author: feedAuthor(xmlFirstText(block, type === 'atom' ? ['author', 'name', 'dc:creator'] : ['abacus:byline', 'author', 'dc:creator'])),
+    publishedAt: xmlFirstText(block, type === 'atom' ? ['published', 'updated'] : ['pubDate', 'published', 'date']),
+    categories: [section, ...xmlBlocks(block, 'category').map(xmlText)].filter((value): value is string => Boolean(value)),
+    image: feedImage(block),
+  };
+}
+
 function feedRecords(xml: string, type: 'rss' | 'atom', deriveCategoryFromUrl = false): RawRecord[] {
-  const blocks = type === 'atom' ? xmlBlocks(xml, 'entry') : xmlBlocks(xml, 'item');
-  return blocks.map((block) => {
-    const linkTag = block.match(/<link\b[^>]*>/i)?.[0];
-    const link = (linkTag && xmlAttribute(linkTag, 'href')) ?? xmlFirstText(block, ['link']);
-    const section = deriveCategoryFromUrl ? feedSection(link) : undefined;
-    return {
-      id: xmlFirstText(block, type === 'atom' ? ['id', 'guid'] : ['guid', 'id']),
-      guid: xmlFirstText(block, ['guid', 'id']),
-      title: xmlFirstText(block, ['title']),
-      url: link,
-      description: xmlFirstText(block, ['content:encoded', 'content', 'summary', 'description']),
-      body: xmlFirstText(block, ['content:encoded', 'content']),
-      author: feedAuthor(xmlFirstText(block, type === 'atom' ? ['author', 'name', 'dc:creator'] : ['abacus:byline', 'author', 'dc:creator'])),
-      publishedAt: xmlFirstText(block, type === 'atom' ? ['published', 'updated'] : ['pubDate', 'published', 'date']),
-      categories: [section, ...xmlBlocks(block, 'category').map(xmlText)].filter((value): value is string => Boolean(value)),
-      image: feedImage(block),
-    };
-  });
+  return feedBlocks(xml, type).map((block) => feedRecord(block, type, deriveCategoryFromUrl));
+}
+
+/** Same records as feedRecords, built in slices that yield so a large feed never blocks the event loop for long. */
+function feedRecordsInSlices(xml: string, type: 'rss' | 'atom', deriveCategoryFromUrl = false): Promise<RawRecord[]> {
+  return mapInSlices(feedBlocks(xml, type), (block) => feedRecord(block, type, deriveCategoryFromUrl));
 }
 
 function compareFeedDates(left: PublisherArticle, right: PublisherArticle): number {
@@ -430,7 +440,7 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
     const sourceTimings: ContentTimingDiagnostics = {};
     const xml = await fetchText(this.config.feedUrl, { headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml', ...(this.config.headers ?? {}) } }, { timeoutMs: this.config.timeoutMs ?? 8000, maxBytes: this.config.maxBytes ?? DEFAULT_FEED_MAX_BYTES, fetchImpl: this.fetchImpl, allowedHostnames: this.config.allowedHostnames, timings: sourceTimings });
     const parseStartedAt = clockMs();
-    const records = feedRecords(xml, this.config.type, this.config.deriveCategoryFromUrl);
+    const records = await feedRecordsInSlices(xml, this.config.type, this.config.deriveCategoryFromUrl);
     const parseMs = clockMs() - parseStartedAt;
     if (!records.length) throw new ContentSourceError('empty-source', 'Feed did not contain any entries.');
     this.sourceTimings = { ...sourceTimings, sourceParseMs: parseMs, cataloguePreparationMs: clockMs() - startedAt };
