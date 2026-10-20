@@ -150,11 +150,19 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
   return { ...profile, company, role, professionalInterests, directInterests, adjacentInterests, entities, likelyInformationNeeds, searchTerms, semanticQueries, excludedConcepts: retrieval.exclusions, retrieval };
 }
 
-export function validateReportContent(raw: unknown, request: ReportContentRequest): AIReportContent | null {
+/** Report-level shape problems with the explanations list, reported with the response's top-level field names. */
+export interface ExplanationShapeIssue {
+  reason: 'explanations_missing' | 'explanations_not_array';
+  presentFields: string[];
+}
+
+export function validateReportContent(raw: unknown, request: ReportContentRequest, onReject?: (rejection: ExplanationRejection | ExplanationShapeIssue) => void): AIReportContent | null {
   const value = record(raw);
   if (!value) return null;
   const candidateIds = new Set(request.recommendations.map((item) => item.article.id));
-  const explanations = validateExplanationResults(value.explanations, candidateIds);
+  if (value.explanations === undefined) onReject?.({ reason: 'explanations_missing', presentFields: fieldNames(value) });
+  else if (!Array.isArray(value.explanations)) onReject?.({ reason: 'explanations_not_array', presentFields: fieldNames(value) });
+  const explanations = validateExplanationResults(value.explanations, candidateIds, onReject);
   const summary = optionalString(value.summary, 1200);
   if (!summary && explanations.length === 0) return null;
   return { summary, explanations };
@@ -216,15 +224,37 @@ export function validateSemanticResults(raw: unknown, candidates: SemanticCandid
   });
 }
 
-export function validateExplanationResults(raw: unknown, candidateIds: Set<string>): AIExplanationResult[] {
+export type ExplanationRejectReason = 'not_object' | 'missing_article_id' | 'unknown_article_id' | 'duplicate_article_id' | 'missing_explanation' | 'empty_explanation' | 'explanation_too_long';
+
+/** Why one returned explanation was discarded. Carries IDs and field names only, never explanation text. */
+export interface ExplanationRejection {
+  reason: ExplanationRejectReason;
+  articleId?: string;
+  /** Field names present on the rejected item, to diagnose shape mismatches. */
+  presentFields?: string[];
+}
+
+/** Model-chosen field names are logged only when they look like identifiers, so free text can never leak through a key. */
+function fieldNames(value: Record<string, unknown>): string[] {
+  return [...new Set(Object.keys(value).map((key) => (/^[A-Za-z_][A-Za-z0-9_]{0,40}$/.test(key) ? key : '<other>')))].sort();
+}
+
+export function validateExplanationResults(raw: unknown, candidateIds: Set<string>, onReject?: (rejection: ExplanationRejection) => void): AIExplanationResult[] {
   const value = record(raw);
   const list = Array.isArray(raw) ? raw : Array.isArray(value?.results) ? value.results : [];
   const seen = new Set<string>();
   return list.flatMap((item) => {
     const result = record(item);
-    const articleId = result?.articleId;
-    const explanation = result?.explanation;
-    if (typeof articleId !== 'string' || !candidateIds.has(articleId) || seen.has(articleId) || typeof explanation !== 'string' || !explanation.trim() || explanation.length > 600) return [];
+    const reject = (reason: ExplanationRejectReason, articleId?: string) => { onReject?.({ reason, articleId, presentFields: result ? fieldNames(result) : undefined }); return []; };
+    if (!result) return reject('not_object');
+    const articleId = result.articleId;
+    const explanation = result.explanation;
+    if (typeof articleId !== 'string' || !articleId) return reject('missing_article_id');
+    if (!candidateIds.has(articleId)) return reject('unknown_article_id', articleId);
+    if (seen.has(articleId)) return reject('duplicate_article_id', articleId);
+    if (typeof explanation !== 'string') return reject('missing_explanation', articleId);
+    if (!explanation.trim()) return reject('empty_explanation', articleId);
+    if (explanation.length > 600) return reject('explanation_too_long', articleId);
     seen.add(articleId);
     return [{ articleId, explanation: explanation.trim() }];
   });

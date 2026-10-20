@@ -167,7 +167,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
     return this.requestJson('report-content', {
       profile: input.profile,
       articles: input.recommendations.map((recommendation) => projectArticle(recommendation.article, recommendation.matchedConcepts, recommendation.score)),
-    }, 'Return a JSON object with summary and explanations. summary must be a concise briefing based only on the supplied professional profile and articles. explanations must be an array of objects with articleId and one or two concise sentences explaining why that known article matters. Use only supplied article evidence and profile signals. Never invent article IDs, facts, URLs, companies, responsibilities or events.');
+    }, 'Return a JSON object with summary and explanations. summary must be a concise briefing based only on the supplied professional profile and articles. explanations must be an array of objects exactly of the form {"articleId": "<a supplied articleId>", "explanation": "<one or two sentences>"}, where explanation is one or two concise sentences explaining why that known article matters. Use only supplied article evidence and profile signals. Never invent article IDs, facts, URLs, companies, responsibilities or events.');
   }
 
   async explain(article: ExplanationRequest['article'], intent: EnrichedIntent, relevance: ExplanationRequest['relevance']): Promise<string> {
