@@ -857,7 +857,10 @@ export class ReportGenerationService {
     this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);
     let ranking: Awaited<ReturnType<ReportGenerationService['rankProfile']>>;
     try {
-      ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, false, (stage) => this.markStage(input, stage), true);
+      // Archive-wide, like theme search: the professional scorer preselects across the whole catalogue. The
+      // adapter's token preselection let company-name and leadership-word matches fill its 100 slots, so a
+      // subject-anchored role lost on-subject stories about other companies that theme search then found.
+      ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, true, (stage) => this.markStage(input, stage), true);
     } catch (error) {
       const stage = (error as GenerationFailure).generationStage ?? 'ranking';
       annotateGenerationFailure(error, stage);

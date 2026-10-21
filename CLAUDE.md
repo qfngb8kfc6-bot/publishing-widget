@@ -46,7 +46,8 @@ qfngb8kfc6-bot/publishing-widget.
 2. `buildProfessionalProfile` (role rules; dedicated vs generic roles). AI enrichment runs as two parallel
    calls — main profile + subject vocabulary (generic titled roles) — each under the 5 s AI cap; only a
    complete result is cached 24 h; a failed/partial one is retried once in the background (`enrichment_retry`).
-3. Catalogue from cache (warm-up in parallel) → preselection to ≤100 candidates → deterministic scoring.
+3. Catalogue from cache (warm-up in parallel) → archive-wide preselection with the professional scorer (same as
+   theme search) to ≤100 candidates → deterministic ranking.
 4. AI rerank (compact `{id, score, weak}`), hybrid blend; weak fits removed (min 3 kept).
 5. Content calls A (summary + first 7 explanations + theme card lines) and B (rest), in parallel.
 6. Own-company articles held to ~60% when alternatives pass the threshold; sections; transactional persist;

@@ -206,7 +206,7 @@ describe('SGI Europe RSS publisher', () => {
     const nikeReport = await service.generate({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' });
     expect(nikeReport.recommendations.some((recommendation) => recommendation.article.id === 'nike-retail-strategy')).toBe(true);
     const diagnostics = logEvents.find((event) => event.message === 'report_retrieval_diagnostics');
-    expect(diagnostics?.fields).toMatchObject({ publisherId: 'sgi-europe', normalizedArticleCount: 123, preselectionInputCount: 123, preselectionOutputCount: 100, rankingCandidateCount: 100, retrievalCandidates: 100 });
+    expect(diagnostics?.fields).toMatchObject({ publisherId: 'sgi-europe', normalizedArticleCount: 123, preselectionInputCount: 123, preselectionOutputCount: 100, rankingCandidateCount: 123, retrievalCandidates: 123 });
   });
 
   it('runs content health, report generation, persistence and theme search through the production path', async () => {
