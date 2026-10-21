@@ -16,11 +16,12 @@ describe('sliced work', () => {
     expect(interleaved).toBe(true);
   });
 
-  it('serializes snapshots exactly as JSON.stringify does', async () => {
-    const articles = Array.from({ length: 50 }, (_, index) => ({ ...article(index), metadata: { quote: 'He said "go"', unicode: 'café 🏃' } }));
-    let sent = '';
-    await new PostgresCatalogueSnapshotStore({ query: async (_sql: string, parameters?: unknown[]) => { sent = String(parameters?.[2]); return { rows: [] }; } }).save({ publisherId: 'sgi-europe', sourceKey: 'k', articles, refreshedAt: '2026-10-20T00:00:00.000Z' });
-    expect(sent).toBe(JSON.stringify(articles));
+  it('writes snapshots as small chunks, never one catalogue-sized string', async () => {
+    const articles = Array.from({ length: 1_200 }, (_, index) => ({ ...article(index), metadata: { quote: 'He said "go"', unicode: 'café 🏃' } }));
+    const sent: string[] = [];
+    await new PostgresCatalogueSnapshotStore({ query: async (sql: string, parameters?: unknown[]) => { if (sql.startsWith('INSERT INTO publisher_catalogue_snapshot_chunks')) sent.push(String(parameters?.[2])); return { rows: [] }; } }).save({ publisherId: 'sgi-europe', sourceKey: 'k', articles, refreshedAt: '2026-10-20T00:00:00.000Z' });
+    expect(sent).toHaveLength(3);
+    expect(Math.max(...sent.map((json) => json.length))).toBeLessThan(JSON.stringify(articles).length / 2);
   });
 });
 
