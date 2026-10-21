@@ -207,4 +207,43 @@ describe('hosted professional experience', () => {
     expect(cards).toHaveLength(count);
     expect(new Set(ids).size).toBe(count);
   });
+
+  it('renders a compact one-headline hero, a mobile layout, compact image fallbacks and a More toggle for "why"', async () => {
+    const app = createProductionApp({ environment: 'test' });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
+    }));
+    const { reportId } = await generated.json() as { reportId: string };
+    const source = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    const seed = source.recommendations[0];
+    const report = { ...source, sections: undefined, recommendations: [0, 1, 2].map((index) => ({ ...seed, articleId: `story-${index}`, rank: index + 1, article: { ...seed.article, id: `story-${index}`, url: `${seed.article.url}?story=${index}`, imageUrl: index === 1 ? undefined : 'https://images.example/story.jpg' } })) };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
+    window.history.replaceState({}, '', `/p/demo/${reportId}`);
+    await renderHostedRoute(document, createDemoRegistry());
+
+    // One headline in the hero; the publisher's results heading names the top stories instead.
+    expect(document.querySelectorAll('.report-hero h1, .report-hero h2')).toHaveLength(1);
+    expect(document.querySelector('.report-title')).toBeNull();
+    expect(document.querySelector('#top-stories-heading')?.textContent).toBeTruthy();
+    // Ring, heading, summary and actions are direct children so the ring can sit beside the heading on mobile.
+    expect([...document.querySelector('.match-summary-card')!.children].map((child) => child.className)).toEqual(['relevance-ring', 'section-kicker', 'match-summary-text', 'summary-actions']);
+    // Images and the compact fallback.
+    const cards = [...document.querySelectorAll<HTMLElement>('[data-story-card]')];
+    expect(cards.map((card) => card.classList.contains('no-image'))).toEqual([false, true, false]);
+    expect(cards[1].querySelector('.story-placeholder')?.textContent).toContain('coverage');
+    // "Why" has a More toggle, hidden where nothing is cut off (jsdom has no layout), that expands the text.
+    const toggle = cards[0].querySelector<HTMLButtonElement>('.why-toggle')!;
+    expect(toggle.hidden).toBe(true);
+    toggle.hidden = false;
+    toggle.click();
+    expect(cards[0].querySelector('.why')?.classList.contains('is-expanded')).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toBe('Less');
+
+    const styles = [...document.querySelectorAll('style')].map((style) => style.textContent).join('');
+    for (const rule of ['html{scroll-padding-top:104px}', 'scroll-margin-top:104px', '@media(max-width:639px)', 'scroll-snap-type:x mandatory', '.report-page .highlight-index{display:none}', 'max-height:180px;aspect-ratio:16/9', '-webkit-line-clamp:3', '.report-page .featured-story.no-image .story-placeholder{display:none}', 'font-size:clamp(2.5rem,3.9vw,3.5rem)', 'font-size:clamp(1.75rem,8vw,2rem)']) {
+      expect(styles).toContain(rule);
+    }
+  });
 });
