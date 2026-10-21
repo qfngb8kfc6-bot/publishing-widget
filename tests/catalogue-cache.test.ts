@@ -40,8 +40,9 @@ describe('publisher catalogue cache', () => {
     now += 101;
     const refreshed = await load('sgi-europe');
     expect(refreshed.diagnostics).toMatchObject({ catalogueCacheHit: true, catalogueRefreshReason: 'stale', catalogueStale: true });
+    // The background refresh runs from the maintenance queue.
+    await cache.idle();
     expect(loads).toBe(3);
-    await new Promise((resolve) => setTimeout(resolve, 0));
     expect((await load('sgi-europe')).diagnostics.catalogueRefreshReason).toBe('warm');
   });
 
@@ -180,4 +181,69 @@ describe('publisher catalogue cache', () => {
     expect(themeDiagnostics.every((entry) => Number(entry.fields?.preselectionOutputCount ?? Infinity) <= 100)).toBe(true);
     expect(themeDiagnostics.every((entry) => entry.fields?.catalogueItemCount === 11_000)).toBe(true);
   }, 30_000);
+});
+
+describe('catalogue background work', () => {
+  const articles = (count: number, prefix = 'story') => Array.from({ length: count }, (_, index) => article('sgi-europe', `${prefix}-${index}`));
+  const fastPrebuild = { sliceMs: 1, yieldToEventLoop: () => new Promise<void>((resolve) => setTimeout(resolve, 0)) };
+
+  function cacheWithSnapshot(snapshot: { articles: NormalizedArticle[]; refreshedAt: string; format?: 'legacy' }, now: number) {
+    const sequence: string[] = [];
+    const saves: number[] = [];
+    const store = {
+      get: async () => ({ publisherId: 'sgi-europe', sourceKey: 'feed-v1', ...snapshot }),
+      save: async (saved: { articles: NormalizedArticle[] }) => { sequence.push('save'); saves.push(saved.articles.length); },
+    };
+    const cache = new PublisherCatalogueCache({
+      ttlMs: 1_000, now: () => now, snapshotStore: store, prebuildIndexes: fastPrebuild,
+      onStage: (_publisherId, stage) => sequence.push(stage),
+      onIndexPrebuilt: (_publisherId, stats) => sequence.push(`prebuilt:${stats.trigger}`),
+    });
+    return { cache, sequence, saves };
+  }
+
+  it('refreshes a stale snapshot before indexing anything and runs one background job at a time', async () => {
+    const now = Date.parse('2026-10-21T12:00:00Z');
+    const { cache, sequence, saves } = cacheWithSnapshot({ articles: articles(400, 'old'), refreshedAt: new Date(now - 10 * 60_000).toISOString() }, now);
+    let loading = false;
+    const result = await cache.get('sgi-europe', 'feed-v1', async () => {
+      loading = true;
+      sequence.push('load');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      loading = false;
+      return { articles: articles(401, 'new') };
+    });
+    expect(result.diagnostics).toMatchObject({ catalogueRefreshReason: 'snapshot', catalogueStale: true });
+    expect(loading).toBe(false);
+    await cache.idle();
+    // The stale snapshot version is never indexed; the refreshed one is indexed, then saved.
+    expect(sequence).toEqual(['snapshot_hydrated', 'load', 'source_loaded', 'prebuilt:load', 'index_prebuilt', 'save', 'snapshot_saved']);
+    expect(saves).toEqual([401]);
+  });
+
+  it('indexes the snapshot version when the background refresh fails', async () => {
+    const now = Date.parse('2026-10-21T12:00:00Z');
+    const { cache, sequence } = cacheWithSnapshot({ articles: articles(50), refreshedAt: new Date(now - 10 * 60_000).toISOString() }, now);
+    await cache.get('sgi-europe', 'feed-v1', async () => { throw new Error('Source request timed out.'); });
+    await cache.idle();
+    expect(sequence).toEqual(['snapshot_hydrated', 'prebuilt:snapshot', 'index_prebuilt']);
+  });
+
+  it('rewrites a legacy-format snapshot even when the catalogue is unchanged', async () => {
+    const now = Date.parse('2026-10-21T12:00:00Z');
+    const same = articles(20);
+    const { cache, saves } = cacheWithSnapshot({ articles: same, refreshedAt: new Date(now - 10 * 60_000).toISOString(), format: 'legacy' }, now);
+    await cache.get('sgi-europe', 'feed-v1', async () => ({ articles: same.map((item) => ({ ...item })) }));
+    await cache.idle();
+    expect(saves).toEqual([20]);
+  });
+
+  it('does not rewrite an unchanged chunked snapshot', async () => {
+    const now = Date.parse('2026-10-21T12:00:00Z');
+    const same = articles(20);
+    const { cache, saves } = cacheWithSnapshot({ articles: same, refreshedAt: new Date(now - 10 * 60_000).toISOString() }, now);
+    await cache.get('sgi-europe', 'feed-v1', async () => ({ articles: same.map((item) => ({ ...item })) }));
+    await cache.idle();
+    expect(saves).toEqual([]);
+  });
 });
