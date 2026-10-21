@@ -143,6 +143,10 @@ describe('hosted loading page', () => {
     expect(root.querySelector('[data-loading-failure]')?.getAttribute('role')).toBe('alert');
     expect(root.querySelector('[data-failure-message]')?.textContent).toContain('interrupted');
     expect(root.querySelector('[data-loading-identity]')?.textContent).toBe('For a Head of Retail at Nike');
+    // The page title and the card agree; the card heading is for screen readers so the line is not shown twice.
+    expect(root.querySelector('[data-loading-heading]')?.textContent).toBe('We couldn’t finish your briefing');
+    expect(root.querySelector('[data-failure-heading]')?.textContent).toBe('We couldn’t finish your briefing');
+    expect(root.querySelector('[data-failure-heading]')?.classList.contains('sr-only')).toBe(true);
     expect(root.querySelector('[data-loading-panel]')?.hasAttribute('hidden')).toBe(true);
     const retry = root.querySelector<HTMLButtonElement>('[data-retry]')!;
     expect(document.activeElement).toBe(retry);
@@ -197,7 +201,7 @@ describe('hosted loading page', () => {
     await until(() => !root.querySelector('[data-loading-failure]')?.hasAttribute('hidden'));
     expect(attempt).toBe(2);
     expect(root.querySelector<HTMLButtonElement>('[data-retry]')?.hidden).toBe(true);
-    expect(document.activeElement).toBe(root.querySelector('[data-failure-heading]'));
+    expect(document.activeElement).toBe(root.querySelector('[data-loading-heading]'));
   });
 
   it('respects reduced motion: no fades, pulse or exit animation, and a quicker hand-off', async () => {
