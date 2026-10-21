@@ -122,7 +122,45 @@ function sharedStyles(): string {
 @media(max-width:520px){.loading-panel,.loading-failure{padding:16px 16px 14px;border-radius:20px}.loading-step-label{font-size:.88rem}.loading-frame .generation-inner h1{font-size:clamp(2.1rem,10vw,3rem)}}
 @media(prefers-reduced-motion:reduce){.loading-step,.loading-marker,.loading-check,.loading-progress span,.loading-message,.loading-frame .generation-inner{transition:none}.loading-step[data-state=active] .loading-marker::after{display:none;animation:none}.loading-chip{opacity:1;transform:none;animation:none}}
 .loading-frame.reduced-motion .loading-step,.loading-frame.reduced-motion .loading-marker,.loading-frame.reduced-motion .loading-check,.loading-frame.reduced-motion .loading-progress span,.loading-frame.reduced-motion .loading-message,.loading-frame.reduced-motion .generation-inner{transition:none}.loading-frame.reduced-motion .loading-step[data-state=active] .loading-marker::after{display:none;animation:none}.loading-frame.reduced-motion .loading-chip{opacity:1;transform:none;animation:none}
+.hosted-shell.loading-shell{display:flex;height:100vh;height:100dvh;min-height:0;padding:clamp(0px,1.6vmin,22px);place-items:stretch}.loading-shell .hosted-inner{display:flex;width:100%;height:100%;min-height:0}
+.hosted-shell .generation-frame.loading-frame{flex:1;height:100%;min-height:0;padding:clamp(14px,3.6vh,52px) clamp(16px,4vw,64px) clamp(10px,2.2vh,26px);border-radius:clamp(0px,3vmin,44px)}
+.loading-frame .generation-inner{flex:1;width:100%;min-height:0;margin:0;justify-content:center}.loading-frame .generation-logo .hosted-brand{margin:0 auto clamp(10px,3.2vh,44px)}.loading-frame .generation-logo .hosted-brand img{max-height:clamp(28px,5.5vh,54px)}
+.loading-frame .generation-eyebrow{margin:0 0 clamp(6px,1.6vh,16px);font-size:clamp(.62rem,1.4vh,.72rem)}.loading-frame .generation-inner h1{font-size:clamp(1.55rem,min(7vw,7.5vh),4.6rem);line-height:.95}.loading-frame .generation-subtitle{margin:clamp(6px,1.6vh,18px) auto 0;font-size:clamp(.82rem,2vh,1.1rem)}
+.loading-frame .loading-panel,.loading-frame .loading-failure{margin-top:clamp(12px,3.4vh,40px)}.loading-frame .loading-panel{padding:clamp(10px,2.2vh,20px) clamp(14px,3vw,24px) clamp(9px,2vh,18px)}
+.loading-frame .loading-step{gap:clamp(9px,1.6vh,13px);padding:clamp(2px,.75vh,7px) 0}.loading-frame .loading-step-label{font-size:clamp(.8rem,1.9vh,.95rem)}.loading-frame .loading-marker{width:clamp(18px,2.6vh,22px);height:clamp(18px,2.6vh,22px)}
+.loading-frame .loading-chips{gap:5px;max-height:calc(4em + 9px);margin-top:clamp(4px,.9vh,8px);overflow:hidden;font-size:clamp(.66rem,1.5vh,.74rem)}.loading-frame .loading-chip{padding:.3em .8em;font-size:1em;line-height:1.4}.loading-chip-more{border-style:dashed}
+.loading-frame .loading-progress{margin-top:clamp(8px,1.8vh,16px)}.loading-frame .loading-message{margin-top:clamp(5px,1.4vh,12px);font-size:clamp(.74rem,1.7vh,.84rem)}
+.loading-frame .loading-failure{max-height:100%;overflow:auto;padding:clamp(14px,3vh,24px)}.loading-frame .loading-edit{gap:clamp(8px,1.4vh,12px);margin-top:clamp(10px,2vh,18px)}
+.loading-frame .generation-footer{flex:none;padding-top:clamp(6px,1.4vh,14px);font-size:.72rem}
+@media(max-height:620px){.loading-frame .generation-eyebrow{display:none}}
+@media(max-height:520px) and (orientation:landscape){.loading-frame .generation-inner{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);grid-template-rows:1fr auto auto auto 1fr;column-gap:clamp(16px,4vw,48px);align-items:center;text-align:left}.loading-frame .generation-logo{grid-column:1;grid-row:2}.loading-frame .generation-logo .hosted-brand{justify-content:flex-start;margin:0 0 10px}.loading-frame .generation-inner h1{grid-column:1;grid-row:3;font-size:clamp(1.4rem,7vh,2.6rem)}.loading-frame .generation-subtitle{grid-column:1;grid-row:4;margin:8px 0 0}.loading-frame .loading-panel,.loading-frame .loading-failure{grid-column:2;grid-row:1 / -1;width:100%;margin:0}}
+@media(max-height:420px){.loading-frame .generation-footer{display:none}.loading-frame .loading-step{padding:1px 0}}
 </style>`;
+}
+
+/**
+ * Keeps theme chips to at most two lines: chips that would start a third line are hidden and a "+N" chip
+ * stands in for them. Needs layout, so it does nothing where elements have no size.
+ */
+export function fitThemeChips(container: HTMLElement): void {
+  container.querySelector('.loading-chip-more')?.remove();
+  const chips = [...container.querySelectorAll<HTMLElement>('.loading-chip')];
+  chips.forEach((chip) => { chip.hidden = false; });
+  if (!chips.length || chips.every((chip) => chip.offsetHeight === 0)) return;
+  const lines = [...new Set(chips.map((chip) => chip.offsetTop))].sort((first, second) => first - second);
+  if (lines.length <= 2) return;
+  const lastLine = lines[1];
+  const more = document.createElement('span');
+  more.className = 'loading-chip loading-chip-more';
+  more.style.setProperty('--i', String(chips.length));
+  container.appendChild(more);
+  let visible = chips.filter((chip) => chip.offsetTop <= lastLine).length;
+  while (visible > 0) {
+    chips.forEach((chip, index) => { chip.hidden = index >= visible; });
+    more.innerHTML = `+${chips.length - visible}<span class="sr-only"> more themes</span>`;
+    if (more.offsetTop <= lastLine) break;
+    visible -= 1;
+  }
 }
 
 /** Markup for the loading page frame. brand is the publisher brand markup from the hosted shell. */
@@ -217,8 +255,10 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
       if (state === 'active') step.setAttribute('aria-current', 'step'); else step.removeAttribute('aria-current');
     });
     const chips = query('[data-theme-chips]');
-    if (chips && details.themes?.length && chips.childElementCount !== details.themes.length) {
+    if (chips && details.themes?.length && chips.dataset.themes !== details.themes.join('|')) {
+      chips.dataset.themes = details.themes.join('|');
       chips.innerHTML = details.themes.map((theme, index) => `<span class="loading-chip" style="--i:${index}">${escapeHtml(theme)}</span>`).join('');
+      fitThemeChips(chips);
     }
     const identity = query('[data-loading-identity]');
     if (identity && details.jobTitle) identity.textContent = `For ${withArticle(displayTitle(details.jobTitle))}${details.companyName ? ` at ${details.companyName}` : ''}`;
@@ -361,6 +401,13 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
     }
   });
 
+  // Chips may wrap differently after a resize or rotation.
+  let resizeFrame = 0;
+  const onResize = () => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(() => { const chips = query('[data-theme-chips]'); if (chips) fitThemeChips(chips); });
+  };
+  window.addEventListener('resize', onResize);
   const onPageHide = () => { if (!finished) track('loading_abandoned', { generationStage: currentStage(), elapsedMs: now() - startedAt }); };
   window.addEventListener('pagehide', onPageHide);
 
@@ -374,6 +421,7 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
     stopped = true;
     clearAllTimers();
     window.removeEventListener('pagehide', onPageHide);
+    window.removeEventListener('resize', onResize);
   }
 
   renderStages();

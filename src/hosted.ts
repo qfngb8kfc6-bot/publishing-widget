@@ -200,7 +200,7 @@ export async function renderHostedRoute(documentRef: Document, registry: Publish
   if (!manifest) { documentRef.body.innerHTML = '<main class="hosted-shell generation-shell"><div class="hosted-inner"><section class="generation-frame hosted-card"><div class="generation-inner"><p class="generation-eyebrow">Publisher unavailable</p><h1>Publisher not found</h1></div></section></div></main>'; return; }
   const reportId = parts[2] === 'generate' ? parts[3] : parts[2];
   const isGeneration = parts[2] === 'generate';
-  documentRef.body.innerHTML = routeStyle(manifest) + `<main class="hosted-shell ${reportId && !isGeneration ? 'report-shell report' : 'generation-shell generation'}"><div class="hosted-inner">${reportId && isGeneration ? generationPageMarkup(manifest, brandMarkup(manifest), legalMarkup(manifest)) : `<div class="report-loading hosted-card" id="hosted-app">${brandMarkup(manifest)}<p>Loading your briefing…</p></div>`}</div></main>`;
+  documentRef.body.innerHTML = routeStyle(manifest) + `<main class="hosted-shell ${reportId && !isGeneration ? 'report-shell report' : `generation-shell generation${reportId && isGeneration ? ' loading-shell' : ''}`}"><div class="hosted-inner">${reportId && isGeneration ? generationPageMarkup(manifest, brandMarkup(manifest), legalMarkup(manifest)) : `<div class="report-loading hosted-card" id="hosted-app">${brandMarkup(manifest)}<p>Loading your briefing…</p></div>`}</div></main>`;
   if (!reportId) return;
   if (isGeneration) {
     const app = documentRef.querySelector<HTMLElement>('#hosted-app');
