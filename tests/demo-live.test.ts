@@ -7,7 +7,7 @@ import { mountWidget } from '../src/widget/mount';
 import '../src/widget/widget';
 
 describe('sales live-demo CTA wiring', () => {
-  beforeEach(() => { document.body.innerHTML = ''; });
+  beforeEach(() => { document.body.innerHTML = ''; window.sessionStorage.clear(); });
 
   it('wires every CTA and opens the real widget with analytics', () => {
     document.body.innerHTML = '<a data-open-reader href="#live-demo">See the demo</a><button data-open-reader>Start live demo</button>';
@@ -25,13 +25,15 @@ describe('sales live-demo CTA wiring', () => {
     expect(widget.shadowRoot?.querySelector('[data-profile-field="jobTitle"]')).not.toBeNull();
     expect(analytics.events.map((event) => event.name)).toEqual(expect.arrayContaining(['widget_opened', 'intro_viewed']));
 
+    // × minimises to the pill; the widget stays on the page.
     (widget.shadowRoot?.querySelector('[data-action="close"]') as HTMLButtonElement).click();
     expect(widget.shadowRoot?.querySelector('[role="dialog"]')).toBeNull();
-    expect(widget.hidden).toBe(true);
+    expect(widget.shadowRoot?.querySelector('[data-action="expand"]')).not.toBeNull();
+    expect(widget.hidden).toBe(false);
     buttons[0].click();
     expect(widget.shadowRoot?.querySelector('form.briefing-bar')).not.toBeNull();
     expect(widget.hidden).toBe(false);
-    expect(analytics.events.map((event) => event.name)).toContain('widget_closed');
+    expect(analytics.events.map((event) => event.name)).toContain('widget_minimised');
     expect(analytics.events.filter((event) => event.name === 'widget_opened')).toHaveLength(2);
   });
 

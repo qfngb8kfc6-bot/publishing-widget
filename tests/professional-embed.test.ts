@@ -56,7 +56,7 @@ describe('professional embed mode', () => {
     expect(styles).toContain('backdrop-filter:blur(18px)');
     expect(styles).toContain('min-height:72px');
     expect(styles).toContain('width:194px');
-    expect(styles).toContain('@media (max-width:620px)');
+    expect(styles).toContain('@media (max-width:639px)');
     expect(styles).toContain('grid-template-columns:1fr;');
     expect(widget.shadowRoot?.querySelectorAll('.briefing-label')[1]?.textContent).toBe('as a');
     expect(widget.shadowRoot?.querySelector('.capsule-brand')).toBeNull();
