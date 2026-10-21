@@ -9,7 +9,7 @@ import type { ReportRecord, ReportRecommendation, GenerateReportInput, ReportPer
 import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
-import { MAX_SHOWN_THEME_ARTICLE_IDS, profileForTheme, reportThemes } from './themes';
+import { MAX_SHOWN_THEME_ARTICLE_IDS, profileForTheme, selectReportThemes } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
@@ -857,7 +857,10 @@ export class ReportGenerationService {
     this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);
     let ranking: Awaited<ReturnType<ReportGenerationService['rankProfile']>>;
     try {
-      ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, false, (stage) => this.markStage(input, stage), true);
+      // Archive-wide, like theme search: the professional scorer preselects across the whole catalogue. The
+      // adapter's token preselection let company-name and leadership-word matches fill its 100 slots, so a
+      // subject-anchored role lost on-subject stories about other companies that theme search then found.
+      ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, true, (stage) => this.markStage(input, stage), true);
     } catch (error) {
       const stage = (error as GenerationFailure).generationStage ?? 'ranking';
       annotateGenerationFailure(error, stage);
@@ -898,6 +901,7 @@ export class ReportGenerationService {
       score: Math.round(item.finalScore),
       relationship: articleRelationship(item.article, profile),
     }));
+    const themes = selectReportThemes(profile, contentRanked.map((item) => item.article));
     let generatedSummary = reportSummary(profile, ranked.length);
     const explanationById = new Map<string, { explanation: string; angle?: string }>();
     let citedIds = new Set<string>();
@@ -912,7 +916,7 @@ export class ReportGenerationService {
       // explanations, B (only when needed) the remaining explanations. Each falls back independently.
       const explanationsEnabled = this.ai!.config.explanationsEnabled;
       const parts: Array<{ part: 'A' | 'B'; request: ReportContentRequest }> = [
-        { part: 'A', request: { publisherId: input.publisherId, profile, themes: reportThemes({ professionalProfile: profile }), recommendations: deterministicRecommendations.slice(0, CONTENT_PART_A_SIZE) } },
+        { part: 'A', request: { publisherId: input.publisherId, profile, themes, recommendations: deterministicRecommendations.slice(0, CONTENT_PART_A_SIZE) } },
         ...(explanationsEnabled && deterministicRecommendations.length > CONTENT_PART_A_SIZE ? [{ part: 'B' as const, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: deterministicRecommendations.slice(CONTENT_PART_A_SIZE) } }] : []),
       ];
       const outcomes = await Promise.all(parts.map(async ({ part, request }) => {
@@ -991,7 +995,7 @@ export class ReportGenerationService {
     const ownCompanyCount = recommendations.filter((recommendation) => articleRelationship(recommendation.article, profile) === 'own_company').length;
     this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ranking.ownCompanyDeferred });
     const report: ReportRecord = {
-      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: profile, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: { ...profile, themes }, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
     const persistenceStartedAt = clockMs();
     try { await this.reports.save(report); } catch (error) { annotateGenerationFailure(error, 'report_persistence'); this.logIbiError(input, 'report_persistence', error); throw error; }

@@ -433,7 +433,7 @@ export class FeedContentAdapter implements ContentAdapter<unknown> {
     // RSS has no server-side search or pagination contract. For focused theme
     // searches, return the complete normalized archive so the professional
     // profile can preselect across every article instead of ranking an
-    // arbitrary first page. Normal report generation keeps the bounded
+    // arbitrary first page. Callers without archiveWide keep the bounded
     // archive-aware preselection path.
     const selected = options.archiveWide
       ? result.articles
