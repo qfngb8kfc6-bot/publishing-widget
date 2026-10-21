@@ -344,18 +344,22 @@ export class ReportGenerationService {
   /**
    * One ai_explanation_rejected line per discarded explanation, plus not_returned for requested articles the
    * model never explained. Logs article IDs, reason codes and field names only, never explanation text.
+   * Returns the not_returned article IDs when the response did carry explanation entries (the model skipped
+   * them); a missing, malformed or empty list is a broken response, not a per-article skip, so it returns none.
    */
-  private logExplanationRejections(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, request: ReportContentRequest, accepted: Array<{ articleId: string }>, rejections: Array<ExplanationRejection | ExplanationShapeIssue>): void {
-    const base = { requestId: input.requestId, publisherId: input.publisherId };
+  private logExplanationRejections(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, request: ReportContentRequest, accepted: Array<{ articleId: string }>, rejections: Array<ExplanationRejection | ExplanationShapeIssue>, part?: 'A' | 'B'): string[] {
+    const base = { requestId: input.requestId, publisherId: input.publisherId, part };
     const mentioned = new Set(accepted.map((item) => item.articleId));
     for (const rejection of rejections) {
       const articleId = 'articleId' in rejection ? rejection.articleId : undefined;
       if (articleId) mentioned.add(articleId);
       this.logger?.info('ai_explanation_rejected', { ...base, rejectReason: rejection.reason, articleId: articleId ? safeLogText(articleId, 200) : undefined, presentFields: rejection.presentFields ? safeLogText(rejection.presentFields.join(','), 200) : undefined });
     }
-    for (const recommendation of request.recommendations) {
-      if (!mentioned.has(recommendation.article.id)) this.logger?.info('ai_explanation_rejected', { ...base, rejectReason: 'not_returned', articleId: safeLogText(recommendation.article.id, 200) });
-    }
+    const notReturned = request.recommendations.map((recommendation) => recommendation.article.id).filter((id) => !mentioned.has(id));
+    for (const articleId of notReturned) this.logger?.info('ai_explanation_rejected', { ...base, rejectReason: 'not_returned', articleId: safeLogText(articleId, 200) });
+    // A list with no entries at all is as broken as a missing one: nothing was explained, nothing was judged.
+    const brokenList = rejections.some((rejection) => rejection.reason === 'explanations_missing' || rejection.reason === 'explanations_not_array') || mentioned.size === 0;
+    return brokenList ? [] : notReturned;
   }
 
   private enrichedProfileCacheKey(publisherId: string, domain: string, profile: ReturnType<typeof buildProfessionalProfile>): string {
@@ -906,6 +910,8 @@ export class ReportGenerationService {
     const explanationById = new Map<string, { explanation: string; angle?: string }>();
     let citedIds = new Set<string>();
     const contentWeakIds = new Set<string>();
+    // Articles a successful content call skipped: treated as weak fits rather than shown with template text.
+    const notReturnedIds = new Map<string, 'A' | 'B'>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let themeDescriptions: Record<string, string> | undefined;
@@ -941,7 +947,8 @@ export class ReportGenerationService {
       if (explanationsEnabled) {
         const accepted = outcomes.flatMap((outcome) => {
           if (!outcome.value) return [];
-          this.logExplanationRejections(input, outcome.request, [...(outcome.value.explanations ?? []), ...(outcome.value.weakArticleIds ?? []).map((articleId) => ({ articleId }))], outcome.rejections);
+          const skipped = this.logExplanationRejections(input, outcome.request, [...(outcome.value.explanations ?? []), ...(outcome.value.weakArticleIds ?? []).map((articleId) => ({ articleId }))], outcome.rejections, outcome.part);
+          for (const articleId of skipped) notReturnedIds.set(articleId, outcome.part);
           return outcome.value.explanations ?? [];
         });
         const articleById = new Map(ranked.map((item) => [item.article.id, item.article]));
@@ -957,10 +964,14 @@ export class ReportGenerationService {
       }
     }
     const aiExplanationMs = clockMs() - aiExplanationStartedAt;
-    const afterContent = removeWeakFits(contentRanked, contentWeakIds);
+    const afterContent = removeWeakFits(contentRanked, new Set([...contentWeakIds, ...notReturnedIds.keys()]));
+    if (notReturnedIds.size) {
+      const removedIds = new Set(afterContent.removed.map((item) => item.article.id));
+      for (const [articleId, part] of notReturnedIds) this.logger?.info('not_returned_treated_as_weak', { requestId: input.requestId, publisherId: input.publisherId, part, articleId: safeLogText(articleId, 200), operation: removedIds.has(articleId) ? 'removed' : 'kept_lower_confidence' });
+    }
     const weakFit = { kept: afterContent.kept, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
     if (!aiSummaryUsed) generatedSummary = reportSummary(profile, weakFit.kept.length);
-    if (rerankWeakIds.size || contentWeakIds.size) this.logger?.info('weak_fit_removed', { requestId: input.requestId, publisherId: input.publisherId, weakFlagged: new Set([...rerankWeakIds, ...contentWeakIds]).size, weakFromRerank: rerankWeakIds.size, weakFromContent: contentWeakIds.size, weakRemoved: afterRerank.removed.length + afterContent.removed.length, weakKeptLowerConfidence: weakFit.lowerConfidenceIds.size, finalRecommendationCount: weakFit.kept.length });
+    if (rerankWeakIds.size || contentWeakIds.size || notReturnedIds.size) this.logger?.info('weak_fit_removed', { requestId: input.requestId, publisherId: input.publisherId, weakFlagged: new Set([...rerankWeakIds, ...contentWeakIds, ...notReturnedIds.keys()]).size, weakFromRerank: rerankWeakIds.size, weakFromContent: contentWeakIds.size, weakRemoved: afterRerank.removed.length + afterContent.removed.length, weakKeptLowerConfidence: weakFit.lowerConfidenceIds.size, finalRecommendationCount: weakFit.kept.length });
     timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
     timing.catalogueStale = ranking.timings.catalogueStale;

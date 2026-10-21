@@ -126,6 +126,7 @@ function resolveContentAliases(raw: unknown, aliases: ReadonlyMap<string, string
 
 /** Writing rules shared by every content call. Grounding rules come first and are absolute. */
 const REPORT_CONTENT_RULES = [
+  'COMPLETENESS: you MUST return exactly one explanations entry for every supplied articleId, either {"articleId": "...", "angle": "...", "explanation": "..."} or {"articleId": "...", "fit": "weak"}. Never skip an article; if you are unsure, mark it weak.',
   'FIT: if an article does not genuinely help this reader, return {"articleId": "...", "fit": "weak"} for it instead of an explanation, and do not build the summary on it. Never stretch a weak fit into a justification.',
   'GROUNDING: use only facts stated in each article\'s title and description. Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.',
   'DATES: each article has published (its year) and older:true when it is more than 18 months old (today is reader.today). For an older article, anchor the fact in time ("In 2019, Decathlon ...") and present it as precedent or context, never as a current plan or current news.',

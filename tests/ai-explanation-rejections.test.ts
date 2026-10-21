@@ -59,6 +59,7 @@ describe('AI explanation validation', () => {
     const { instance, logs } = app((ids, prompt) => { system = prompt; return { summary: 'Nike is consolidating European suppliers.', explanations: ids.map((articleId) => ({ articleId, explanation: 'A sourcing benchmark for procurement.' })) }; });
     const report = await generate(instance);
     expect(system).toContain('{"articleId": "a1", "angle": "...", "explanation": "..."}');
+    expect(system).toContain('you MUST return exactly one explanations entry for every supplied articleId');
     expect(report.recommendations.every((item) => item.rankingMetadata.explanationSource === 'ai')).toBe(true);
     expect(logs.filter((entry) => entry.message === 'ai_explanation_rejected')).toHaveLength(0);
   });
