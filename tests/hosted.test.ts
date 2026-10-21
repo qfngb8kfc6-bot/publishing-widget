@@ -245,7 +245,7 @@ describe('hosted professional experience', () => {
     expect(toggle.textContent).toBe('Less');
 
     const styles = [...document.querySelectorAll('style')].map((style) => style.textContent).join('');
-    for (const rule of ['html{scroll-padding-top:104px}', 'scroll-margin-top:104px', '@media(max-width:639px)', 'scroll-snap-type:x mandatory', '.report-page .highlight-index{display:none}', 'max-height:180px;aspect-ratio:16/9', '-webkit-line-clamp:3', '.report-page .featured-story.no-image .story-placeholder{display:none}', 'font-size:clamp(2.5rem,3.9vw,3.5rem)', 'font-size:clamp(1.75rem,8vw,2rem)']) {
+    for (const rule of ['html{scroll-padding-top:104px}', 'scroll-margin-top:104px', '@media(max-width:639px)', 'scroll-snap-type:x mandatory', '.report-page .highlight-index{display:none}', 'max-height:180px;aspect-ratio:16/9', '-webkit-line-clamp:3', '.report-page .featured-story.no-image .story-placeholder{display:none}', 'font-size:clamp(2.5rem,3.9vw,3.5rem)', 'font-size:clamp(1.75rem,8vw,2rem)', '.report-page .featured-story h3,.report-page .story-card h3{font-family:Georgia,serif;font-weight:500;letter-spacing:-.045em}']) {
       expect(styles).toContain(rule);
     }
   });

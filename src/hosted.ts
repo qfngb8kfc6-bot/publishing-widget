@@ -223,6 +223,8 @@ export async function renderHostedRoute(documentRef: Document, registry: Publish
  * relevance ring, swipeable theme cards, compact stories, clamped "why" with More, one-line context bar).
  */
 function compactReportStyle(): string {
+  // Story titles are serif by design (the approved production look). They used to get it only from the
+  // marketing page's global h1–h3 rule leaking into the shared HTML shell; it is stated here deliberately.
   return `<style>
 html{scroll-padding-top:104px}.report-page section,.report-page .theme-results,.report-page [id]{scroll-margin-top:104px}
 .report-page .report-hero{min-height:0;padding:clamp(22px,2.6vw,34px) clamp(20px,3vw,40px) clamp(58px,6vw,74px);border-radius:clamp(24px,3vw,40px)}.report-page .report-hero-content{min-height:0;padding:0}
@@ -234,7 +236,7 @@ html{scroll-padding-top:104px}.report-page section,.report-page .theme-results,.
 .report-page .highlights-section h2,.report-page .section-heading{font-size:clamp(1.75rem,3vw,2.75rem);line-height:1;letter-spacing:-.05em}
 .report-page .story-placeholder{display:flex;align-items:center;justify-content:center;width:100%;height:48px;min-height:0;padding:0 16px;color:#69707d;background:linear-gradient(135deg,#f2f4f7,#eef1f6);font-size:.66rem;letter-spacing:.12em}
 .report-page .featured-story.no-image{grid-template-columns:1fr}.report-page .featured-story.no-image .story-placeholder{display:none}
-.report-page .featured-story h3,.report-page .story-card h3{font-family:var(--font);font-weight:650;letter-spacing:-.045em}
+.report-page .featured-story h3,.report-page .story-card h3{font-family:Georgia,serif;font-weight:500;letter-spacing:-.045em}
 .why-toggle{display:none;margin-top:4px;padding:0;border:0;color:#2a2c8f;background:transparent;font-size:.78rem;font-weight:800}
 @media(max-width:639px){
 html{scroll-padding-top:72px}.report-page section,.report-page .theme-results,.report-page [id]{scroll-margin-top:72px}
@@ -248,7 +250,7 @@ html{scroll-padding-top:72px}.report-page section,.report-page .theme-results,.r
 .report-page .highlight-grid{display:flex;gap:10px;margin:16px -14px 0;padding:0 14px 6px;overflow-x:auto;scroll-snap-type:x mandatory;scroll-padding:0 14px;scrollbar-width:none}.report-page .highlight-grid::-webkit-scrollbar{display:none}
 .report-page .highlight-card{flex:0 0 78%;min-height:0;padding:16px 16px 46px;border-radius:18px;scroll-snap-align:start}.report-page .highlight-index{display:none}.report-page .highlight-card h3{margin-bottom:8px;font-size:1rem}.report-page .highlight-card p{display:-webkit-box;max-width:none;overflow:hidden;font-size:.8rem;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .highlight-action{left:16px;bottom:14px}
 .report-page .featured-story,.report-page .story-card{border-radius:18px}.report-page .featured-story .story-image,.report-page .story-card .story-image{width:100%;height:auto;min-height:0;max-height:180px;aspect-ratio:16/9}.report-page .story-placeholder{height:36px}
-.report-page .story-body,.report-page .story-card .story-body{min-height:0;padding:14px 16px 16px}.report-page .story h3,.report-page .featured-story h3,.report-page .story-card h3{display:-webkit-box;margin:10px 0 6px;overflow:hidden;font-size:1.2rem;line-height:1.1;letter-spacing:-.03em;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.report-page .story-body,.report-page .story-card .story-body{min-height:0;padding:14px 16px 16px}.report-page .featured-story h3,.report-page .story-card h3{display:-webkit-box;margin:10px 0 6px;overflow:hidden;font-size:1.25rem;line-height:1.1;-webkit-box-orient:vertical;-webkit-line-clamp:3}
 .report-page .story-summary{display:-webkit-box;overflow:hidden;font-size:.86rem;line-height:1.45;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .story-meta{font-size:.66rem}
 .report-page .why{margin:12px 0;padding:10px 12px}.report-page .why-text{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .why.is-expanded .why-text{display:block}.report-page .why-toggle{display:inline-flex}
 .report-page .story-grid{grid-template-columns:1fr;gap:12px}.report-page .also-relevant,.report-page .additional-section{margin-top:48px}
