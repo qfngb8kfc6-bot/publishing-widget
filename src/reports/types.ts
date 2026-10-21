@@ -1,5 +1,7 @@
 import type { ProfessionalProfile, RankedArticle, RelevanceScoreComponents } from '../core';
 import type { EditorialSection, EditorialSectionId } from './sections';
+import type { GenerationProgress } from './generation-jobs';
+import type { ResolvedCompanyInput } from '../server/company';
 
 export interface ReportRecommendation {
   articleId: string;
@@ -108,4 +110,8 @@ export interface GenerateReportInput {
   sessionId?: string;
   requestId?: string;
   performance?: ReportPerformanceTiming;
+  /** Company input already resolved by the caller (asynchronous generation checks the company before its 202). */
+  resolvedCompany?: ResolvedCompanyInput;
+  /** Called as stages complete and safe details become available. Must not throw or block. */
+  onProgress?: (update: GenerationProgress) => void;
 }

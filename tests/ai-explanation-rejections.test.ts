@@ -34,7 +34,7 @@ function app(content: (articleIds: string[], system: string) => unknown) {
 }
 
 async function generate(target: ReturnType<typeof app>['instance']) {
-  const response = await target.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
+  const response = await target.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
   expect(response.status).toBe(201);
   const { reportId } = await response.json() as { reportId: string };
   return (await target.reportStore.get(reportId, 'sgi-europe'))!;
@@ -59,6 +59,7 @@ describe('AI explanation validation', () => {
     const { instance, logs } = app((ids, prompt) => { system = prompt; return { summary: 'Nike is consolidating European suppliers.', explanations: ids.map((articleId) => ({ articleId, explanation: 'A sourcing benchmark for procurement.' })) }; });
     const report = await generate(instance);
     expect(system).toContain('{"articleId": "a1", "angle": "...", "explanation": "..."}');
+    expect(system).toContain('you MUST return exactly one explanations entry for every supplied articleId');
     expect(report.recommendations.every((item) => item.rankingMetadata.explanationSource === 'ai')).toBe(true);
     expect(logs.filter((entry) => entry.message === 'ai_explanation_rejected')).toHaveLength(0);
   });

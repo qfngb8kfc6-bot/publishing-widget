@@ -33,7 +33,7 @@ function app(analyticsStore: MemoryAnalyticsStore, logs: Array<{ level: string; 
 }
 
 function generate(target: ReturnType<typeof app>) {
-  return target.handle(new Request('https://product.example/api/reports/generate', {
+  return target.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }),

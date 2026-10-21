@@ -69,7 +69,7 @@ describe('production boundaries', () => {
       publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
       companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sporting goods', description: 'A sporting goods company.', topics: ['retail', 'innovation'], entities: ['Nike'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
     });
-    const generated = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', {
+    const generated = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', {
       method: 'POST',
       headers: { Origin: 'https://discovery.ldsystems.uk', 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }),
@@ -108,7 +108,7 @@ describe('production boundaries', () => {
 
   it('accepts the local Vite origin for demo generation while production remains allowlisted', async () => {
     const developmentApp = createProductionApp({ environment: 'development' });
-    const localResponse = await developmentApp.handle(new Request('http://localhost:8787/api/reports/generate', {
+    const localResponse = await developmentApp.handle(new Request('http://localhost:8787/api/reports/generate?mode=sync', {
       method: 'POST',
       headers: { Origin: 'http://localhost:5173', 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer' }),
@@ -117,7 +117,7 @@ describe('production boundaries', () => {
     expect(localResponse.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173');
 
     const productionApp = createProductionApp({ environment: 'production', serverEnvironment: { PUBLISHER_DEMO_ALLOWED_ORIGINS: 'https://discovery.ldsystems.uk' } });
-    const productionResponse = await productionApp.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', {
+    const productionResponse = await productionApp.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', {
       method: 'POST',
       headers: { Origin: 'https://discovery.ldsystems.uk', 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer' }),

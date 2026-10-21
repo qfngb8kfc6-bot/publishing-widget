@@ -69,6 +69,10 @@ button:focus-visible,input:focus-visible { outline: 3px solid color-mix(in srgb,
   .briefing-submit { width:100%; min-height:50px; }
   .profile-error { grid-column:auto; }
 }
+.briefing-submit[aria-busy="true"] { cursor:progress; opacity:1; }
+.briefing-spinner { width:14px; height:14px; margin-right:8px; border:2px solid rgba(255,255,255,.35); border-top-color:#fff; border-radius:50%; animation:ss-spin .8s linear infinite; }
+@keyframes ss-spin { to { transform:rotate(360deg); } }
+.ss-visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 @media (prefers-reduced-motion:reduce) {
   *,*::before,*::after { animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; }
 }

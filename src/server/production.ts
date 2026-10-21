@@ -27,6 +27,7 @@ import { buildProfessionalProfile } from '../core';
 import { AdminAuth } from './admin-auth';
 import { createAdminRoutes } from './admin-routes';
 import { PublisherCatalogueCache } from '../reports/catalogue-cache';
+import { GenerationJobs, MemoryGenerationJobStore, type GenerationJobStore } from '../reports/generation-jobs';
 
 export interface ProductionServerOptions {
   environment?: 'development' | 'test' | 'production';
@@ -35,7 +36,7 @@ export interface ProductionServerOptions {
   aiProvider?: AIProvider;
   logger?: StructuredLogger;
   fetchImpl?: typeof fetch;
-  rateLimits?: { publisher?: number; ai?: number; analytics?: number; generation?: number };
+  rateLimits?: { publisher?: number; ai?: number; analytics?: number; generation?: number; generationStatus?: number };
   trustedProxy?: boolean;
   commitSha?: string;
   analyticsStoreMode?: 'memory' | 'postgres';
@@ -47,12 +48,15 @@ export interface ProductionServerOptions {
   catalogueCacheTtlMs?: number;
   catalogueCacheMaxStaleMs?: number;
   catalogueSnapshotStore?: CatalogueSnapshotStore;
+  /** Where asynchronous generation status is persisted; in memory when absent. */
+  generationJobStore?: GenerationJobStore;
 }
 
 export { PostgresAnalyticsStore } from '../analytics/postgres-store';
 export { PostgresReportStore } from '../reports/store';
 export { PostgresPublisherStore } from '../publishers/store';
 export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
+export { PostgresGenerationJobStore } from '../reports/generation-jobs';
 export { resolveCommitSha } from './health';
 export { explanationQualityWarnings, summaryQualityWarnings } from '../ai/content-quality';
 
@@ -104,6 +108,8 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const aiLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.ai ?? 10 });
   const analyticsLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.analytics ?? 120 });
   const generationLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generation ?? 12 });
+  // The loading page polls about every 600 ms, so status gets its own, larger budget.
+  const generationStatusLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generationStatus ?? 240 });
   const adminAuth = new AdminAuth(environment, serverEnvironment);
   const aiConfig = createAIConfig(serverEnvironment);
   const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: Math.min(aiConfig.timeoutMs, AI_OPERATION_TIMEOUT_CAP_MS), maxTokens: aiConfig.maxTokens, stageMaxTokens: aiConfig.stageMaxTokens, temperature: aiConfig.temperature, reasoningEffort: aiConfig.reasoningEffort }, options.fetchImpl) : undefined);
@@ -150,7 +156,11 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     }),
   });
   const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache);
-  const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore);
+  const generationJobs = new GenerationJobs({
+    store: options.generationJobStore ?? new MemoryGenerationJobStore(),
+    onPersistError: (error) => logger.error('generation_status_write_failed', { errorName: error instanceof Error ? error.name : 'unknown', errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation status write failed.', 240) }),
+  });
+  const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore, generationJobs);
   const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger });
 
   const trustedProxy = options.trustedProxy ?? false;
@@ -220,6 +230,14 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
           const requestedPublisher = safeRouteId(url.searchParams.get('publisherId') ?? undefined);
           reportManifest = requestedPublisher ? allowedOriginsFor(registry.get(requestedPublisher)?.manifest, serverEnvironment) : undefined;
           if (request.headers.get('Origin') && (!reportManifest || !originAllowed(reportManifest, request.headers.get('Origin'), environment, hostedOriginPolicy))) return jsonError('origin_not_allowed', 403, requestId);
+          if (url.pathname.startsWith('/api/generations/') && url.pathname.endsWith('/retry')) {
+            // A retry starts a new generation, so it shares the generation budget.
+            const decision = generationLimiter.check(requestRateLimitKey(request, 'report-generation', reportManifest?.publisherId ?? 'unknown', trustedProxy));
+            if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, reportManifest, environment, requestId, hostedOriginPolicy);
+          } else if (url.pathname.startsWith('/api/generations/')) {
+            const decision = generationStatusLimiter.check(requestRateLimitKey(request, 'generation-status', reportManifest?.publisherId ?? 'unknown', trustedProxy));
+            if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, reportManifest, environment, requestId, hostedOriginPolicy);
+          }
         }
         return withHeaders(await reportRoutes(request, requestId, { runtimeMs: Date.now() - runtimeStarted }), request, reportManifest, environment, requestId, hostedOriginPolicy);
       }
@@ -279,7 +297,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); } };
+  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, generationJobs, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); } };
 }
 
 export async function runConfiguredAIHealthCheck(serverEnvironment: Record<string, string | undefined> = {}, fetchImpl: typeof fetch = fetch): Promise<{ status: 'disabled' | 'ok'; provider?: string }> {

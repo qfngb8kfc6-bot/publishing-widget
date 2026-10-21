@@ -36,7 +36,7 @@ function app(limit: number, respond: (call: Call) => unknown) {
 }
 
 async function generate(target: ReturnType<typeof app>['instance']) {
-  const response = await target.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
+  const response = await target.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
   expect(response.status).toBe(201);
   const { reportId } = await response.json() as { reportId: string };
   return (await target.reportStore.get(reportId, 'sgi-europe'))!;
@@ -95,5 +95,40 @@ describe('weak-fit removal', () => {
     const report = await generate(instance);
     expect(report.recommendations.map((item) => [item.rank, Boolean(item.rankingMetadata.lowerConfidence)])).toEqual([[1, true], [2, true], [3, false]]);
     expect(logs.find((entry) => entry.message === 'weak_fit_removed')?.fields).toMatchObject({ weakFromContent: 3, weakRemoved: 1, weakKeptLowerConfidence: 2, finalRecommendationCount: 3 });
+  });
+
+  it('treats articles a successful content call skipped as weak, logging not_returned_treated_as_weak', async () => {
+    // Part A explains only five of its seven articles and silently skips two (the production symptom).
+    const { instance, logs, calls } = app(15, (call) => {
+      if (call.operation !== 'report-content') return {};
+      const reply = content(call, []);
+      return call.part === 'A' ? { ...reply, explanations: reply.explanations.filter((_, index) => index !== 2 && index !== 5) } : reply;
+    });
+    const report = await generate(instance);
+    const partA = calls.find((call) => call.part === 'A')!;
+    const skippedTitles = [partA.titles[2], partA.titles[5]];
+    expect(report.recommendations.map((item) => item.article.title)).not.toEqual(expect.arrayContaining([skippedTitles[0]]));
+    expect(report.recommendations.map((item) => item.article.title)).not.toEqual(expect.arrayContaining([skippedTitles[1]]));
+    expect(report.recommendations.every((item) => item.rankingMetadata.explanationSource === 'ai')).toBe(true);
+    const treated = logs.filter((entry) => entry.message === 'not_returned_treated_as_weak');
+    expect(treated).toHaveLength(2);
+    expect(treated.every((entry) => entry.fields.part === 'A' && entry.fields.operation === 'removed')).toBe(true);
+    expect(logs.filter((entry) => entry.message === 'ai_explanation_rejected' && entry.fields.rejectReason === 'not_returned').every((entry) => entry.fields.part === 'A')).toBe(true);
+  });
+
+  it('keeps a skipped article with lowerConfidence when removing it would leave fewer than three', async () => {
+    const { instance, logs } = app(3, (call) => (call.operation === 'report-content' ? { ...content(call, []), explanations: content(call, []).explanations.slice(1) } : {}));
+    const report = await generate(instance);
+    expect(report.recommendations.map((item) => [item.rank, Boolean(item.rankingMetadata.lowerConfidence)])).toEqual([[1, true], [2, false], [3, false]]);
+    expect(logs.find((entry) => entry.message === 'not_returned_treated_as_weak')?.fields).toMatchObject({ operation: 'kept_lower_confidence' });
+  });
+
+  it('does not treat a missing or empty explanations list as per-article skips', async () => {
+    for (const reply of [{}, { explanations: [] }]) {
+      const { instance, logs } = app(10, (call) => (call.operation === 'report-content' ? { summary: 'Nike is adding owned stores across Europe.', ...reply } : {}));
+      const report = await generate(instance);
+      expect(report.recommendations.length).toBeGreaterThan(3);
+      expect(logs.filter((entry) => entry.message === 'not_returned_treated_as_weak')).toHaveLength(0);
+    }
   });
 });

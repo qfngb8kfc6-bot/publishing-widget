@@ -51,7 +51,7 @@ class RejectingAIProvider extends MockAIProvider {
 
 async function generateWithAI(provider: MockAIProvider, timeoutMs = 40) {
   const app = createProductionApp({ environment: 'test', serverEnvironment: { AI_ENABLED: 'true', AI_PROVIDER: 'mock', AI_MODEL: 'test-model', AI_TIMEOUT_MS: String(timeoutMs) }, aiProvider: provider });
-  const response = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }) }));
+  const response = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }) }));
   const payload = await response.json() as { reportId: string };
   const reportResponse = await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}?publisherId=demo`));
   return { app, response, report: await reportResponse.json() as any };
@@ -60,7 +60,7 @@ async function generateWithAI(provider: MockAIProvider, timeoutMs = 40) {
 describe('hosted report flow', () => {
   it('reproduces the live widget request for LD Systems without a generation failure', async () => {
     const app = createProductionApp({ environment: 'development' });
-    const response = await app.handle(new Request('http://localhost:5173/api/reports/generate', {
+    const response = await app.handle(new Request('http://localhost:5173/api/reports/generate?mode=sync', {
       method: 'POST',
       headers: { 'Origin': 'http://localhost:5173', 'Content-Type': 'application/json', 'X-Request-ID': 'regression-live-demo-1' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'https://ldsystems.uk/', jobTitle: 'Software Engineer', sessionId: 'session-regression-live-demo' }),
@@ -92,7 +92,7 @@ describe('hosted report flow', () => {
   it('generates, persists, reloads and regenerates a tenant-scoped demo report', async () => {
     const reports = new MemoryReportStore();
     const app = createProductionApp({ environment: 'test', reportStore: reports });
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'www.ldsystems.uk', jobTitle: 'Software Engineer' }) }));
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'www.ldsystems.uk', jobTitle: 'Software Engineer' }) }));
     expect(generated.status).toBe(201);
     const payload = await generated.json() as { reportId: string; reportUrl: string; statusUrl: string };
     expect(payload.reportUrl).toBe(`/p/demo/${payload.reportId}`);
@@ -109,7 +109,8 @@ describe('hosted report flow', () => {
     expect(report.recommendations.every((item) => ['direct', 'adjacent'].includes(item.rankingMetadata.relevanceType ?? ''))).toBe(true);
     const status = await app.handle(new Request(`https://product.example${payload.statusUrl}`));
     expect(status.status).toBe(200);
-    expect(await status.json()).toMatchObject({ companyDomain: 'ldsystems.uk', jobTitle: 'Software Engineer' });
+    expect(status.headers.get('Cache-Control')).toBe('no-store');
+    expect(await status.json()).toMatchObject({ status: 'complete', reportId: payload.reportId, reportUrl: `/p/demo/${payload.reportId}`, completedStages: ['company_resolved', 'profile_built', 'content_retrieved', 'ranking_complete', 'ai_complete', 'report_persisted'], details: { jobTitle: 'Software Engineer' } });
     expect((await app.handle(new Request(`https://product.example/api/generations/${payload.reportId}/status?publisherId=real-publisher`))).status).toBe(404);
     expect((await app.handle(new Request(`https://product.example/api/generations/${payload.reportId}/status`))).status).toBe(400);
     expect((await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}`))).status).toBe(400);
@@ -118,7 +119,7 @@ describe('hosted report flow', () => {
     expect(funnelEvents.map((event) => event.name)).toEqual(expect.arrayContaining(['generation_started', 'company_analysis_completed', 'profile_generated', 'retrieval_completed', 'ranking_completed', 'report_generated']));
     expect(funnelEvents.every((event) => !JSON.stringify(event.metadata ?? {}).includes('Software Engineer'))).toBe(true);
 
-    const edited = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'microsoft.com', jobTitle: 'Chief Technology Officer' }) }));
+    const edited = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'microsoft.com', jobTitle: 'Chief Technology Officer' }) }));
     const editedPayload = await edited.json() as { reportId: string };
     expect(editedPayload.reportId).not.toBe(payload.reportId);
     expect((await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}?publisherId=demo`))).status).toBe(200);
@@ -126,7 +127,7 @@ describe('hosted report flow', () => {
 
   it('retrieves focused theme stories through the scoped persisted-report pipeline', async () => {
     const app = createProductionApp({ environment: 'test' });
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
     }));
@@ -199,7 +200,7 @@ describe('hosted report flow', () => {
       search: async () => guaranteedArticles,
       normalizeArticle: (raw) => demoAdapter.normalizeArticle(raw as typeof guaranteedArticles[number]),
     };
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
     }));
@@ -217,10 +218,10 @@ describe('hosted report flow', () => {
 
   it('rejects private or malformed company input without exposing external fetch details', async () => {
     const app = createProductionApp({ environment: 'test' });
-    const response = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'http://localhost:8080', jobTitle: 'Engineer' }) }));
+    const response = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'http://localhost:8080', jobTitle: 'Engineer' }) }));
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: 'unsafe_company_url' });
-    const ipv6 = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'http://[::1]/', jobTitle: 'Engineer' }) }));
+    const ipv6 = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl: 'http://[::1]/', jobTitle: 'Engineer' }) }));
     expect(ipv6.status).toBe(400);
     expect(await ipv6.json()).toMatchObject({ error: 'unsafe_company_url' });
   });
@@ -228,7 +229,7 @@ describe('hosted report flow', () => {
   it('uses the configured server-side real publisher adapter for report retrieval', async () => {
     let upstreamUrl = '';
     const app = createProductionApp({ environment: 'test', serverEnvironment: { REAL_PUBLISHER_UPSTREAM_BASE_URL: 'https://upstream.example', REAL_PUBLISHER_API_TOKEN: 'server-only-token' }, fetchImpl: async (input) => { upstreamUrl = String(input); return new Response(JSON.stringify(realPublisherSearchFixture), { status: 200, headers: { 'Content-Type': 'application/json' } }); } });
-    const response = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'real-publisher', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }) }));
+    const response = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'real-publisher', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }) }));
     expect(response.status).toBe(201);
     expect(upstreamUrl).toContain('upstream.example');
     expect(upstreamUrl).toContain('limit=30');
@@ -244,7 +245,7 @@ describe('hosted report flow', () => {
       ['jpmorgan.com', 'Investment Analyst'],
     ] as const;
     for (const [companyUrl, jobTitle] of scenarios) {
-      const response = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl, jobTitle }) }));
+      const response = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'demo', companyUrl, jobTitle }) }));
       expect(response.status).toBe(201);
       const { reportId } = await response.json() as { reportId: string };
       const reportResponse = await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`));

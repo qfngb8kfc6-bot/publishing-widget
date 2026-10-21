@@ -33,7 +33,7 @@ describe('main report recall', () => {
       companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Lululemon', industry: 'sporting goods', topics: [], entities: ['Lululemon'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
       logger: { info: () => undefined, error: () => undefined },
     });
-    const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'lululemon.com', jobTitle: 'Head of Legal' }) }));
+    const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'lululemon.com', jobTitle: 'Head of Legal' }) }));
     const { reportId } = await response.json() as { reportId: string };
     const report = (await app.reportStore.get(reportId, 'sgi-europe'))!;
     const titles = report.recommendations.map((recommendation) => recommendation.article.title);

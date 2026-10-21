@@ -23,7 +23,7 @@ const fetchImpl = async (input, init) => (feed && String(input).includes('sgieur
 const app = createProductionApp({ environment: 'development', serverEnvironment: { ...process.env, PUBLISHER_INDEX_PREBUILD: 'false' }, fetchImpl, logger: { info() {}, error() {} } });
 
 for (const [company, role] of scenarios) {
-  const response = await app.handle(new Request('http://localhost/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: process.env.PUBLISHER_ID ?? 'sgi-europe', companyUrl: company, jobTitle: role }) }));
+  const response = await app.handle(new Request('http://localhost/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: process.env.PUBLISHER_ID ?? 'sgi-europe', companyUrl: company, jobTitle: role }) }));
   const payload = await response.json();
   console.log(`\n${company} / ${role}: HTTP ${response.status}`);
   if (!payload.reportId) { console.log(`  ${payload.error ?? 'generation failed'}`); continue; }

@@ -31,7 +31,7 @@ function wrap(text, indent = '    ', width = 100) {
 
 async function sample({ company, role }) {
   const startedAt = Date.now();
-  const generated = await fetch(`${baseUrl}/api/reports/generate`, {
+  const generated = await fetch(`${baseUrl}/api/reports/generate?mode=sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Origin: origin },
     body: JSON.stringify({ publisherId, companyUrl: company, jobTitle: role }),

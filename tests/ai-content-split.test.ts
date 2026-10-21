@@ -42,7 +42,7 @@ function content(call: ContentCall, withSummary = call.part === 'A') {
 }
 
 async function generate(target: ReturnType<typeof app>['instance']) {
-  const response = await target.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
+  const response = await target.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
   expect(response.status).toBe(201);
   const { reportId } = await response.json() as { reportId: string };
   return (await target.reportStore.get(reportId, 'sgi-europe'))!;

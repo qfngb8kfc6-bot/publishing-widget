@@ -18,6 +18,7 @@ import { explanationQualityWarnings, summaryQualityWarnings, type ContentQuality
 import { angleForArticle, normalizeAngle } from '../ai/angles';
 import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
+import { MAX_GENERATION_THEMES, type GenerationProgress } from './generation-jobs';
 
 export const GENERATION_VERSION = '1.2';
 
@@ -28,6 +29,22 @@ const SLOW_SPAN_MS = 1_000;
 
 /** Recommendations explained by content call A (which also writes the summary); the rest go to call B. */
 const CONTENT_PART_A_SIZE = 7;
+
+/** "acme-sports.co.uk" → "Acme Sports": a display name when neither the resolver nor the site gave one. */
+function companyLabelFromDomain(domain: string): string {
+  return (domain.split('.')[0] ?? domain).replace(/[-_]+/g, ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+/** Role themes shown while a report is generated: the report's own theme choice first, then direct interests. */
+function loadingThemes(profile: ReturnType<typeof buildProfessionalProfile>): string[] {
+  const seen = new Set<string>();
+  return [...selectReportThemes(profile), ...profile.directInterests, ...profile.professionalInterests].filter((theme) => {
+    const key = theme.toLowerCase().trim();
+    if (!key || key.length > 48 || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, MAX_GENERATION_THEMES);
+}
 const ENRICHED_PROFILE_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface EnrichmentParts { main?: unknown; vocabulary?: string[] }
@@ -248,6 +265,32 @@ export class ReportGenerationService {
     this.logger?.info('generation_stage', { requestId: input.requestId, publisherId: input.publisherId, stage });
   }
 
+  /** Reports progress to an asynchronous generation's status; a failing listener never affects the report. */
+  private progress(input: Pick<GenerateReportInput, 'onProgress'>, update: GenerationProgress): void {
+    try { input.onProgress?.(update); } catch { /* status is best effort */ }
+  }
+
+  /**
+   * Resolves the company input (name or URL) with the same failure annotation and logging as generate. Asynchronous
+   * generation calls it before creating the job, so an unknown company is reported to the widget, not the loader.
+   */
+  async resolveCompanyInput(input: Pick<GenerateReportInput, 'publisherId' | 'requestId' | 'companyUrl'>): Promise<ResolvedCompanyInput> {
+    const inputType = classifyCompanyInput(input.companyUrl);
+    try {
+      return await this.companyResolver.resolve(input.companyUrl);
+    } catch (error) {
+      annotateGenerationFailure(error, inputType === 'company_name' ? 'company_resolution' : 'company_normalization');
+      this.logIbiError(input, inputType === 'company_name' ? 'company_resolution' : 'company_normalization', error, {
+        companyInputType: inputType,
+        companyResolutionAttempted: inputType === 'company_name',
+        companyResolutionSucceeded: false,
+        resolvedHostnamePresent: false,
+        resolutionMethod: inputType === 'domain' ? 'submitted_domain' : 'bounded_public_site',
+      });
+      throw error;
+    }
+  }
+
   /**
    * Queues an analytics write without blocking generation. Writes run one at a time in event
    * order on a single connection; failures are logged and never reach the request.
@@ -344,18 +387,22 @@ export class ReportGenerationService {
   /**
    * One ai_explanation_rejected line per discarded explanation, plus not_returned for requested articles the
    * model never explained. Logs article IDs, reason codes and field names only, never explanation text.
+   * Returns the not_returned article IDs when the response did carry explanation entries (the model skipped
+   * them); a missing, malformed or empty list is a broken response, not a per-article skip, so it returns none.
    */
-  private logExplanationRejections(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, request: ReportContentRequest, accepted: Array<{ articleId: string }>, rejections: Array<ExplanationRejection | ExplanationShapeIssue>): void {
-    const base = { requestId: input.requestId, publisherId: input.publisherId };
+  private logExplanationRejections(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, request: ReportContentRequest, accepted: Array<{ articleId: string }>, rejections: Array<ExplanationRejection | ExplanationShapeIssue>, part?: 'A' | 'B'): string[] {
+    const base = { requestId: input.requestId, publisherId: input.publisherId, part };
     const mentioned = new Set(accepted.map((item) => item.articleId));
     for (const rejection of rejections) {
       const articleId = 'articleId' in rejection ? rejection.articleId : undefined;
       if (articleId) mentioned.add(articleId);
       this.logger?.info('ai_explanation_rejected', { ...base, rejectReason: rejection.reason, articleId: articleId ? safeLogText(articleId, 200) : undefined, presentFields: rejection.presentFields ? safeLogText(rejection.presentFields.join(','), 200) : undefined });
     }
-    for (const recommendation of request.recommendations) {
-      if (!mentioned.has(recommendation.article.id)) this.logger?.info('ai_explanation_rejected', { ...base, rejectReason: 'not_returned', articleId: safeLogText(recommendation.article.id, 200) });
-    }
+    const notReturned = request.recommendations.map((recommendation) => recommendation.article.id).filter((id) => !mentioned.has(id));
+    for (const articleId of notReturned) this.logger?.info('ai_explanation_rejected', { ...base, rejectReason: 'not_returned', articleId: safeLogText(articleId, 200) });
+    // A list with no entries at all is as broken as a missing one: nothing was explained, nothing was judged.
+    const brokenList = rejections.some((rejection) => rejection.reason === 'explanations_missing' || rejection.reason === 'explanations_not_array') || mentioned.size === 0;
+    return brokenList ? [] : notReturned;
   }
 
   private enrichedProfileCacheKey(publisherId: string, domain: string, profile: ReturnType<typeof buildProfessionalProfile>): string {
@@ -451,7 +498,7 @@ export class ReportGenerationService {
   }
 
   /** Starts catalogue preparation independently of optional profile enrichment. */
-  private async warmCatalogue(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string): Promise<CatalogueCacheDiagnostics | undefined> {
+  private async warmCatalogue(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, onArticleCount?: (count: number) => void): Promise<CatalogueCacheDiagnostics | undefined> {
     const runtimeInfo = this.runtimeDiagnostics?.(publisherId);
     const cacheKey = catalogueCacheKey(definition, runtimeInfo);
     const archiveAdapter = definition.adapter as typeof definition.adapter & { loadCatalogue?: (options?: { limit?: number; onDebug?: import('../core').DebugSink }) => Promise<unknown[]>; sourceTimings?: { sourceFetchMs?: number; sourceReadMs?: number; sourceParseMs?: number; normalizationMs?: number; cataloguePreparationMs?: number } };
@@ -472,6 +519,7 @@ export class ReportGenerationService {
         });
         return { articles: unique, timings: { ...archiveAdapter.sourceTimings, normalizationMs: clockMs() - normalizationStartedAt } };
       });
+      onArticleCount?.(result.articles.length);
       return result.diagnostics;
     } catch {
       // The authoritative retrieval path will retry and report the source failure with its normal stage diagnostics.
@@ -479,7 +527,7 @@ export class ReportGenerationService {
     }
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string) => void, capOwnCompany = false): Promise<{ ranked: RankedCandidate[]; ownCompanyDeferred: number; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string, articlesSearched?: number) => void, capOwnCompany = false): Promise<{ ranked: RankedCandidate[]; ownCompanyDeferred: number; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     const runtimeInfo = this.runtimeDiagnostics?.(publisherId);
@@ -573,7 +621,7 @@ export class ReportGenerationService {
       this.logIbiError({ publisherId, requestId }, 'retrieval', error);
       throw error;
     }
-    onStage?.('content_retrieved');
+    onStage?.('content_retrieved', usedCatalogueCache ? catalogueItemCount : candidates.length);
     const normalizedCandidates = usedCatalogueCache
       ? candidates as NormalizedArticle[]
       : candidates.flatMap((raw) => {
@@ -792,23 +840,8 @@ export class ReportGenerationService {
     if (!jobTitle) throw new Error('job_title_required');
     const activeSession = input.sessionId ?? sessionId();
     this.trackTimed(timing, 'generation_started', input.publisherId, activeSession);
-    const inputType = classifyCompanyInput(input.companyUrl);
-    const baseResolutionDiagnostics: Partial<ServerLogFields> = {
-      companyInputType: inputType,
-      companyResolutionAttempted: inputType === 'company_name',
-      companyResolutionSucceeded: false,
-      resolvedHostnamePresent: false,
-      resolutionMethod: inputType === 'domain' ? 'submitted_domain' : 'bounded_public_site',
-    };
-    let normalized: ResolvedCompanyInput;
     const companyResolutionStartedAt = clockMs();
-    try {
-      normalized = await this.companyResolver.resolve(input.companyUrl);
-    } catch (error) {
-      annotateGenerationFailure(error, inputType === 'company_name' ? 'company_resolution' : 'company_normalization');
-      this.logIbiError(input, inputType === 'company_name' ? 'company_resolution' : 'company_normalization', error, baseResolutionDiagnostics);
-      throw error;
-    }
+    const normalized = input.resolvedCompany ?? await this.resolveCompanyInput(input);
     const companyResolutionMs = clockMs() - companyResolutionStartedAt;
     timing.companyResolutionMs = companyResolutionMs;
     this.markStage(input, 'company_resolved');
@@ -827,6 +860,7 @@ export class ReportGenerationService {
     timing.companyContextMs = clockMs() - companyContextStartedAt;
     this.noteSpan(input, 'company-context', timing.companyContextMs);
     if (normalized.displayName) company = { ...company, name: normalized.displayName };
+    this.progress(input, { stage: 'company_resolved', details: { companyName: company.name || normalized.displayName || companyLabelFromDomain(normalized.domain), jobTitle } });
     this.trackTimed(timing, 'company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
     let profile: ReturnType<typeof buildProfessionalProfile>;
     const profileStartedAt = clockMs();
@@ -837,7 +871,7 @@ export class ReportGenerationService {
       this.logIbiError(input, 'profile', error, resolutionDiagnostics);
       throw error;
     }
-    const catalogueWarmup = this.warmCatalogue(definition, input.publisherId);
+    const catalogueWarmup = this.warmCatalogue(definition, input.publisherId, (articlesSearched) => this.progress(input, { details: { articlesSearched } }));
     let aiProfileUsed = false;
     const aiProfileStartedAt = clockMs();
     let warmupDiagnostics: CatalogueCacheDiagnostics | undefined;
@@ -852,6 +886,7 @@ export class ReportGenerationService {
     const professionalProfileMs = clockMs() - profileStartedAt;
     timing.profileMs = professionalProfileMs;
     this.markStage(input, 'profile_built');
+    this.progress(input, { stage: 'profile_built', details: { themes: loadingThemes(profile) } });
     this.trackTimed(timing, 'role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
     this.trackTimed(timing, 'profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
     this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);
@@ -860,7 +895,11 @@ export class ReportGenerationService {
       // Archive-wide, like theme search: the professional scorer preselects across the whole catalogue. The
       // adapter's token preselection let company-name and leadership-word matches fill its 100 slots, so a
       // subject-anchored role lost on-subject stories about other companies that theme search then found.
-      ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, true, (stage) => this.markStage(input, stage), true);
+      ranking = await this.rankProfile(definition, input.publisherId, profile, new Set<string>(), input.requestId, true, (stage, articlesSearched) => {
+        this.markStage(input, stage);
+        if (stage === 'content_retrieved') this.progress(input, { stage, details: { articlesSearched } });
+        if (stage === 'ranking_complete') this.progress(input, { stage });
+      }, true);
     } catch (error) {
       const stage = (error as GenerationFailure).generationStage ?? 'ranking';
       annotateGenerationFailure(error, stage);
@@ -906,6 +945,8 @@ export class ReportGenerationService {
     const explanationById = new Map<string, { explanation: string; angle?: string }>();
     let citedIds = new Set<string>();
     const contentWeakIds = new Set<string>();
+    // Articles a successful content call skipped: treated as weak fits rather than shown with template text.
+    const notReturnedIds = new Map<string, 'A' | 'B'>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let themeDescriptions: Record<string, string> | undefined;
@@ -941,7 +982,8 @@ export class ReportGenerationService {
       if (explanationsEnabled) {
         const accepted = outcomes.flatMap((outcome) => {
           if (!outcome.value) return [];
-          this.logExplanationRejections(input, outcome.request, [...(outcome.value.explanations ?? []), ...(outcome.value.weakArticleIds ?? []).map((articleId) => ({ articleId }))], outcome.rejections);
+          const skipped = this.logExplanationRejections(input, outcome.request, [...(outcome.value.explanations ?? []), ...(outcome.value.weakArticleIds ?? []).map((articleId) => ({ articleId }))], outcome.rejections, outcome.part);
+          for (const articleId of skipped) notReturnedIds.set(articleId, outcome.part);
           return outcome.value.explanations ?? [];
         });
         const articleById = new Map(ranked.map((item) => [item.article.id, item.article]));
@@ -957,10 +999,14 @@ export class ReportGenerationService {
       }
     }
     const aiExplanationMs = clockMs() - aiExplanationStartedAt;
-    const afterContent = removeWeakFits(contentRanked, contentWeakIds);
+    const afterContent = removeWeakFits(contentRanked, new Set([...contentWeakIds, ...notReturnedIds.keys()]));
+    if (notReturnedIds.size) {
+      const removedIds = new Set(afterContent.removed.map((item) => item.article.id));
+      for (const [articleId, part] of notReturnedIds) this.logger?.info('not_returned_treated_as_weak', { requestId: input.requestId, publisherId: input.publisherId, part, articleId: safeLogText(articleId, 200), operation: removedIds.has(articleId) ? 'removed' : 'kept_lower_confidence' });
+    }
     const weakFit = { kept: afterContent.kept, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
     if (!aiSummaryUsed) generatedSummary = reportSummary(profile, weakFit.kept.length);
-    if (rerankWeakIds.size || contentWeakIds.size) this.logger?.info('weak_fit_removed', { requestId: input.requestId, publisherId: input.publisherId, weakFlagged: new Set([...rerankWeakIds, ...contentWeakIds]).size, weakFromRerank: rerankWeakIds.size, weakFromContent: contentWeakIds.size, weakRemoved: afterRerank.removed.length + afterContent.removed.length, weakKeptLowerConfidence: weakFit.lowerConfidenceIds.size, finalRecommendationCount: weakFit.kept.length });
+    if (rerankWeakIds.size || contentWeakIds.size || notReturnedIds.size) this.logger?.info('weak_fit_removed', { requestId: input.requestId, publisherId: input.publisherId, weakFlagged: new Set([...rerankWeakIds, ...contentWeakIds, ...notReturnedIds.keys()]).size, weakFromRerank: rerankWeakIds.size, weakFromContent: contentWeakIds.size, weakRemoved: afterRerank.removed.length + afterContent.removed.length, weakKeptLowerConfidence: weakFit.lowerConfidenceIds.size, finalRecommendationCount: weakFit.kept.length });
     timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
     timing.catalogueStale = ranking.timings.catalogueStale;
@@ -980,6 +1026,7 @@ export class ReportGenerationService {
     timing.aiExplanationsMs = aiExplanationMs;
     timing.briefingSummaryMs = aiExplanationMs;
     this.markStage(input, 'ai_complete');
+    this.progress(input, { stage: 'ai_complete' });
     const rawRecommendations = this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
@@ -1003,6 +1050,7 @@ export class ReportGenerationService {
     timing.persistenceMs = persistenceMs;
     timing.totalMs = clockMs() - generationStartedAt;
     this.markStage(input, 'report_persisted');
+    this.progress(input, { stage: 'report_persisted' });
     this.trackTimed(timing, 'report_generated', input.publisherId, activeSession, { reportId: report.id, resultCount: recommendations.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiProfileUsed, aiRerankUsed, aiSummaryUsed, aiExplanationUsed });
     this.logIbi(input, 'ibi_generation_completed', { stage: 'complete', finalRecommendations: recommendations.length });
     this.logger?.info('report_generation_diagnostics', {

@@ -189,7 +189,7 @@ describe('SGI Europe RSS publisher', () => {
       companyContextProvider: { getContext: async (domain: string) => domain === 'adidas.com' ? adidasCompany : { ...adidasCompany, domain, canonicalUrl: `https://${domain}/`, name: 'Nike', topics: ['retail', 'consumer products', 'innovation'], productsServices: ['consumer products'] } },
       logger,
     });
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'adidas.com', jobTitle: 'Product Manager' }) }));
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'adidas.com', jobTitle: 'Product Manager' }) }));
     expect(generated.status, await generated.clone().text()).toBe(201);
     const payload = await generated.json() as { reportId: string };
     const adidasReport = await app.reportStore.get(payload.reportId, 'sgi-europe');
@@ -223,7 +223,7 @@ describe('SGI Europe RSS publisher', () => {
     expect(health.status).toBe(200);
     expect(await health.json()).toMatchObject({ sourceType: 'rss', reachable: true, recordsFetched: 8, accepted: 6, rejected: 1, duplicates: 1, coverage: { image: 50, publishedAt: 100, description: 67 } });
 
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'example.test', jobTitle: 'Product Manager' }) }));
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'example.test', jobTitle: 'Product Manager' }) }));
     expect(generated.status, await generated.clone().text()).toBe(201);
     const payload = await generated.json() as { reportId: string };
     const report = await app.reportStore.get(payload.reportId, 'sgi-europe');
@@ -254,7 +254,7 @@ describe('SGI Europe RSS publisher', () => {
       companyContextProvider: { getContext: async (domain: string) => ({ ...companyContext(domain), name: 'Nike', topics: ['retail', 'consumer products', 'innovation'], productsServices: ['consumer products'], activities: ['retail operations'] }) },
       logger,
     });
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
     expect(generated.status, await generated.clone().text()).toBe(201);
     const payload = await generated.json() as { reportId: string };
     const report = await app.reportStore.get(payload.reportId, 'sgi-europe');

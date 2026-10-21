@@ -78,7 +78,7 @@ describe('publisher catalogue cache', () => {
       companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sporting goods', description: 'Sporting goods company.', topics: ['retail', 'innovation'], entities: ['Nike'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
       logger: { info: (message, fields) => events.push({ message, fields: fields as Record<string, unknown> }), error: () => undefined },
     });
-    const generate = () => app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
+    const generate = () => app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
     const first = await generate();
     expect(first.status).toBe(201);
     const firstReport = await first.json() as { reportId: string };

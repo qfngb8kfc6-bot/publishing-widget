@@ -4,6 +4,7 @@ import type { ReportGenerationService } from '../reports/generate';
 import type { ReportStore } from '../reports/types';
 import type { ReportPerformanceTiming } from '../reports/types';
 import { findReportTheme, MAX_SHOWN_THEME_ARTICLE_IDS } from '../reports/themes';
+import { GENERATION_STAGES, SAFE_GENERATION_ERROR_CODES, type GenerationJob, type GenerationJobs } from '../reports/generation-jobs';
 
 export interface ReportRouteContext { runtimeMs?: number }
 
@@ -54,11 +55,58 @@ function withServerTiming(response: Response, timing: ReportPerformanceTiming): 
   return new Response(response.body, { status: response.status, headers });
 }
 
+/** Errors reported to the caller before a job exists: bad input or a company that cannot be resolved. */
+const INPUT_ERROR_CODES = ['invalid_publisher', 'company_url_required', 'invalid_company_url', 'unsafe_company_url', 'company_url_credentials_not_allowed', 'company_resolution_failed', 'company_resolution_timeout', 'job_title_required'];
+
+function inputErrorResponse(error: unknown): Response {
+  const code = error instanceof Error ? error.message : 'generation_failed';
+  const safeCode = INPUT_ERROR_CODES.includes(code) ? code : 'generation_unavailable';
+  return Response.json({ error: safeCode }, { status: safeCode === 'generation_unavailable' ? 503 : 400 });
+}
+
+function generationLinks(publisherId: string, generationId: string) {
+  return { statusUrl: `/api/generations/${generationId}/status?publisherId=${encodeURIComponent(publisherId)}`, generationUrl: `/p/${publisherId}/generate/${generationId}` };
+}
+
+/** The status payload: stages, safe display details and, when complete, the report URL. No scores or internals. */
+function statusBody(job: GenerationJob) {
+  const stage = job.completedStages[job.completedStages.length - 1] ?? 'started';
+  return {
+    generationId: job.id,
+    status: job.status,
+    stage,
+    completedStages: job.completedStages,
+    stages: GENERATION_STAGES,
+    details: job.details,
+    generationUrl: `/p/${job.publisherId}/generate/${job.id}`,
+    ...(job.status === 'complete' && job.reportId ? { reportId: job.reportId, reportUrl: `/p/${job.publisherId}/${job.reportId}` } : {}),
+    ...(job.input?.sessionId ? { sessionId: job.input.sessionId } : {}),
+    ...(job.status === 'failed' ? { error: job.errorCode && SAFE_GENERATION_ERROR_CODES.has(job.errorCode) ? job.errorCode : 'generation_unavailable', retryable: true } : {}),
+  };
+}
+
+const NO_STORE = { 'Cache-Control': 'no-store' };
+
 function uuidLike(value: string | undefined): string | null {
   return value && /^[a-zA-Z0-9_-]{8,160}$/.test(value) ? value : null;
 }
 
-export function createReportRoutes(registry: PublisherRegistry, generation: ReportGenerationService, reports: ReportStore) {
+/**
+ * POST /api/reports/generate is asynchronous: it validates the input, resolves the company, creates a generation
+ * job and returns 202 with its status and loading-page URLs while the report is built in the background.
+ * ?mode=sync keeps the original behaviour (201 once the report is persisted) for scripts and tests.
+ */
+export function createReportRoutes(registry: PublisherRegistry, generation: ReportGenerationService, reports: ReportStore, jobs: GenerationJobs) {
+  /** Resolves the company, creates the job and builds the report in the background; returns the 202 response. */
+  async function startGeneration(publisherId: string, companyUrl: string, jobTitle: string, sessionId: string | undefined, requestId: string | undefined): Promise<Response> {
+    const resolvedCompany = await generation.resolveCompanyInput({ publisherId, companyUrl, requestId });
+    const job = await jobs.create(publisherId, { companyName: resolvedCompany.displayName, jobTitle }, { companyUrl, jobTitle, ...(sessionId ? { sessionId } : {}) });
+    void generation.generate({ publisherId, companyUrl, jobTitle, sessionId, requestId, resolvedCompany, onProgress: (update) => jobs.progress(job.id, update) })
+      .then((report) => jobs.complete(job.id, report.id))
+      .catch((error: unknown) => jobs.fail(job.id, error instanceof Error ? error.message : 'generation_unavailable'));
+    return Response.json({ generationId: job.id, status: 'running', ...generationLinks(publisherId, job.id) }, { status: 202, headers: NO_STORE });
+  }
+
   return async function handle(request: Request, requestId?: string, context: ReportRouteContext = {}): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/api/reports/generate') {
@@ -70,13 +118,31 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
         const jobTitle = typeof body.jobTitle === 'string' ? body.jobTitle : '';
         if (!publisherId || !registry.get(publisherId) || registry.get(publisherId)?.manifest?.enabled === false) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
         if (companyUrl.length > 253 || jobTitle.length > 160 || !companyUrl.trim() || !jobTitle.trim()) return Response.json({ error: 'invalid_generation_input' }, { status: 400 });
+        const sessionId = typeof body.sessionId === 'string' ? body.sessionId.slice(0, 160) : undefined;
+        if (url.searchParams.get('mode') !== 'sync') return await startGeneration(publisherId, companyUrl, jobTitle, sessionId, requestId ?? request.headers.get('X-Request-ID') ?? undefined);
         const timing: ReportPerformanceTiming = { requestId: requestId ?? request.headers.get('X-Request-ID') ?? undefined, publisherId, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: context.runtimeMs ?? 0, companyResolutionMs: 0, profileMs: 0, aiProfileMs: 0, catalogueCacheLookupMs: 0, catalogueSnapshotLookupMs: 0, catalogueRefreshMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0 };
-        const report = await generation.generate({ publisherId, companyUrl, jobTitle, sessionId: typeof body.sessionId === 'string' ? body.sessionId.slice(0, 160) : undefined, requestId: timing.requestId, performance: timing });
-        return withServerTiming(Response.json({ generationId: report.id, status: 'complete', statusUrl: `/api/generations/${report.id}/status?publisherId=${encodeURIComponent(publisherId)}`, generationUrl: `/p/${publisherId}/generate/${report.id}`, reportId: report.id, reportUrl: `/p/${publisherId}/${report.id}` }, { status: 201 }), timing);
+        const report = await generation.generate({ publisherId, companyUrl, jobTitle, sessionId, requestId: timing.requestId, performance: timing });
+        return withServerTiming(Response.json({ generationId: report.id, status: 'complete', ...generationLinks(publisherId, report.id), reportId: report.id, reportUrl: `/p/${publisherId}/${report.id}` }, { status: 201 }), timing);
       } catch (error) {
-        const code = error instanceof Error ? error.message : 'generation_failed';
-        const safeCode = ['invalid_publisher', 'company_url_required', 'invalid_company_url', 'unsafe_company_url', 'company_url_credentials_not_allowed', 'company_resolution_failed', 'company_resolution_timeout', 'job_title_required'].includes(code) ? code : 'generation_unavailable';
-        return Response.json({ error: safeCode }, { status: safeCode === 'generation_unavailable' ? 503 : 400 });
+        return inputErrorResponse(error);
+      }
+    }
+    // Retry of a failed, lost or slow generation from its stored input: the loading page needs no company or role.
+    const retryMatch = url.pathname.match(/^\/api\/generations\/([^/]+)\/retry$/);
+    if (retryMatch) {
+      if (request.method !== 'POST') return Response.json({ error: 'method_not_allowed' }, { status: 405 });
+      const id = uuidLike(retryMatch[1]);
+      const publisherId = safeRouteId(url.searchParams.get('publisherId') ?? undefined);
+      if (!id || !publisherId) return Response.json({ error: 'invalid_request' }, { status: 400 });
+      const job = await jobs.get(id, publisherId);
+      if (!job) return Response.json({ error: 'generation_not_found' }, { status: 404 });
+      if (job.status === 'complete') return Response.json({ error: 'generation_complete', ...statusBody(job) }, { status: 409 });
+      if (!job.input) return Response.json({ error: 'retry_unavailable' }, { status: 409 });
+      if (!registry.get(publisherId) || registry.get(publisherId)?.manifest?.enabled === false) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
+      try {
+        return await startGeneration(publisherId, job.input.companyUrl, job.input.jobTitle, job.input.sessionId, requestId);
+      } catch (error) {
+        return inputErrorResponse(error);
       }
     }
     const statusMatch = url.pathname.match(/^\/api\/generations\/([^/]+)\/status$/);
@@ -85,9 +151,12 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
       if (!id) return Response.json({ error: 'invalid_report_id' }, { status: 400 });
       const publisherId = safeRouteId(url.searchParams.get('publisherId') ?? undefined);
       if (!publisherId) return Response.json({ error: 'publisher_id_required' }, { status: 400 });
+      const job = await jobs.get(id, publisherId);
+      if (job) return Response.json(statusBody(job), { headers: NO_STORE });
+      // Links from synchronous generation use the report ID as the generation ID.
       const report = await reports.get(id, publisherId);
-      if (!report) return Response.json({ error: 'generation_not_found' }, { status: 404 });
-      return Response.json({ generationId: id, status: 'complete', reportId: id, companyName: report.companyName, companyDomain: report.companyDomain, jobTitle: report.jobTitle, generationUrl: `/p/${report.publisherId}/generate/${id}`, reportUrl: `/p/${report.publisherId}/${id}` });
+      if (!report) return Response.json({ error: 'generation_not_found' }, { status: 404, headers: NO_STORE });
+      return Response.json(statusBody({ id, publisherId: report.publisherId, status: 'complete', completedStages: [...GENERATION_STAGES], details: { companyName: report.companyName, jobTitle: report.jobTitle }, reportId: id, instanceId: '', createdAt: report.createdAt, updatedAt: report.updatedAt }), { headers: NO_STORE });
     }
     const themeMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/themes\/([^/]+)\/search$/);
     if (themeMatch) {
