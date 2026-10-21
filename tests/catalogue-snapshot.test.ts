@@ -107,4 +107,3 @@ describe('shareRepeatedStrings', () => {
     expect(JSON.stringify(articles)).toBe(before);
   });
 });
-
