@@ -61,7 +61,7 @@ describe('IBI News publisher onboarding', () => {
     const logs: Array<{ message: string; fields?: Record<string, unknown> }> = [];
     const logger = { info: (message: string, fields?: Record<string, unknown>) => logs.push({ message, fields }), error: (message: string, fields?: Record<string, unknown>) => logs.push({ message, fields }) };
     const app = createProductionApp({ environment: 'test', fetchImpl, companyContextProvider: new SafeCompanyContextProvider(async () => new Response('unavailable', { status: 503 })), logger });
-    const generate = (companyUrl: string, jobTitle: string) => app.handle(new Request('https://local.test/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'ibi', companyUrl, jobTitle }) }));
+    const generate = (companyUrl: string, jobTitle: string) => app.handle(new Request('https://local.test/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'ibi', companyUrl, jobTitle }) }));
 
     const ldResponse = await generate('ldsystems.uk', 'Technology Professional');
     expect(ldResponse.status).toBe(201);
@@ -161,13 +161,13 @@ describe('IBI News publisher onboarding', () => {
     const app = createProductionApp({ environment: 'test', analyticsStore: analytics });
     await app.publisherRuntime.ensureLoaded();
     app.registry.get('ibi')!.adapter = fixtureArticleAdapter();
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'ibi', companyUrl: 'sunseeker.com', jobTitle: 'Head of Procurement' }) }));
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'ibi', companyUrl: 'sunseeker.com', jobTitle: 'Head of Procurement' }) }));
     expect(generated.status).toBe(201);
     const { reportId } = await generated.json() as { reportId: string };
     const before = await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=ibi`));
     expect(before.status).toBe(200);
     app.registry.get('ibi')!.manifest!.enabled = false;
-    const blocked = await app.handle(new Request('https://product.example/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'ibi', companyUrl: 'sunseeker.com', jobTitle: 'Marine Engineer' }) }));
+    const blocked = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'ibi', companyUrl: 'sunseeker.com', jobTitle: 'Marine Engineer' }) }));
     expect(blocked.status).toBe(404);
     expect((await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=ibi`))).status).toBe(200);
     const ibiEvents = await analytics.query({ publisherId: 'ibi' });

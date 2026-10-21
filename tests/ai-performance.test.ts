@@ -60,7 +60,7 @@ function aiApp(provider: MockAIProvider, logger?: { info(message: string, fields
 }
 
 async function generate(app: ReturnType<typeof aiApp>, companyUrl = 'nike.com', jobTitle = 'Product Manager') {
-    return app.handle(new Request('https://product.example/api/reports/generate', {
+    return app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl, jobTitle }),
@@ -115,7 +115,7 @@ describe('production AI performance safeguards', () => {
       fetchImpl: async () => { sourceStarted = true; await sourceGate; return new Response(sgiEuropeRssFixture, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }); },
       companyContextProvider: { getContext: async (domain: string) => companyContext(domain) },
     });
-    const request = app.handle(new Request('https://product.example/api/reports/generate', {
+    const request = app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }),

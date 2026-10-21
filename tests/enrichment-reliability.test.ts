@@ -39,7 +39,7 @@ function app(behaviour: { main: Behaviour[]; vocabulary: Behaviour[] }) {
     logger: { info: (message, fields) => logs.push({ message, fields: (fields ?? {}) as Record<string, unknown> }), error: () => undefined },
   });
   const generate = async (jobTitle = 'Head of Legal') => {
-    const response = await instance.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'lululemon.com', jobTitle }) }));
+    const response = await instance.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'lululemon.com', jobTitle }) }));
     const { reportId } = await response.json() as { reportId: string };
     return (await instance.reportStore.get(reportId, 'sgi-europe'))!;
   };

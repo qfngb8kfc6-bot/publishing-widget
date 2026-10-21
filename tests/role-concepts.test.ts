@@ -153,7 +153,7 @@ describe('anchored profile in AI calls', () => {
       },
       companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Puma', industry: 'sporting goods', topics: [], entities: ['Puma'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
     });
-    const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'puma.com', jobTitle: 'Head of Sustainability' }) }));
+    const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'puma.com', jobTitle: 'Head of Sustainability' }) }));
     expect(response.status).toBe(201);
     expect(seen['professional-profile-enrichment'].system).toContain(PROFILE_ENRICHMENT_INSTRUCTION);
     expect(seen['subject-vocabulary'].system).toContain(SUBJECT_VOCABULARY_INSTRUCTION);

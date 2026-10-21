@@ -55,7 +55,7 @@ describe('server-side company input resolution', () => {
     await expect(resolver.resolve('file:///etc/passwd')).rejects.toThrow('unsafe_company_url');
 
     const app = createProductionApp({ environment: 'test', companyInputResolver: resolver });
-    const response = await app.handle(new Request('https://product.example/api/reports/generate', {
+    const response = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'not a real company', jobTitle: 'Engineer' }),
@@ -73,7 +73,7 @@ describe('server-side company input resolution', () => {
     });
     const values = ['nike', 'Nike', 'nike.com', 'www.nike.com', 'https://www.nike.com', 'http://nike.com', 'adidas', 'JD Sports', 'LD Systems', 'ANWR Group'];
     for (const companyUrl of values) {
-      const response = await app.handle(new Request('https://product.example/api/reports/generate', {
+      const response = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ publisherId: 'demo', companyUrl, jobTitle: 'Product Manager' }),

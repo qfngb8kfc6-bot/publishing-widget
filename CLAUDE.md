@@ -76,7 +76,7 @@ qfngb8kfc6-bot/publishing-widget.
 - Render, 1 CPU / 2 GB RAM, `NODE_OPTIONS=--max-old-space-size=1536`. Supabase Postgres via `DATABASE_URL`.
 - `npm start` = build + `node server-entry.mjs`. Migrations are expected to run on start via Render's start
   command (`npm run db:migrate` is not part of `npm start` in this repo — keep that Render setting). Apply a
-  new migration before code that uses it (latest: `007_catalogue_snapshot_chunks.sql`).
+  new migration before code that uses it (latest: `008_report_generations.sql`, required by asynchronous generation).
 - Startup prewarms catalogues (snapshot hydrate → refresh if stale → index prebuild → snapshot save, one job at
   a time) and logs `heap_usage` every 60 s.
 

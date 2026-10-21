@@ -39,7 +39,7 @@ describe('hosted professional experience', () => {
 
   it('loads the persisted report page without invoking generation or rendering the embed widget', async () => {
     const app = createProductionApp({ environment: 'test' });
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
@@ -127,7 +127,7 @@ describe('hosted professional experience', () => {
 
   it('wires every theme action and replaces focused results with safe analytics events', async () => {
     const app = createProductionApp({ environment: 'test' });
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
     }));
@@ -183,7 +183,7 @@ describe('hosted professional experience', () => {
 
   it.each([2, 4, 8])('renders a report with %s recommendations without duplicate story cards', async (count) => {
     const app = createProductionApp({ environment: 'test' });
-    const generated = await app.handle(new Request('https://product.example/api/reports/generate', {
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
     }));
