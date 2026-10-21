@@ -1,8 +1,12 @@
 import { ConsoleAnalytics, createEvent, createSessionId, DEFAULT_THEME, type AnalyticsClient, type DebugSink, type PublisherDefinition, type PublisherRegistry } from '../core';
 import type { AIRecommendationLayer } from '../ai/types';
 import { widgetStyles } from './styles';
+import { generationInputMessage } from './messages';
 
 type WidgetState = 'intro' | 'error';
+
+const MAX_COMPANY_LENGTH = 253;
+const MAX_ROLE_LENGTH = 160;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
@@ -18,6 +22,9 @@ export class ContentDiscoveryWidget extends HTMLElement {
   private companyUrl = '';
   private jobTitle = '';
   private errorMessage = 'We could not start your briefing right now. Please try again.';
+  /** True between submit and navigation: the form shows "Starting your briefing…". */
+  private starting = false;
+  private inputError = '';
   private listenersAttached = false;
   private impressionTracked = false;
 
@@ -107,16 +114,21 @@ export class ContentDiscoveryWidget extends HTMLElement {
     const error = this.root.querySelector<HTMLElement>('[data-profile-error]');
     this.companyUrl = company;
     this.jobTitle = role;
-    if (!company || !role) {
-      error?.replaceChildren(document.createTextNode('Enter your company website and job role to continue.'));
+    if (this.starting) return;
+    const invalid = !company || !role ? 'Enter your company website and job role to continue.'
+      : company.length > MAX_COMPANY_LENGTH ? 'That company name or website is too long.'
+      : role.length > MAX_ROLE_LENGTH ? 'That job role is too long. Try a shorter title.' : '';
+    if (invalid) {
+      error?.replaceChildren(document.createTextNode(invalid));
       return;
     }
     this.track('company_entered');
     this.track('role_entered', { roleFunction: role.toLowerCase().includes('engineer') ? 'engineering' : 'professional' });
     this.track('report_requested');
     const endpoint = this.dataset.generationEndpoint ?? '/api/reports/generate';
-    const button = this.root.querySelector<HTMLButtonElement>('[data-action="generate"]');
-    if (button) button.disabled = true;
+    this.starting = true;
+    this.inputError = '';
+    this.render();
     let responseStatus: number | undefined;
     let responseError: string | undefined;
     let requestId: string | undefined;
@@ -134,6 +146,15 @@ export class ContentDiscoveryWidget extends HTMLElement {
       requestId = typeof payload.requestId === 'string' && /^[a-z0-9_-]{1,120}$/i.test(payload.requestId)
         ? payload.requestId
         : headerRequestId && /^[a-z0-9_-]{1,120}$/i.test(headerRequestId) ? headerRequestId : undefined;
+      const inputMessage = response.ok ? undefined : generationInputMessage(responseError, company);
+      if (inputMessage) {
+        // No job exists yet: the visitor corrects the input here instead of seeing a failed loading page.
+        console.warn('[content-discovery] generation request rejected', { endpoint, status: responseStatus, error: responseError, requestId });
+        this.starting = false;
+        this.inputError = inputMessage;
+        this.render();
+        return;
+      }
       if (!response.ok || (!payload.generationUrl && !payload.reportUrl && !payload.statusUrl)) throw new Error('generation_unavailable');
       this.track('generation_started');
       // Report URLs are relative to the platform that answered, not to the publisher page hosting the widget.
@@ -142,6 +163,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
       // Visitors see the friendly message; integrators get the status and safe error code in the console.
       console.warn('[content-discovery] generation request failed', { endpoint, status: responseStatus, error: responseError ?? (error instanceof Error ? error.name : 'unknown'), requestId });
       this.closedByUser = false;
+      this.starting = false;
       this.state = 'error';
       this.render();
     }
@@ -159,12 +181,14 @@ export class ContentDiscoveryWidget extends HTMLElement {
     const content = this.closedByUser ? '' : this.renderPanel();
     this.hidden = this.closedByUser;
     this.root.innerHTML = `<style>${css}</style>${content}`;
-    if (!this.closedByUser) this.root.querySelector<HTMLElement>('[data-focus-start], [data-action="close"], [data-action="retry"]')?.focus();
+    if (!this.closedByUser) this.root.querySelector<HTMLElement>(this.starting ? '[data-action="generate"]' : this.inputError ? '[data-profile-field="companyUrl"]' : '[data-focus-start], [data-action="close"], [data-action="retry"]')?.focus();
   }
 
   private renderPanel(): string {
     if (this.state === 'error') return `<button class="close-control" data-action="close" aria-label="Close briefing">×</button><div class="error-state" role="alert"><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="briefing-submit" data-action="retry">Try again</button></div>`;
-    return `<button class="close-control" data-action="close" aria-label="Close briefing">×</button><form class="briefing-bar" data-profile-form role="dialog" aria-modal="true" aria-label="Build your professional briefing"><span class="briefing-label">I work at</span><label class="briefing-field briefing-field--company"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5.5h9V20M14 9h5v11M8 8.5h2M8 12h2M8 15.5h2M16.5 12h1M16.5 15.5h1M3 20h18" /></svg><input type="text" inputmode="text" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="Nike or nike.com" autocomplete="organization" spellcheck="false" data-focus-start aria-label="Company or website"></label><span class="briefing-label">as a</span><label class="briefing-field briefing-field--role"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16v11H4zM8 8.5V6h8v2.5M8 13h8M12 13v2" /></svg><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role"></label><span class="briefing-arrow" aria-hidden="true">→</span><button class="briefing-submit" type="submit" data-action="generate"><span class="briefing-spark" aria-hidden="true">✦</span>Build my briefing</button><p class="profile-error" data-profile-error role="alert"></p></form>`;
+    return `<button class="close-control" data-action="close" aria-label="Close briefing">×</button><form class="briefing-bar" data-profile-form role="dialog" aria-modal="true" aria-label="Build your professional briefing"><span class="briefing-label">I work at</span><label class="briefing-field briefing-field--company"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5.5h9V20M14 9h5v11M8 8.5h2M8 12h2M8 15.5h2M16.5 12h1M16.5 15.5h1M3 20h18" /></svg><input type="text" inputmode="text" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="Nike or nike.com" autocomplete="organization" spellcheck="false" data-focus-start aria-label="Company or website"${this.inputError ? ' aria-invalid="true" aria-describedby="profile-error"' : ''}${this.starting ? ' readonly' : ''}></label><span class="briefing-label">as a</span><label class="briefing-field briefing-field--role"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16v11H4zM8 8.5V6h8v2.5M8 13h8M12 13v2" /></svg><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role"${this.starting ? ' readonly' : ''}></label><span class="briefing-arrow" aria-hidden="true">→</span>${this.starting
+      ? '<button class="briefing-submit" type="submit" data-action="generate" aria-busy="true" aria-disabled="true"><span class="briefing-spinner" aria-hidden="true"></span>Starting your briefing…</button><p class="ss-visually-hidden" role="status" data-starting-status>Starting your briefing…</p>'
+      : '<button class="briefing-submit" type="submit" data-action="generate"><span class="briefing-spark" aria-hidden="true">✦</span>Build my briefing</button>'}<p class="profile-error" id="profile-error" data-profile-error role="alert">${escapeHtml(this.inputError)}</p></form>`;
   }
 
   private trapFocus(event: KeyboardEvent): void {
