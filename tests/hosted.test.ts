@@ -13,21 +13,20 @@ describe('hosted professional experience', () => {
   it('renders a true hosted generation page with publisher branding, loading fallback and profile context', async () => {
     const registry = createDemoRegistry();
     window.history.replaceState({}, '', '/p/demo/generate/report-12345678');
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ companyName: 'LD Systems', companyDomain: 'ldsystems.uk', jobTitle: 'Software Engineer' })));
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ status: 'running', stage: 'company_resolved', completedStages: ['company_resolved'], details: { companyName: 'LD Systems', jobTitle: 'Software Engineer' } })));
 
     await renderHostedRoute(document, registry);
+    await vi.waitFor(() => expect(document.querySelector('[data-step="0"] [data-step-label]')?.textContent).toBe('Understanding LD Systems'));
 
     expect(document.querySelector('.hosted-shell')).not.toBeNull();
     expect(document.querySelector('.hosted-card')?.textContent).toContain('Northstar Journal');
-    expect(document.querySelector('.generation-frame')).not.toBeNull();
+    expect(document.querySelector('.generation-frame.loading-frame')).not.toBeNull();
     expect(document.querySelector('.generation-logo [data-publisher-brand]')).not.toBeNull();
-    expect(document.querySelector('[data-generation-identity]')?.hasAttribute('hidden')).toBe(false);
-    expect(document.querySelector('[data-generation-company]')?.textContent).toBe('LD Systems');
-    expect(document.querySelector('[data-generation-role]')?.textContent).toBe('Software Engineer');
-    expect(document.querySelector('.generation-progress')).not.toBeNull();
-    expect(document.querySelector('[data-generation-stage]')).not.toBeNull();
-    expect(document.querySelector('.generation-stage')).toBeNull();
-    expect(document.querySelector('.generation-line')).toBeNull();
+    expect(document.querySelector('[data-loading-identity]')?.textContent).toBe('For a Software Engineer at LD Systems');
+    expect(document.querySelector('[data-step="1"] [data-step-label]')?.textContent).toBe('Mapping what a Software Engineer focuses on');
+    expect(document.querySelector('[data-step="1"]')?.getAttribute('data-state')).toBe('active');
+    expect(document.querySelector('[role="progressbar"]')).not.toBeNull();
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('/api/generations/report-12345678/status?publisherId=demo');
     const styles = document.querySelector('style')?.textContent ?? '';
     expect(styles).toContain('--loading-fallback:#151A3A');
     expect(styles).toContain('--report-fallback:#2A2C8F');

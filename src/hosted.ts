@@ -4,6 +4,8 @@ import type { PublisherExperienceBranding, PublisherManifest } from './publisher
 import type { ReportRecord, ReportRecommendation } from './reports';
 import { MAX_SHOWN_THEME_ARTICLE_IDS, reportThemes } from './reports/themes';
 import { allocateEditorialSections, articleIdentityKeys, type EditorialSection } from './reports/sections';
+import { generationPageMarkup, runGenerationPage } from './hosted-loading';
+import { generationInputMessage } from './widget/messages';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&#38;', '<': '&#60;', '>': '&#62;', "'": '&#39;', '"': '&#34;' })[character] ?? character);
@@ -39,9 +41,12 @@ function overlayValue(experience: PublisherExperienceBranding | undefined, fallb
   return `color-mix(in srgb, ${overlay} ${Math.round(Math.max(0, Math.min(1, opacity)) * 100)}%, transparent)`;
 }
 
+const SMALL_WORDS = new Set(['a', 'an', 'and', 'at', 'for', 'in', 'of', 'on', 'or', 'the', 'to']);
+
 function displayTitle(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().split(' ').map((word) => {
+  return value.replace(/\s+/g, ' ').trim().split(' ').map((word, index) => {
     if (/^[A-Z\d-]{2,}$/.test(word)) return word;
+    if (index > 0 && SMALL_WORDS.has(word.toLowerCase())) return word.toLowerCase();
     return word.length ? word.charAt(0).toUpperCase() + word.slice(1) : word;
   }).join(' ');
 }
@@ -103,10 +108,8 @@ function routeStyle(manifest: PublisherManifest): string {
 </style>`;
 }
 
-function generationMarkup(manifest: PublisherManifest): string {
-  const poweredBy = manifest.poweredBy === false ? '' : `<span class="generation-powered">Powered by ${escapeHtml(manifest.name)}</span>`;
-  const legal = [manifest.privacyUrl ? `<a href="${escapeHtml(safeUrl(manifest.privacyUrl) || '#')}">Privacy</a>` : '', manifest.termsUrl ? `<a href="${escapeHtml(safeUrl(manifest.termsUrl) || '#')}">Terms</a>` : ''].filter(Boolean).join('<span aria-hidden="true">·</span>');
-  return `<section class="generation-frame hosted-card" id="hosted-app" aria-labelledby="generation-heading"><div class="generation-inner"><div class="generation-logo">${brandMarkup(manifest)}</div><p class="generation-eyebrow">Personalised intelligence</p><h1 id="generation-heading">Your personalised briefing</h1><p class="generation-subtitle">${escapeHtml(manifest.branding.introductoryCopy ?? 'A focused view of the coverage most relevant to your work.')}</p><div class="generation-identity" data-generation-identity hidden><span class="generation-identity-label">I work at</span><span class="generation-identity-pill"><span data-generation-company>Company</span><span class="identity-check" aria-hidden="true">✓</span></span><span class="generation-identity-label">as a</span><span class="generation-identity-pill"><span data-generation-role>Role</span><span class="identity-check" aria-hidden="true">✓</span></span><span class="generation-status" data-generation-context>Generating…</span></div><p class="generation-stage-label" data-generation-stage>Understanding your company</p><div class="generation-progress progress" role="progressbar" aria-label="Briefing generation progress"><span></span></div><p class="generation-note" data-generation-note>Taking a considered look at what may matter to your work.</p></div><div class="generation-footer">${poweredBy}<span class="generation-legal">${legal}</span></div></section>`;
+function legalMarkup(manifest: PublisherManifest): string {
+  return [manifest.privacyUrl ? `<a href="${escapeHtml(safeUrl(manifest.privacyUrl) || '#')}">Privacy</a>` : '', manifest.termsUrl ? `<a href="${escapeHtml(safeUrl(manifest.termsUrl) || '#')}">Terms</a>` : ''].filter(Boolean).join('<span aria-hidden="true">·</span>');
 }
 
 function formatDate(value?: string): string {
@@ -197,35 +200,11 @@ export async function renderHostedRoute(documentRef: Document, registry: Publish
   if (!manifest) { documentRef.body.innerHTML = '<main class="hosted-shell generation-shell"><div class="hosted-inner"><section class="generation-frame hosted-card"><div class="generation-inner"><p class="generation-eyebrow">Publisher unavailable</p><h1>Publisher not found</h1></div></section></div></main>'; return; }
   const reportId = parts[2] === 'generate' ? parts[3] : parts[2];
   const isGeneration = parts[2] === 'generate';
-  documentRef.body.innerHTML = routeStyle(manifest) + `<main class="hosted-shell ${reportId && !isGeneration ? 'report-shell report' : 'generation-shell generation'}"><div class="hosted-inner">${reportId && isGeneration ? generationMarkup(manifest) : `<div class="report-loading hosted-card" id="hosted-app">${brandMarkup(manifest)}<p>Loading your briefing…</p></div>`}</div></main>`;
+  documentRef.body.innerHTML = routeStyle(manifest) + `<main class="hosted-shell ${reportId && !isGeneration ? 'report-shell report' : 'generation-shell generation'}"><div class="hosted-inner">${reportId && isGeneration ? generationPageMarkup(manifest, brandMarkup(manifest), legalMarkup(manifest)) : `<div class="report-loading hosted-card" id="hosted-app">${brandMarkup(manifest)}<p>Loading your briefing…</p></div>`}</div></main>`;
   if (!reportId) return;
   if (isGeneration) {
     const app = documentRef.querySelector<HTMLElement>('#hosted-app');
-    if (!app) return;
-    const stageLabel = app.querySelector<HTMLElement>('[data-generation-stage]');
-    const stages = ['Understanding your company', 'Analysing your role', 'Reviewing relevant coverage', 'Ranking the strongest matches', 'Building your briefing'];
-    let currentStage = 0;
-    const advanceStage = () => {
-      if (stageLabel) stageLabel.textContent = stages[currentStage] ?? stages[stages.length - 1];
-      currentStage = Math.min(currentStage + 1, stages.length - 1);
-    };
-    const timer = setInterval(advanceStage, 850);
-    const statusResponse = await fetch('/api/generations/' + encodeURIComponent(reportId) + '/status?publisherId=' + encodeURIComponent(publisherId));
-    clearInterval(timer);
-    if (!statusResponse.ok) { app.innerHTML = `<div class="generation-inner">${brandMarkup(manifest)}<p class="generation-eyebrow">Briefing unavailable</p><h1>We could not complete this briefing</h1><p class="generation-subtitle">Please start again and we will take another look.</p></div>`; return; }
-    const status = await statusResponse.json() as { reportUrl?: string; companyName?: string; companyDomain?: string; jobTitle?: string };
-    const context = app.querySelector<HTMLElement>('[data-generation-context]');
-    const generationCompany = app.querySelector<HTMLElement>('[data-generation-company]');
-    const generationRole = app.querySelector<HTMLElement>('[data-generation-role]');
-    const identity = app.querySelector<HTMLElement>('[data-generation-identity]');
-    if (context && status.jobTitle && (status.companyName || status.companyDomain)) {
-      const companyName = status.companyName ?? displayTitle(status.companyDomain ?? '');
-      context.textContent = 'Generating…';
-      generationCompany && (generationCompany.textContent = companyName);
-      generationRole && (generationRole.textContent = displayTitle(status.jobTitle));
-      identity?.removeAttribute('hidden');
-    }
-    if (status.reportUrl) window.location.assign(status.reportUrl);
+    if (app) runGenerationPage(app, manifest, publisherId, reportId, { analytics: new BatchingAnalyticsClient() });
     return;
   }
   const response = await fetch('/api/reports/' + encodeURIComponent(reportId) + '?publisherId=' + encodeURIComponent(publisherId));
@@ -340,9 +319,9 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
     form.querySelector<HTMLButtonElement>('button[type="submit"]')?.setAttribute('disabled', '');
     try {
       const nextResponse = await fetch('/api/reports/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: report.publisherId, companyUrl: String(data.get('companyUrl') ?? ''), jobTitle: String(data.get('jobTitle') ?? ''), sessionId: report.sessionId }) });
-      const next = await nextResponse.json() as { generationUrl?: string; reportUrl?: string };
+      const next = await nextResponse.json() as { generationUrl?: string; reportUrl?: string; error?: string };
       if (nextResponse.ok && (next.generationUrl || next.reportUrl)) { window.location.assign(next.generationUrl ?? next.reportUrl!); return; }
-      if (status) status.textContent = 'We could not start that briefing. Check the details and try again.';
+      if (status) status.textContent = generationInputMessage(next.error, String(data.get('companyUrl') ?? '')) ?? 'We could not start that briefing. Check the details and try again.';
     } catch { if (status) status.textContent = 'We could not reach the briefing service. Please try again.'; }
     form.querySelector<HTMLButtonElement>('button[type="submit"]')?.removeAttribute('disabled');
   });

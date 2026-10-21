@@ -230,7 +230,11 @@ export type AnalyticsEventName =
   | 'cta_clicked'
   | 'theme_find_stories_clicked'
   | 'theme_results_loaded'
-  | 'theme_story_clicked';
+  | 'theme_story_clicked'
+  | 'generation_stage_completed'
+  | 'generation_completed'
+  | 'generation_failed'
+  | 'loading_abandoned';
 
 export type AnalyticsMetadataValue = string | number | boolean;
 export type AnalyticsMetadata = Record<string, AnalyticsMetadataValue>;

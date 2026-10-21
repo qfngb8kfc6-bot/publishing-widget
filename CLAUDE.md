@@ -37,6 +37,8 @@ qfngb8kfc6-bot/publishing-widget.
 - `src/core/relevance.ts` — deterministic scorer, weights, thresholds (do not lower).
 - `src/ai/` — provider (`providers/openai-compatible.ts`), prompts, validation, angles, content quality.
 - `src/hosted.ts` — hosted report UI (browser code: never import server modules into it).
+- `src/hosted-loading.ts` — hosted loading page (`/p/:publisherId/generate/:id`): polls `/api/generations/:id/status`
+  (~600 ms), real stages, weighted creeping progress, Retry/Edit. `src/reports/generation-jobs.ts` — async job status.
 - `src/publishers/` — manifests, adapters (`content/adapters.ts`), runtime registry, per-publisher folders.
 - `db/migrations/` — numbered SQL migrations; `db/schema.sql`. Docs in `docs/` (DEPLOYMENT, SECURITY, …).
 - Scripts: `npm run rank:sample` (ranking samples), `npm run sample:briefings`, `npm run db:migrate`.
