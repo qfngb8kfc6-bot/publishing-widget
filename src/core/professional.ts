@@ -90,6 +90,8 @@ export interface ProfessionalProfile {
   retrieval: RetrievalConcepts;
   generatedAt: string;
   profileVersion: string;
+  /** The report's theme cards, chosen once at generation from the subject vocabulary and the report's articles. */
+  themes?: string[];
 }
 
 interface RoleRule {
@@ -133,7 +135,8 @@ const FILLER_WORDS = new Set(['benchmark', 'benchmarks', 'developments', 'news',
 
 const LEADERSHIP_WORDS = new Set(['board', 'business', 'corporate', 'decision', 'decisions', 'executive', 'finance', 'financial', 'governance', 'growth', 'leader', 'leaders', 'leadership', 'management', 'market', 'markets', 'operational', 'operations', 'organisation', 'organisational', 'organization', 'organizational', 'performance', 'planning', 'results', 'risk', 'risks', 'strategic', 'strategy']);
 
-function wordsMatch(left: string, right: string): boolean {
+/** True when two normalized words are forms of one word: lawsuit/lawsuits, regulation/regulator. */
+export function wordsMatch(left: string, right: string): boolean {
   if (left === right) return true;
   const shorter = Math.min(left.length, right.length);
   if (shorter < 5) return false;
