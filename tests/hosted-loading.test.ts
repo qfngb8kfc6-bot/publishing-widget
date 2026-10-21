@@ -173,7 +173,7 @@ describe('hosted loading page', () => {
     form.querySelector<HTMLInputElement>('[name="companyUrl"]')!.value = 'adids';
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await until(() => (root.querySelector('[data-edit-status]')?.textContent ?? '').includes("couldn't find"));
-    expect(root.querySelector('[data-edit-status]')?.textContent).toBe("We couldn't find 'adids'. Check the spelling or enter the website (adids.com).");
+    expect(root.querySelector('[data-edit-status]')?.textContent).toBe("We couldn't find 'adids'. Check the spelling or enter the company's website.");
     expect(JSON.parse(String(calls.find((call) => call.init?.method === 'POST')?.init?.body))).toEqual({ publisherId: 'sgi-europe', companyUrl: 'adids', jobTitle: 'Product Manager', sessionId: 'session-9' });
   });
 

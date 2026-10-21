@@ -24,6 +24,14 @@ export class ContentDiscoveryWidget extends HTMLElement {
   private errorMessage = 'We could not start your briefing right now. Please try again.';
   /** True between submit and navigation: the form shows "Starting your briefing…". */
   private starting = false;
+  /** True only while the generation POST is awaited; "starting" can outlive it once navigation begins. */
+  private requestInFlight = false;
+  /**
+   * Back from the hosted report restores this page from the back/forward cache with the widget still showing
+   * "Starting your briefing…" (navigation had begun). Reset it to the idle form, keeping the entered values.
+   */
+  private readonly handlePageShow = (event: PageTransitionEvent) => { if (event.persisted) this.resetAfterHandOff(); };
+  private readonly handleVisibility = () => { if (document.visibilityState === 'visible' && this.starting && !this.requestInFlight) this.resetAfterHandOff(); };
   private inputError = '';
   private listenersAttached = false;
   private impressionTracked = false;
@@ -52,8 +60,25 @@ export class ContentDiscoveryWidget extends HTMLElement {
       });
       this.listenersAttached = true;
     }
+    window.addEventListener('pageshow', this.handlePageShow);
+    document.addEventListener('visibilitychange', this.handleVisibility);
     this.render();
     this.trackImpressionIfReady();
+  }
+
+  disconnectedCallback(): void {
+    window.removeEventListener('pageshow', this.handlePageShow);
+    document.removeEventListener('visibilitychange', this.handleVisibility);
+  }
+
+  /** Returns a widget left in "Starting your briefing…" (or its error state) to the editable form. */
+  private resetAfterHandOff(): void {
+    if (!this.starting && this.state !== 'error') return;
+    this.starting = false;
+    this.requestInFlight = false;
+    this.inputError = '';
+    if (this.definition) this.state = 'intro';
+    this.render();
   }
 
   /** Opens the public widget experience. The hosted application owns generation and reports. */
@@ -133,12 +158,14 @@ export class ContentDiscoveryWidget extends HTMLElement {
     let responseError: string | undefined;
     let requestId: string | undefined;
     try {
+      this.requestInFlight = true;
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ publisherId: this.dataset.publisher ?? 'demo', companyUrl: company, jobTitle: role, sessionId: this.sessionId }),
       });
       responseStatus = response.status;
+      this.requestInFlight = false;
       let payload: { generationUrl?: string; reportUrl?: string; statusUrl?: string; error?: unknown; requestId?: unknown } = {};
       try { payload = await response.json() as typeof payload; } catch { /* The development diagnostic below retains the HTTP status. */ }
       responseError = typeof payload.error === 'string' && /^[a-z0-9_-]{1,80}$/i.test(payload.error) ? payload.error : undefined;
@@ -161,6 +188,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
       this.navigateTo(new URL(payload.generationUrl ?? payload.reportUrl ?? payload.statusUrl as string, new URL(endpoint, window.location.href)).href);
     } catch (error) {
       // Visitors see the friendly message; integrators get the status and safe error code in the console.
+      this.requestInFlight = false;
       console.warn('[content-discovery] generation request failed', { endpoint, status: responseStatus, error: responseError ?? (error instanceof Error ? error.name : 'unknown'), requestId });
       this.closedByUser = false;
       this.starting = false;
