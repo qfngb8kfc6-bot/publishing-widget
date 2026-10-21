@@ -116,6 +116,11 @@ export interface ServerLogFields {
   rejectReason?: string;
   /** catalogue_refresh_complete: time spent writing the persisted snapshot (0 when unchanged). */
   snapshotSaveMs?: number;
+  /** heap_usage: process memory in MB, logged every 60s and after each catalogue stage. */
+  heapUsedMb?: number;
+  heapTotalMb?: number;
+  rssMb?: number;
+  externalMb?: number;
   /** enrichment_retry: comma-separated operations retried in the background and whether the result is complete. */
   retryOperations?: string;
   retrySuccess?: boolean;
@@ -159,10 +164,18 @@ export function safeLogText(value: unknown, limit = 4_000): string | undefined {
     .slice(0, limit);
 }
 
+const megabytes = (bytes: number) => Math.round(bytes / 104857.6) / 10;
+
+/** One heap_usage line: heap used and total, resident set size and external (Buffer) memory, in MB. */
+export function logHeapUsage(logger: StructuredLogger | undefined, stage: string, publisherId?: string): void {
+  const memory = process.memoryUsage();
+  logger?.info('heap_usage', { stage, ...(publisherId ? { publisherId } : {}), heapUsedMb: megabytes(memory.heapUsed), heapTotalMb: megabytes(memory.heapTotal), rssMb: megabytes(memory.rss), externalMb: megabytes(memory.external) });
+}
+
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'own_company_share', 'enrichment_retry', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
+    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'own_company_share', 'enrichment_retry', 'heap_usage', 'report_performance', 'theme_performance', 'slow_span'].includes(message);
     if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };

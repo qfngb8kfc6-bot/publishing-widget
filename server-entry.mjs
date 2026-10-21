@@ -117,6 +117,9 @@ async function start() {
   }, 100).unref();
   server.listen(port, host, () => {
     console.log(`[publisher-widget] server listening host=${host} port=${port} environment=${environment} analyticsStore=${analyticsStoreMode}`);
+    // heap_usage every 60 seconds (plus after each catalogue stage, logged by the app) to track memory headroom.
+    app.logHeapUsage('startup');
+    setInterval(() => app.logHeapUsage('periodic'), 60_000).unref();
     // Load catalogues (and so start background index builds) before the first visitor needs them.
     if (process.env.PUBLISHER_CATALOGUE_PREWARM === 'false') return;
     const startedAt = Date.now();

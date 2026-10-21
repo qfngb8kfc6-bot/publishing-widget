@@ -1,6 +1,6 @@
 import { compactProfessionalFieldIndexes, mapInSlices, professionalFieldIndexes, TokenDictionary, type NormalizedArticle, type ProfessionalFieldIndexes } from '../core';
 import { compactFeedPreselectionFields, feedPreselectionFields, type ContentTimingDiagnostics, type FeedPreselectionFields } from '../publishers/content';
-import type { CatalogueSnapshotStore } from './catalogue-snapshot';
+import { shareRepeatedStrings, type CatalogueSnapshotStore } from './catalogue-snapshot';
 
 export interface CatalogueCacheDiagnostics extends ContentTimingDiagnostics {
   catalogueSnapshotLookupMs?: number;
@@ -119,7 +119,11 @@ export interface PublisherCatalogueCacheOptions {
   onIndexPrebuilt?: (publisherId: string, stats: IndexPrebuildStats & { trigger: 'load' | 'snapshot' }) => void;
   /** Called once per source refresh, after any snapshot write has finished. */
   onRefreshComplete?: (publisherId: string, report: CatalogueRefreshReport) => void;
+  /** Called after each memory-relevant stage, e.g. to log heap usage. */
+  onStage?: (publisherId: string, stage: CatalogueStage) => void;
 }
+
+export type CatalogueStage = 'snapshot_hydrated' | 'source_loaded' | 'index_prebuilt' | 'snapshot_saved';
 
 interface CacheEntry {
   publisherId: string;
@@ -131,6 +135,10 @@ interface CacheEntry {
   /** True once this version is known to be stored as the persisted snapshot. */
   snapshotPersisted?: boolean;
   fingerprint?: Promise<string>;
+  /** True once a prebuild of this version has been queued. */
+  prebuildQueued?: boolean;
+  /** Where this version came from: the persisted snapshot or a source load. */
+  origin: 'snapshot' | 'load';
 }
 
 /**
@@ -178,6 +186,8 @@ export class PublisherCatalogueCache {
   private readonly prebuildOptions?: IndexPrebuildOptions;
   private readonly onIndexPrebuilt?: PublisherCatalogueCacheOptions['onIndexPrebuilt'];
   private readonly onRefreshComplete?: PublisherCatalogueCacheOptions['onRefreshComplete'];
+  private readonly onStage?: PublisherCatalogueCacheOptions['onStage'];
+  private maintenance: Promise<void> = Promise.resolve();
 
   constructor(options: PublisherCatalogueCacheOptions = {}) {
     this.ttlMs = Math.max(0, options.ttlMs ?? 5 * 60 * 1000);
@@ -189,6 +199,7 @@ export class PublisherCatalogueCache {
     this.prebuildOptions = options.prebuildIndexes === true ? {} : options.prebuildIndexes || undefined;
     this.onIndexPrebuilt = options.onIndexPrebuilt;
     this.onRefreshComplete = options.onRefreshComplete;
+    this.onStage = options.onStage;
   }
 
   async get(publisherId: string, key: string, loader: CatalogueLoader): Promise<CatalogueCacheResult> {
@@ -235,12 +246,13 @@ export class PublisherCatalogueCache {
    * Writes the snapshot in the background, but only when the catalogue changed: rewriting an unchanged
    * multi-megabyte snapshot on every refresh costs serialization time and a long database write for nothing.
    */
-  private async persistSnapshot(entry: CacheEntry, previous: CacheEntry | undefined, refreshMs: number): Promise<void> {
+  private async persistSnapshot(entry: CacheEntry, previousFingerprint: string | undefined, refreshMs: number): Promise<void> {
     const report: CatalogueRefreshReport = { articleCount: entry.articles.length, refreshMs, snapshot: 'none', snapshotSaveMs: 0 };
-    if (this.snapshotStore) {
+    // A version replaced while this save waited in the queue is not worth writing; the newer one will be.
+    if (this.snapshotStore && this.entries.get(entry.publisherId) === entry) {
       const startedAt = this.now();
       try {
-        const unchanged = Boolean(previous?.snapshotPersisted && previous.key === entry.key && await entryFingerprint(previous) === await entryFingerprint(entry));
+        const unchanged = previousFingerprint !== undefined && previousFingerprint === await entryFingerprint(entry);
         if (unchanged) {
           entry.snapshotPersisted = true;
           report.snapshot = 'unchanged';
@@ -248,6 +260,7 @@ export class PublisherCatalogueCache {
           await this.snapshotStore.save({ publisherId: entry.publisherId, sourceKey: entry.key, articles: entry.articles, refreshedAt: new Date(entry.refreshedAt).toISOString() });
           entry.snapshotPersisted = true;
           report.snapshot = 'saved';
+          this.onStage?.(entry.publisherId, 'snapshot_saved');
         }
       } catch (error) {
         report.snapshot = 'failed';
@@ -258,15 +271,43 @@ export class PublisherCatalogueCache {
     this.onRefreshComplete?.(entry.publisherId, report);
   }
 
-  /** Makes an entry current, cancels the replaced version's prebuild and starts this version's. */
-  private install(entry: CacheEntry, trigger: 'load' | 'snapshot'): void {
+  /**
+   * Runs background work (index prebuilds, background refreshes, snapshot writes) one job at a time, so their
+   * memory peaks never overlap: a refresh never loads a new catalogue while an index is being built, and a
+   * snapshot is never serialized while either runs.
+   */
+  private enqueue<T>(job: () => Promise<T>): Promise<T> {
+    const run = this.maintenance.then(job, job);
+    this.maintenance = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  /** Resolves once all queued background work has finished (tests and diagnostics). */
+  async idle(): Promise<void> {
+    let current: Promise<void>;
+    do { current = this.maintenance; await current; } while (current !== this.maintenance);
+  }
+
+  /** Makes an entry current and cancels the replaced version's prebuild. The old version is released here. */
+  private install(entry: CacheEntry, trigger: 'load' | 'snapshot', prebuild = true): void {
     const previous = this.entries.get(entry.publisherId);
     if (previous && previous !== entry) previous.index.cancel();
     this.entries.set(entry.publisherId, entry);
-    if (!this.prebuildOptions) return;
-    void entry.index.prebuild(this.prebuildOptions)
-      .then((stats) => { if (!stats.cancelled) this.onIndexPrebuilt?.(entry.publisherId, { ...stats, trigger }); })
-      .catch((error) => this.onRefreshError?.(entry.publisherId, error, true));
+    if (prebuild) this.schedulePrebuild(entry, trigger);
+  }
+
+  /** Queues this version's index prebuild; skipped if the version was replaced before its turn came. */
+  private schedulePrebuild(entry: CacheEntry, trigger: 'load' | 'snapshot'): void {
+    if (!this.prebuildOptions || entry.prebuildQueued) return;
+    entry.prebuildQueued = true;
+    const options = this.prebuildOptions;
+    void this.enqueue(async () => {
+      if (this.entries.get(entry.publisherId) !== entry) return;
+      const stats = await entry.index.prebuild(options);
+      if (stats.cancelled) return;
+      this.onIndexPrebuilt?.(entry.publisherId, { ...stats, trigger });
+      this.onStage?.(entry.publisherId, 'index_prebuilt');
+    }).catch((error) => this.onRefreshError?.(entry.publisherId, error, true));
   }
 
   private warm(entry: CacheEntry, age: number): CatalogueCacheResult {
@@ -286,9 +327,13 @@ export class PublisherCatalogueCache {
         if (snapshot && snapshot.articles.length <= this.maxArticles && snapshot.articles.every((article) => article && article.publisherId === publisherId && typeof article.id === 'string' && typeof article.url === 'string')) {
           const refreshedAt = Date.parse(snapshot.refreshedAt);
           if (Number.isFinite(refreshedAt)) {
-            const entry: CacheEntry = { publisherId, key, refreshedAt, articles: snapshot.articles, index: new CatalogueArticleIndex(snapshot.articles), timings: {}, snapshotPersisted: true };
-            this.install(entry, 'snapshot');
+            // A legacy-format snapshot counts as not persisted, so the next refresh rewrites it in chunks even if
+            // the catalogue is unchanged.
+            const entry: CacheEntry = { publisherId, key, refreshedAt, articles: snapshot.articles, index: new CatalogueArticleIndex(snapshot.articles), timings: {}, snapshotPersisted: snapshot.format !== 'legacy', origin: 'snapshot' };
             const age = Math.max(0, this.now() - refreshedAt);
+            // A stale snapshot is about to be replaced by a refresh, so it is indexed only if that refresh fails.
+            this.install(entry, 'snapshot', age < this.ttlMs);
+            this.onStage?.(publisherId, 'snapshot_hydrated');
             if (age < this.maxStaleMs) return { articles: entry.articles, index: entry.index, diagnostics: { sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, cataloguePreparationMs: 0, catalogueSnapshotLookupMs: Math.max(0, Date.now() - snapshotStartedAt), catalogueCacheHit: true, catalogueCacheAgeMs: age, catalogueRefreshMs: 0, catalogueRefreshReason: 'snapshot', catalogueStale: age >= this.ttlMs } };
           }
         }
@@ -304,7 +349,16 @@ export class PublisherCatalogueCache {
 
   private startBackgroundRefresh(publisherId: string, key: string, cacheKey: string, loader: CatalogueLoader, existing?: CacheEntry): void {
     if (this.inFlight.has(cacheKey)) return;
-    const refresh = this.refresh(publisherId, key, loader, 'expired', existing);
+    const refresh = this.enqueue(async () => {
+      try {
+        return await this.refresh(publisherId, key, loader, 'expired', existing);
+      } finally {
+        // A failed refresh leaves the current version in place: index it now if that was deferred. Queued from
+        // inside this job so the prebuild is in the queue before the job counts as finished.
+        const current = this.entries.get(publisherId);
+        if (current) this.schedulePrebuild(current, current.origin);
+      }
+    });
     this.inFlight.set(cacheKey, refresh);
     void refresh.catch((error) => this.onRefreshError?.(publisherId, error, true)).finally(() => { this.inFlight.delete(cacheKey); });
   }
@@ -312,12 +366,18 @@ export class PublisherCatalogueCache {
   private async refresh(publisherId: string, key: string, loader: CatalogueLoader, reason: CatalogueCacheDiagnostics['catalogueRefreshReason'], existing?: CacheEntry): Promise<CatalogueCacheResult> {
     const startedAt = this.now();
     try {
+      // Only the previous version's fingerprint is kept for the snapshot comparison, never the version itself,
+      // so the old catalogue can be released as soon as the new one is installed.
+      const previousFingerprint = existing?.snapshotPersisted && existing.key === key ? await entryFingerprint(existing) : undefined;
       const loaded = await loader();
       if (loaded.articles.length > this.maxArticles) throw new Error('catalogue_exceeds_cache_bound');
+      await shareRepeatedStrings(loaded.articles);
       const refreshedAt = this.now();
-      const entry: CacheEntry = { publisherId, key, refreshedAt, articles: loaded.articles, index: new CatalogueArticleIndex(loaded.articles), timings: loaded.timings ?? {} };
+      const entry: CacheEntry = { publisherId, key, refreshedAt, articles: loaded.articles, index: new CatalogueArticleIndex(loaded.articles), timings: loaded.timings ?? {}, origin: 'load' };
       this.install(entry, 'load');
-      void this.persistSnapshot(entry, existing, Math.max(0, this.now() - startedAt));
+      this.onStage?.(publisherId, 'source_loaded');
+      const refreshMs = Math.max(0, this.now() - startedAt);
+      void this.enqueue(() => this.persistSnapshot(entry, previousFingerprint, refreshMs));
       return { articles: loaded.articles, index: entry.index, diagnostics: { ...(loaded.timings ?? {}), catalogueCacheHit: false, catalogueCacheAgeMs: 0, catalogueRefreshMs: Math.max(0, this.now() - startedAt), catalogueRefreshReason: reason } };
     } catch (error) {
       if (existing && existing.key === key) {

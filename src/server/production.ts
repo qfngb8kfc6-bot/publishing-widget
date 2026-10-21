@@ -14,7 +14,7 @@ import { createAnalyticsIngestionRoute } from './analytics-route';
 import { corsHeaders, corsPreflight, DEFAULT_PLATFORM_ORIGIN, originAllowed, type OriginPolicyOptions } from './cors';
 import { createGlobalHealthResponse, createPublisherHealthResponse } from './health';
 import { createReadinessResponse } from './health';
-import { createStructuredLogger, createRequestId, safeLogText, type StructuredLogger } from './logging';
+import { createStructuredLogger, createRequestId, logHeapUsage, safeLogText, type StructuredLogger } from './logging';
 import { requestRateLimitKey, SlidingWindowRateLimiter } from './rate-limit';
 import { createPublisherSearchRoute } from './publisher-routes';
 import { createRealPublisherProxy } from './real-publisher-proxy';
@@ -125,6 +125,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     snapshotStore: options.catalogueSnapshotStore,
     // Match indexes are built in the background after every catalogue load so first requests do not pay for them.
     prebuildIndexes: serverEnvironment.PUBLISHER_INDEX_PREBUILD !== 'false',
+    onStage: (publisherId, stage) => logHeapUsage(logger, stage, publisherId),
     onRefreshComplete: (publisherId, report) => logger.info('catalogue_refresh_complete', {
       publisherId,
       durationMs: Math.round(report.refreshMs),
@@ -278,7 +279,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); } };
+  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); } };
 }
 
 export async function runConfiguredAIHealthCheck(serverEnvironment: Record<string, string | undefined> = {}, fetchImpl: typeof fetch = fetch): Promise<{ status: 'disabled' | 'ok'; provider?: string }> {
