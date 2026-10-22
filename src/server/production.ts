@@ -66,6 +66,9 @@ export { PostgresArticleTextStore } from '../reports/article-texts';
 export { resolveCommitSha } from './health';
 export { explanationQualityWarnings, summaryQualityWarnings } from '../ai/content-quality';
 
+/** Characters of each article's full text added to its match index, as hashes: ~1.2 KB per article (~14 MB for 11.5k). */
+const LEAD_MATCH_CHARS = 1500;
+
 function jsonError(error: string, status: number, requestId: string): Response {
   return Response.json({ error, requestId }, { status, headers: { 'X-Request-ID': requestId } });
 }
@@ -132,6 +135,9 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const companyContextProvider = options.companyContextProvider ?? new SafeCompanyContextProvider(options.fetchImpl ?? fetch);
   const companyInputResolver = options.companyInputResolver ?? new BoundedCompanyInputResolver(options.fetchImpl ?? fetch);
   const reportAI = aiProvider ? { config: aiConfig, provider: aiProvider } : undefined;
+  // Kill switch: without WVC_ENRICHMENT_ENABLED=true nothing is fetched and stored text is never used.
+  const articleTextStore = options.articleTextStore;
+  const textEnrichmentEnabled = serverEnvironment.WVC_ENRICHMENT_ENABLED === 'true' && Boolean(articleTextStore);
   const catalogueCache = new PublisherCatalogueCache({
     ttlMs: options.catalogueCacheTtlMs ?? Number(serverEnvironment.PUBLISHER_CATALOGUE_CACHE_TTL_MS ?? 5 * 60 * 1000),
     maxStaleMs: options.catalogueCacheMaxStaleMs ?? Number(serverEnvironment.PUBLISHER_CATALOGUE_MAX_STALE_MS ?? 24 * 60 * 60 * 1000),
@@ -139,6 +145,13 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     // Match indexes are built in the background after every catalogue load so first requests do not pay for them.
     prebuildIndexes: serverEnvironment.PUBLISHER_INDEX_PREBUILD !== 'false',
     onStage: (publisherId, stage) => logHeapUsage(logger, stage, publisherId),
+    // Lead excerpts of the full text join the match indexes as hashes; the text stays in Postgres.
+    leadExcerpts: textEnrichmentEnabled && articleTextStore ? {
+      covers: (publisherId) => Boolean(enrichmentSourceFor(publisherId)),
+      page: (publisherId, after, limit) => articleTextStore.leadPage(publisherId, after, limit, LEAD_MATCH_CHARS),
+      forStoryCodes: (publisherId, storyCodes) => articleTextStore.leads(publisherId, storyCodes, LEAD_MATCH_CHARS),
+    } : undefined,
+    onLeadsAttached: (publisherId, stats) => logger.info('lead_index_update', { publisherId, stage: stats.trigger, leadCount: stats.leadCount, durationMs: Math.round(stats.durationMs) }),
     onRefreshComplete: (publisherId, report) => logger.info('catalogue_refresh_complete', {
       publisherId,
       durationMs: Math.round(report.refreshMs),
@@ -162,14 +175,11 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       operation: background ? 'background' : 'foreground',
     }),
   });
-  // Kill switch: without WVC_ENRICHMENT_ENABLED=true nothing is fetched and stored text is never used.
-  const articleTextStore = options.articleTextStore;
-  const textEnrichmentEnabled = serverEnvironment.WVC_ENRICHMENT_ENABLED === 'true' && Boolean(articleTextStore);
   const textSyncs = new Map<string, TextEnrichmentSync>();
   if (articleTextStore) {
     for (const publisherId of enrichedPublisherIds()) {
       const source = enrichmentSourceFor(publisherId)!;
-      textSyncs.set(publisherId, new TextEnrichmentSync({ publisherId, source, store: articleTextStore, resolveSecret, fetchImpl: options.fetchImpl, logger, runExclusive: (job) => catalogueCache.runExclusive(job) }));
+      textSyncs.set(publisherId, new TextEnrichmentSync({ publisherId, source, store: articleTextStore, resolveSecret, fetchImpl: options.fetchImpl, logger, runExclusive: (job) => catalogueCache.runExclusive(job), onTextsChanged: (id, storyCodes) => { if (textEnrichmentEnabled) void catalogueCache.updateLeads(id, storyCodes); } }));
     }
   }
   const textEnrichmentStatus = async (publisherId: string) => textSyncs.get(publisherId)?.status(textEnrichmentEnabled);
