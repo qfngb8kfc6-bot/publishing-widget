@@ -282,6 +282,14 @@ export class PublisherCatalogueCache {
     return run;
   }
 
+  /**
+   * Runs other memory-heavy background work (e.g. a full-text sync page) on the same queue, so it never overlaps
+   * a catalogue refresh, index prebuild or snapshot save.
+   */
+  runExclusive<T>(job: () => Promise<T>): Promise<T> {
+    return this.enqueue(job);
+  }
+
   /** Resolves once all queued background work has finished (tests and diagnostics). */
   async idle(): Promise<void> {
     let current: Promise<void>;

@@ -1,8 +1,9 @@
 import './admin.css';
 import { capabilitiesFrom, modeCopy, modeLabel, type AdminCapabilities } from './admin-mode';
 
-interface PublisherRow { publisherId: string; name: string; enabled: boolean; environment: string; sourceType: string | null; allowedOrigins: string[]; contentCheck: ContentCheck | null; analytics?: { widgetOpens: number; reportsGenerated: number; storyClicks: number; generationSuccessRate: number }; }
+interface PublisherRow { publisherId: string; name: string; enabled: boolean; environment: string; sourceType: string | null; allowedOrigins: string[]; contentCheck: ContentCheck | null; textEnrichment?: TextEnrichment; analytics?: { widgetOpens: number; reportsGenerated: number; storyClicks: number; generationSuccessRate: number }; }
 interface ContentCheck { checkedAt: string; reachable: boolean; sourceType: string; recordsFetched: number; accepted: number; rejected: number; duplicates: number; warnings: string[]; elapsedMs: number; sampleTitles: string[]; coverage: { image: number; publishedAt: number; description: number }; error?: { code: string; message: string; status?: number }; }
+interface TextEnrichment { enabled: boolean; recordsSynced: number; backfillComplete: boolean; backfillLastPage: number; totalPages?: number; lastSyncAt?: string; lastSuccessAt?: string; lastErrorCode?: string; lastErrorAt?: string; }
 interface PublisherListResponse { publishers: PublisherRow[]; persistence?: string; capabilities?: Partial<AdminCapabilities>; }
 interface PublisherDetail { publisher: Record<string, any>; analytics: PublisherRow['analytics']; lastContentCheck: ContentCheck | null; embed: string; links: { analytics: string; publicDemo: string }; persistence: string; capabilities?: Partial<AdminCapabilities>; }
 
@@ -40,10 +41,17 @@ async function renderDashboard(): Promise<void> {
   document.querySelectorAll<HTMLButtonElement>('.open-publisher').forEach((button) => button.addEventListener('click', () => void renderPublisher(button.dataset.publisher!)));
 }
 
+function textEnrichmentMarkup(publisherId: string, status: TextEnrichment | undefined): string {
+  if (!status) return '';
+  const backfill = status.backfillComplete ? 'backfill complete' : `backfill page ${status.backfillLastPage}${status.totalPages ? ` of ${status.totalPages}` : ''}`;
+  const parts = [`Full text ${status.enabled ? 'on' : 'off'}`, `${status.recordsSynced.toLocaleString()} records synced`, backfill, `last sync ${status.lastSyncAt ? new Date(status.lastSyncAt).toLocaleString() : 'never'}`, `last error ${status.lastErrorCode ? `${status.lastErrorCode}${status.lastErrorAt ? ` (${new Date(status.lastErrorAt).toLocaleString()})` : ''}` : 'none'}`];
+  return `<small class="health-detail" data-text-sync="${escapeHtml(publisherId)}">${escapeHtml(parts.join(' · '))}</small>`;
+}
+
 function healthRowMarkup(publisher: PublisherRow): string {
   const check = publisher.contentCheck;
   const detail = check ? `${check.recordsFetched} fetched · ${check.accepted} accepted · ${check.rejected} rejected · ${check.duplicates} duplicates${check.error ? ` · ${check.error.message}` : ''}` : 'Not checked';
-  return `<tr><td><strong>${escapeHtml(publisher.name)}</strong><small>${escapeHtml(publisher.publisherId)} · ${publisher.enabled ? 'enabled' : 'disabled'}</small></td><td>${escapeHtml(publisher.sourceType ?? 'Unknown')}</td><td><span class="health-status" data-health-status="${escapeHtml(publisher.publisherId)}">${checkMarkup(check)}</span><small class="health-detail" data-health-detail="${escapeHtml(publisher.publisherId)}">${escapeHtml(detail)}</small></td><td><small>${check ? escapeHtml(new Date(check.checkedAt).toLocaleString()) : 'Not checked'}</small></td><td><button class="secondary run-health-check" data-publisher="${escapeHtml(publisher.publisherId)}" type="button">Run check</button></td></tr>`;
+  return `<tr><td><strong>${escapeHtml(publisher.name)}</strong><small>${escapeHtml(publisher.publisherId)} · ${publisher.enabled ? 'enabled' : 'disabled'}</small></td><td>${escapeHtml(publisher.sourceType ?? 'Unknown')}</td><td><span class="health-status" data-health-status="${escapeHtml(publisher.publisherId)}">${checkMarkup(check)}</span><small class="health-detail" data-health-detail="${escapeHtml(publisher.publisherId)}">${escapeHtml(detail)}</small>${textEnrichmentMarkup(publisher.publisherId, publisher.textEnrichment)}</td><td><small>${check ? escapeHtml(new Date(check.checkedAt).toLocaleString()) : 'Not checked'}</small></td><td><button class="secondary run-health-check" data-publisher="${escapeHtml(publisher.publisherId)}" type="button">Run check</button></td></tr>`;
 }
 
 async function renderContentHealth(): Promise<void> {

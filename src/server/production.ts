@@ -28,6 +28,9 @@ import { AdminAuth } from './admin-auth';
 import { createAdminRoutes } from './admin-routes';
 import { PublisherCatalogueCache } from '../reports/catalogue-cache';
 import { GenerationJobs, MemoryGenerationJobStore, type GenerationJobStore } from '../reports/generation-jobs';
+import type { ArticleTextStore } from '../reports/article-texts';
+import { TextEnrichmentSync } from '../reports/text-enrichment';
+import { enrichedPublisherIds, enrichmentSourceFor } from '../publishers/enrichment';
 
 export interface ProductionServerOptions {
   environment?: 'development' | 'test' | 'production';
@@ -50,6 +53,8 @@ export interface ProductionServerOptions {
   catalogueSnapshotStore?: CatalogueSnapshotStore;
   /** Where asynchronous generation status is persisted; in memory when absent. */
   generationJobStore?: GenerationJobStore;
+  /** Full-text enrichment store (Postgres). Text is used only when WVC_ENRICHMENT_ENABLED=true. */
+  articleTextStore?: ArticleTextStore;
 }
 
 export { PostgresAnalyticsStore } from '../analytics/postgres-store';
@@ -57,6 +62,7 @@ export { PostgresReportStore } from '../reports/store';
 export { PostgresPublisherStore } from '../publishers/store';
 export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 export { PostgresGenerationJobStore } from '../reports/generation-jobs';
+export { PostgresArticleTextStore } from '../reports/article-texts';
 export { resolveCommitSha } from './health';
 export { explanationQualityWarnings, summaryQualityWarnings } from '../ai/content-quality';
 
@@ -91,14 +97,15 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const realServerConfig = serverRealToken && serverRealUpstream ? { ...createRealPublisherApiConfig(serverEnvironment), baseUrl: serverRealUpstream, requestHeaders: { Accept: 'application/json', Authorization: `Bearer ${serverRealToken}` } } : undefined;
   const registry = createPublisherRegistry(realServerConfig, options.fetchImpl);
   const publisherStore = options.publisherStore ?? (environment === 'production' ? undefined : new MemoryPublisherStore(registry.list().flatMap((definition) => definition.manifest ? [definition.manifest] : [])));
+  const resolveSecret = (reference: string): string | undefined => {
+    const key = reference.replace(/^env:/, '');
+    return /^[A-Z][A-Z0-9_]{1,100}$/.test(key) ? serverEnvironment[key] : undefined;
+  };
   const publisherRuntime = new PublisherRuntime(registry, {
     store: publisherStore,
     fetchImpl: options.fetchImpl,
     cacheTtlMs: options.publisherCacheTtlMs ?? Number(serverEnvironment.PUBLISHER_CACHE_TTL_MS ?? 5000),
-    resolveSecret: (reference) => {
-      const key = reference.replace(/^env:/, '');
-      return /^[A-Z][A-Z0-9_]{1,100}$/.test(key) ? serverEnvironment[key] : undefined;
-    },
+    resolveSecret,
   });
   const analyticsStore = options.analyticsStore ?? new MemoryAnalyticsStore();
   const analyticsStoreMode: 'memory' | 'postgres' = options.analyticsStoreMode ?? (options.analyticsStore ? 'postgres' : 'memory');
@@ -155,13 +162,24 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       operation: background ? 'background' : 'foreground',
     }),
   });
+  // Kill switch: without WVC_ENRICHMENT_ENABLED=true nothing is fetched and stored text is never used.
+  const articleTextStore = options.articleTextStore;
+  const textEnrichmentEnabled = serverEnvironment.WVC_ENRICHMENT_ENABLED === 'true' && Boolean(articleTextStore);
+  const textSyncs = new Map<string, TextEnrichmentSync>();
+  if (articleTextStore) {
+    for (const publisherId of enrichedPublisherIds()) {
+      const source = enrichmentSourceFor(publisherId)!;
+      textSyncs.set(publisherId, new TextEnrichmentSync({ publisherId, source, store: articleTextStore, resolveSecret, fetchImpl: options.fetchImpl, logger, runExclusive: (job) => catalogueCache.runExclusive(job) }));
+    }
+  }
+  const textEnrichmentStatus = async (publisherId: string) => textSyncs.get(publisherId)?.status(textEnrichmentEnabled);
   const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache);
   const generationJobs = new GenerationJobs({
     store: options.generationJobStore ?? new MemoryGenerationJobStore(),
     onPersistError: (error) => logger.error('generation_status_write_failed', { errorName: error instanceof Error ? error.name : 'unknown', errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation status write failed.', 240) }),
   });
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore, generationJobs);
-  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger });
+  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger, textEnrichmentStatus });
 
   const trustedProxy = options.trustedProxy ?? false;
   const handle = async (request: Request): Promise<Response> => {
@@ -297,7 +315,11 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, generationJobs, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); } };
+  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, generationJobs, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); }, startTextEnrichment: (): string[] => {
+    if (!textEnrichmentEnabled) return [];
+    for (const sync of textSyncs.values()) sync.start();
+    return [...textSyncs.keys()];
+  }, stopTextEnrichment: () => { for (const sync of textSyncs.values()) sync.stop(); }, textEnrichmentStatus };
 }
 
 export async function runConfiguredAIHealthCheck(serverEnvironment: Record<string, string | undefined> = {}, fetchImpl: typeof fetch = fetch): Promise<{ status: 'disabled' | 'ok'; provider?: string }> {
