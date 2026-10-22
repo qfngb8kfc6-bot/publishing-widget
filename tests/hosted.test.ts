@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDemoRegistry } from '../src/demo/definition';
 import { renderHostedRoute } from '../src/hosted';
 import { createProductionApp } from '../src/server/production';
+import { createPublisherRegistry } from '../src/publishers/registry';
+import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
+import { MemoryPublisherStore } from '../src/publishers/store';
 
 describe('hosted professional experience', () => {
   beforeEach(() => {
@@ -206,5 +209,125 @@ describe('hosted professional experience', () => {
     const ids = cards.map((card) => card.dataset.storyCard);
     expect(cards).toHaveLength(count);
     expect(new Set(ids).size).toBe(count);
+  });
+
+  it('renders a compact one-headline hero, a mobile layout, compact image fallbacks and a More toggle for "why"', async () => {
+    const app = createProductionApp({ environment: 'test' });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
+    }));
+    const { reportId } = await generated.json() as { reportId: string };
+    const source = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    const seed = source.recommendations[0];
+    const report = { ...source, sections: undefined, recommendations: [0, 1, 2].map((index) => ({ ...seed, articleId: `story-${index}`, rank: index + 1, article: { ...seed.article, id: `story-${index}`, url: `${seed.article.url}?story=${index}`, imageUrl: index === 1 ? undefined : 'https://images.example/story.jpg' } })) };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
+    window.history.replaceState({}, '', `/p/demo/${reportId}`);
+    await renderHostedRoute(document, createDemoRegistry());
+
+    // One headline in the hero; the publisher's results heading names the top stories instead.
+    expect(document.querySelectorAll('.report-hero h1, .report-hero h2')).toHaveLength(1);
+    expect(document.querySelector('.report-title')).toBeNull();
+    expect(document.querySelector('#top-stories-heading')?.textContent).toBeTruthy();
+    // Ring, heading, summary and actions are direct children so the ring can sit beside the heading on mobile.
+    expect([...document.querySelector('.match-summary-card')!.children].map((child) => child.className)).toEqual(['relevance-ring', 'section-kicker', 'match-summary-text', 'summary-actions']);
+    // Images and the compact fallback.
+    const cards = [...document.querySelectorAll<HTMLElement>('[data-story-card]')];
+    expect(cards.map((card) => card.classList.contains('no-image'))).toEqual([false, true, false]);
+    expect(cards[1].querySelector('.story-placeholder')?.textContent).toContain('coverage');
+    // "Why" has a More toggle, hidden where nothing is cut off (jsdom has no layout), that expands the text.
+    const toggle = cards[0].querySelector<HTMLButtonElement>('.why-toggle')!;
+    expect(toggle.hidden).toBe(true);
+    toggle.hidden = false;
+    toggle.click();
+    expect(cards[0].querySelector('.why')?.classList.contains('is-expanded')).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toBe('Less');
+
+    const styles = [...document.querySelectorAll('style')].map((style) => style.textContent).join('');
+    for (const rule of ['html{scroll-padding-top:104px}', 'scroll-margin-top:104px', '@media(max-width:639px)', 'scroll-snap-type:x mandatory', '.report-page .highlight-index{display:none}', 'max-height:180px;aspect-ratio:16/9', '-webkit-line-clamp:3', '.report-page .featured-story.no-image .story-placeholder{display:none}', 'font-size:clamp(2.5rem,3.9vw,3.5rem)', 'font-size:clamp(1.75rem,8vw,2rem)', '.report-page .featured-story h3,.report-page .story-card h3{font-family:Georgia,serif;font-weight:500;letter-spacing:-.045em}']) {
+      expect(styles).toContain(rule);
+    }
+  });
+
+  it('renders each "why" under its own article only, and the real theme search returns none to render', async () => {
+    // SGI with a synthetic feed large enough that theme search finds stories beyond the main report.
+    const topics = ['retail stores and omnichannel distribution', 'wholesale accounts and retail partners', 'store openings and flagship retail', 'ecommerce and direct-to-consumer retail', 'retail merchandising and pricing'];
+    const items = Array.from({ length: 40 }, (_, index) => { const topic = topics[index % topics.length]; return `<item><title>Brand ${index} expands ${topic} in Europe</title><link>https://www.sgieurope.com/retail/story-${index}/13000${index}.article</link><guid>https://www.sgieurope.com/retail/story-${index}/13000${index}.article</guid><description>Brand ${index} ${topic}, retail stores, wholesale, ecommerce and merchandising across Europe.</description><pubDate>Mon, 0${(index % 9) + 1} Sep 2026 08:00:00 GMT</pubDate></item>`; }).join('');
+    const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>SGI</title>${items}</channel></rss>`;
+    const app = createProductionApp({
+      environment: 'test',
+      publisherStore: new MemoryPublisherStore([sgiEuropeManifest]),
+      fetchImpl: async () => new Response(rss, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } }),
+      companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sporting goods', description: 'Nike', topics: [], entities: ['Nike'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) as never },
+    });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }),
+    }));
+    const { reportId } = await generated.json() as { reportId: string };
+    const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=sgi-europe`))).json() as { recommendations: Array<{ articleId: string; explanation: string; article: { id: string }; rankingMetadata: { explanationSource?: string } }> };
+    // Give every main-report article its own, identifiable explanation.
+    const own = <T extends { explanation: string; article: { id: string }; rankingMetadata: object }>(item: T): T => ({ ...item, explanation: `Explanation for ${item.article.id}`, rankingMetadata: { ...item.rankingMetadata, explanationSource: 'ai' } });
+    report.recommendations = report.recommendations.map(own);
+    const withSections = report as typeof report & { sections?: Array<{ recommendations: typeof report.recommendations }> };
+    withSections.sections = withSections.sections?.map((section) => ({ ...section, recommendations: section.recommendations.map(own) }));
+    const themeResponses: Array<{ recommendations: Array<{ article: { id: string }; rankingMetadata: { explanationSource?: string } }> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/analytics/events')) return Response.json({ accepted: true });
+      if (url.includes('/themes/')) {
+        // The real theme search, against the real persisted report.
+        const response = await app.handle(new Request(`https://product.example${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: init?.body }));
+        themeResponses.push(await response.clone().json());
+        return response;
+      }
+      return Response.json(report);
+    }));
+    window.history.replaceState({}, '', `/p/sgi-europe/${reportId}`);
+    await renderHostedRoute(document, createPublisherRegistry());
+
+    const explanationFor = new Map(report.recommendations.map((item) => [item.article.id, item.explanation]));
+    const mainCards = [...document.querySelectorAll<HTMLElement>('[data-story-card]')];
+    expect(mainCards.length).toBeGreaterThan(1);
+    for (const card of mainCards) expect(card.querySelector('.why-text')?.textContent).toBe(explanationFor.get(card.dataset.storyCard!));
+    expect(new Set(mainCards.map((card) => card.querySelector('.why-text')?.textContent)).size).toBe(mainCards.length);
+
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-theme-search]')) {
+      button.click();
+      await vi.waitFor(() => expect(document.querySelector('[data-theme-results]')?.getAttribute('aria-busy')).toBe('false'));
+      // Theme search writes no explanations, so no theme card may show a "why" box, and none may reuse a main-report one.
+      expect(document.querySelectorAll('.theme-results .why')).toHaveLength(0);
+      for (const card of document.querySelectorAll<HTMLElement>('.theme-results [data-story-card]')) {
+        expect(card.textContent).not.toContain('Explanation for');
+      }
+    }
+    const themed = themeResponses.flatMap((payload) => payload.recommendations);
+    expect(themed.length).toBeGreaterThan(0);
+    expect(themed.every((item) => item.rankingMetadata.explanationSource === 'deterministic')).toBe(true);
+  });
+
+  it('shows an AI theme explanation only under the article it was written for', async () => {
+    const app = createProductionApp({ environment: 'test' });
+    const generated = await app.handle(new Request('https://product.example/api/reports/generate?mode=sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
+    }));
+    const { reportId } = await generated.json() as { reportId: string };
+    const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    const seed = report.recommendations[0];
+    const themed = ['t-1', 't-2', 't-3'].map((id, index) => ({ ...seed, articleId: id, explanation: `Why ${id}`, article: { ...seed.article, id, url: `${seed.article.url}?${id}`, title: `Theme story ${id}` }, rankingMetadata: { ...seed.rankingMetadata, explanationSource: index === 1 ? 'deterministic' : 'ai' } }));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/analytics/events')) return Response.json({ accepted: true });
+      if (url.includes('/themes/')) return Response.json({ theme: 'x', recommendations: themed });
+      return Response.json(report);
+    }));
+    window.history.replaceState({}, '', `/p/demo/${reportId}`);
+    await renderHostedRoute(document, createDemoRegistry());
+    document.querySelector<HTMLButtonElement>('[data-theme-search]')!.click();
+    await vi.waitFor(() => expect(document.querySelectorAll('.theme-results [data-story-card]')).toHaveLength(3));
+    const cards = [...document.querySelectorAll<HTMLElement>('.theme-results [data-story-card]')];
+    expect(cards.map((card) => [card.dataset.storyCard, card.querySelector('.why-text')?.textContent ?? null])).toEqual([['t-1', 'Why t-1'], ['t-2', null], ['t-3', 'Why t-3']]);
   });
 });

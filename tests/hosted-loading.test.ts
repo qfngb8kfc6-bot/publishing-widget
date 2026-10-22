@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { generationPageMarkup, generationProgress, runGenerationPage, STAGE_WEIGHTS, type GenerationStatusPayload } from '../src/hosted-loading';
+import { fitThemeChips, generationPageMarkup, generationProgress, runGenerationPage, STAGE_WEIGHTS, type GenerationStatusPayload } from '../src/hosted-loading';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import { createEvent, type AnalyticsEvent } from '../src/core';
 import { validateAnalyticsEvent } from '../src/server/analytics-validation';
@@ -143,6 +143,10 @@ describe('hosted loading page', () => {
     expect(root.querySelector('[data-loading-failure]')?.getAttribute('role')).toBe('alert');
     expect(root.querySelector('[data-failure-message]')?.textContent).toContain('interrupted');
     expect(root.querySelector('[data-loading-identity]')?.textContent).toBe('For a Head of Retail at Nike');
+    // The page title and the card agree; the card heading is for screen readers so the line is not shown twice.
+    expect(root.querySelector('[data-loading-heading]')?.textContent).toBe('We couldn’t finish your briefing');
+    expect(root.querySelector('[data-failure-heading]')?.textContent).toBe('We couldn’t finish your briefing');
+    expect(root.querySelector('[data-failure-heading]')?.classList.contains('sr-only')).toBe(true);
     expect(root.querySelector('[data-loading-panel]')?.hasAttribute('hidden')).toBe(true);
     const retry = root.querySelector<HTMLButtonElement>('[data-retry]')!;
     expect(document.activeElement).toBe(retry);
@@ -173,7 +177,7 @@ describe('hosted loading page', () => {
     form.querySelector<HTMLInputElement>('[name="companyUrl"]')!.value = 'adids';
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await until(() => (root.querySelector('[data-edit-status]')?.textContent ?? '').includes("couldn't find"));
-    expect(root.querySelector('[data-edit-status]')?.textContent).toBe("We couldn't find 'adids'. Check the spelling or enter the website (adids.com).");
+    expect(root.querySelector('[data-edit-status]')?.textContent).toBe("We couldn't find 'adids'. Check the spelling or enter the company's website.");
     expect(JSON.parse(String(calls.find((call) => call.init?.method === 'POST')?.init?.body))).toEqual({ publisherId: 'sgi-europe', companyUrl: 'adids', jobTitle: 'Product Manager', sessionId: 'session-9' });
   });
 
@@ -197,7 +201,7 @@ describe('hosted loading page', () => {
     await until(() => !root.querySelector('[data-loading-failure]')?.hasAttribute('hidden'));
     expect(attempt).toBe(2);
     expect(root.querySelector<HTMLButtonElement>('[data-retry]')?.hidden).toBe(true);
-    expect(document.activeElement).toBe(root.querySelector('[data-failure-heading]'));
+    expect(document.activeElement).toBe(root.querySelector('[data-loading-heading]'));
   });
 
   it('respects reduced motion: no fades, pulse or exit animation, and a quicker hand-off', async () => {
@@ -242,6 +246,32 @@ describe('hosted loading page', () => {
   it('sends loading analytics the ingestion endpoint accepts', () => {
     for (const [name, metadata] of [['generation_started', { surface: 'loading_page' }], ['generation_stage_completed', { surface: 'loading_page', generationStage: 'profile_built', elapsedMs: 2100, stageMs: 1800 }], ['generation_completed', { surface: 'loading_page', elapsedMs: 8200 }], ['generation_failed', { surface: 'loading_page', errorCode: 'client_timeout', generationStage: 'ai_complete', elapsedMs: 45_100 }], ['loading_abandoned', { surface: 'loading_page', generationStage: 'ranking_complete', elapsedMs: 4000 }]] as const) {
       expect(validateAnalyticsEvent(createEvent(name, 'sgi-europe', 'session-1', metadata)).name).toBe(name);
+    }
+  });
+
+  it('keeps theme chips to two lines and stands in "+N" for the rest', () => {
+    const container = document.createElement('span');
+    container.innerHTML = ['a', 'b', 'c', 'd', 'e', 'f'].map((theme) => `<span class="loading-chip">${theme}</span>`).join('');
+    document.body.appendChild(container);
+    // Fake layout: three chips per line, 30px apart; the "+N" chip lands after the last visible chip.
+    const lineOf = (element: HTMLElement) => {
+      const visible = [...container.querySelectorAll<HTMLElement>('.loading-chip:not(.loading-chip-more)')].filter((chip) => !chip.hidden);
+      const index = element.classList.contains('loading-chip-more') ? visible.length : [...container.children].indexOf(element);
+      return Math.floor(index / 3) * 30;
+    };
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() { return lineOf(this as HTMLElement); } });
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return 24; } });
+    try {
+      container.insertAdjacentHTML('beforeend', '<span class="loading-chip">g</span><span class="loading-chip">h</span>');
+      fitThemeChips(container);
+      const shown = [...container.querySelectorAll<HTMLElement>('.loading-chip')].filter((chip) => !chip.hidden).map((chip) => chip.textContent);
+      expect(shown).toEqual(['a', 'b', 'c', 'd', 'e', '+3 more themes']);
+      // Fitting again (e.g. after a resize) starts from all chips, not the reduced set.
+      fitThemeChips(container);
+      expect(container.querySelectorAll('.loading-chip-more')).toHaveLength(1);
+    } finally {
+      delete (HTMLElement.prototype as { offsetTop?: number }).offsetTop;
+      delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
     }
   });
 });

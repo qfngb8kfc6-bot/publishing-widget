@@ -122,14 +122,55 @@ function sharedStyles(): string {
 @media(max-width:520px){.loading-panel,.loading-failure{padding:16px 16px 14px;border-radius:20px}.loading-step-label{font-size:.88rem}.loading-frame .generation-inner h1{font-size:clamp(2.1rem,10vw,3rem)}}
 @media(prefers-reduced-motion:reduce){.loading-step,.loading-marker,.loading-check,.loading-progress span,.loading-message,.loading-frame .generation-inner{transition:none}.loading-step[data-state=active] .loading-marker::after{display:none;animation:none}.loading-chip{opacity:1;transform:none;animation:none}}
 .loading-frame.reduced-motion .loading-step,.loading-frame.reduced-motion .loading-marker,.loading-frame.reduced-motion .loading-check,.loading-frame.reduced-motion .loading-progress span,.loading-frame.reduced-motion .loading-message,.loading-frame.reduced-motion .generation-inner{transition:none}.loading-frame.reduced-motion .loading-step[data-state=active] .loading-marker::after{display:none;animation:none}.loading-frame.reduced-motion .loading-chip{opacity:1;transform:none;animation:none}
+.hosted-shell.loading-shell{display:flex;height:100vh;height:100dvh;min-height:0;padding:clamp(0px,1.6vmin,22px);place-items:stretch}.loading-shell .hosted-inner{display:flex;width:100%;height:100%;min-height:0}
+.hosted-shell .generation-frame.loading-frame{flex:1;height:100%;min-height:0;padding:clamp(14px,3.6vh,52px) clamp(16px,4vw,64px) clamp(10px,2.2vh,26px);border-radius:clamp(0px,3vmin,44px)}
+.loading-frame .generation-inner{flex:1;width:100%;min-height:0;margin:0;justify-content:center}.loading-frame .generation-logo .hosted-brand{margin:0 auto clamp(10px,3.2vh,44px)}.loading-frame .generation-logo .hosted-brand img{max-height:clamp(28px,5.5vh,54px)}
+.loading-frame .generation-eyebrow{margin:0 0 clamp(6px,1.6vh,16px);font-size:clamp(.62rem,1.4vh,.72rem)}.loading-frame .generation-inner h1{font-size:clamp(1.55rem,min(7vw,7.5vh),4.6rem);line-height:.95}.loading-frame .generation-subtitle{margin:clamp(6px,1.6vh,18px) auto 0;font-size:clamp(.82rem,2vh,1.1rem)}
+.loading-frame .loading-panel,.loading-frame .loading-failure{margin-top:clamp(12px,3.4vh,40px)}.loading-frame .loading-panel{padding:clamp(10px,2.2vh,20px) clamp(14px,3vw,24px) clamp(9px,2vh,18px)}
+.loading-frame .loading-step{gap:clamp(9px,1.6vh,13px);padding:clamp(2px,.75vh,7px) 0}.loading-frame .loading-step-label{font-size:clamp(.8rem,1.9vh,.95rem)}.loading-frame .loading-marker{width:clamp(18px,2.6vh,22px);height:clamp(18px,2.6vh,22px)}
+.loading-frame .loading-chips{gap:5px;max-height:calc(4em + 9px);margin-top:clamp(4px,.9vh,8px);overflow:hidden;font-size:clamp(.66rem,1.5vh,.74rem)}.loading-frame .loading-chip{padding:.3em .8em;font-size:1em;line-height:1.4}.loading-chip-more{border-style:dashed}
+.loading-frame .loading-progress{margin-top:clamp(8px,1.8vh,16px)}.loading-frame .loading-message{margin-top:clamp(5px,1.4vh,12px);font-size:clamp(.74rem,1.7vh,.84rem)}
+.loading-frame .loading-failure{max-height:100%;overflow:auto;padding:clamp(14px,3vh,24px)}.loading-frame .loading-edit{gap:clamp(8px,1.4vh,12px);margin-top:clamp(10px,2vh,18px)}
+.loading-frame .generation-footer{flex:none;padding-top:clamp(6px,1.4vh,14px);font-size:.72rem}
+@media(max-height:620px){.loading-frame .generation-eyebrow{display:none}}
+@media(max-height:520px) and (orientation:landscape){.loading-frame .generation-inner{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);grid-template-rows:1fr auto auto auto 1fr;column-gap:clamp(16px,4vw,48px);align-items:center;text-align:left}.loading-frame .generation-logo{grid-column:1;grid-row:2}.loading-frame .generation-logo .hosted-brand{justify-content:flex-start;margin:0 0 10px}.loading-frame .generation-inner h1{grid-column:1;grid-row:3;font-size:clamp(1.4rem,7vh,2.6rem)}.loading-frame .generation-subtitle{grid-column:1;grid-row:4;margin:8px 0 0}.loading-frame .loading-panel,.loading-frame .loading-failure{grid-column:2;grid-row:1 / -1;width:100%;margin:0}}
+.loading-frame.is-editing .generation-subtitle{display:none}
+@media(max-height:700px){.loading-frame .loading-failure{padding:12px 16px}.loading-frame .loading-failure p{font-size:.82rem;line-height:1.4}.loading-frame .loading-actions{gap:8px;margin-top:10px}.loading-frame .loading-actions button,.loading-frame .loading-edit button{min-height:40px;padding:7px 14px;font-size:.82rem}.loading-frame .loading-edit{gap:8px;margin-top:10px}.loading-frame .loading-edit label{gap:4px;font-size:.72rem}.loading-frame .loading-edit input{min-height:40px;padding:7px 10px;border-radius:10px}.loading-frame .loading-edit .loading-actions{margin-top:0}.loading-frame .loading-edit-status:empty{display:none}.loading-frame.is-editing .generation-logo .hosted-brand{margin-bottom:8px}.loading-frame.is-editing .generation-inner h1{font-size:clamp(1.4rem,6.5vw,1.9rem)}.loading-frame.is-editing .loading-failure{margin-top:12px}}
+@media(max-height:520px) and (orientation:landscape){.loading-frame .loading-edit{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.loading-frame .loading-edit .loading-actions,.loading-frame .loading-edit-status{grid-column:1 / -1}.loading-frame.is-editing .generation-inner h1{font-size:clamp(1.4rem,7vh,2.6rem)}}
+@media(max-height:420px){.loading-frame .generation-footer{display:none}.loading-frame .loading-step{padding:1px 0}}
 </style>`;
+}
+
+/**
+ * Keeps theme chips to at most two lines: chips that would start a third line are hidden and a "+N" chip
+ * stands in for them. Needs layout, so it does nothing where elements have no size.
+ */
+export function fitThemeChips(container: HTMLElement): void {
+  container.querySelector('.loading-chip-more')?.remove();
+  const chips = [...container.querySelectorAll<HTMLElement>('.loading-chip')];
+  chips.forEach((chip) => { chip.hidden = false; });
+  if (!chips.length || chips.every((chip) => chip.offsetHeight === 0)) return;
+  const lines = [...new Set(chips.map((chip) => chip.offsetTop))].sort((first, second) => first - second);
+  if (lines.length <= 2) return;
+  const lastLine = lines[1];
+  const more = document.createElement('span');
+  more.className = 'loading-chip loading-chip-more';
+  more.style.setProperty('--i', String(chips.length));
+  container.appendChild(more);
+  let visible = chips.filter((chip) => chip.offsetTop <= lastLine).length;
+  while (visible > 0) {
+    chips.forEach((chip, index) => { chip.hidden = index >= visible; });
+    more.innerHTML = `+${chips.length - visible}<span class="sr-only"> more themes</span>`;
+    if (more.offsetTop <= lastLine) break;
+    visible -= 1;
+  }
 }
 
 /** Markup for the loading page frame. brand is the publisher brand markup from the hosted shell. */
 export function generationPageMarkup(manifest: PublisherManifest, brand: string, legal: string): string {
   const poweredBy = manifest.poweredBy === false ? '' : `<span class="generation-powered">Powered by ${escapeHtml(manifest.name)}</span>`;
   const steps = stageCopy({}, manifest.name).map((copy, index) => `<li class="loading-step" data-step="${index}" data-state="${index === 0 ? 'active' : 'pending'}"><span class="loading-marker" aria-hidden="true"><span class="loading-check">✓</span></span><span><span class="loading-step-label" data-step-label>${escapeHtml(copy.label)}</span>${index === 1 ? '<span class="loading-chips" data-theme-chips></span>' : ''}<span class="sr-only" data-step-state>${index === 0 ? 'In progress' : 'Not started'}</span></span></li>`).join('');
-  return `${sharedStyles()}<section class="generation-frame hosted-card loading-frame" id="hosted-app" aria-labelledby="generation-heading" data-loading-state="running"><div class="generation-inner"><div class="generation-logo">${brand}</div><p class="generation-eyebrow">Personalised intelligence</p><h1 id="generation-heading" tabindex="-1" data-loading-heading>Building your briefing</h1><p class="generation-subtitle" data-loading-identity>${escapeHtml(manifest.branding.introductoryCopy ?? 'A focused view of the coverage most relevant to your work.')}</p><div class="loading-panel" data-loading-panel aria-busy="true"><ol class="loading-steps" aria-label="Briefing progress steps">${steps}</ol><div class="loading-progress" role="progressbar" aria-label="Briefing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-loading-progress><span data-progress-fill></span></div><p class="loading-message" data-loading-message aria-hidden="true"></p><p class="sr-only" aria-live="polite" data-loading-live></p></div><div class="loading-failure" data-loading-failure hidden><h2 tabindex="-1" data-failure-heading>We couldn’t finish your briefing</h2><p data-failure-message></p><div class="loading-actions"><button type="button" class="is-primary" data-retry>Try again</button><button type="button" data-edit>Edit details</button></div><form class="loading-edit" data-edit-form hidden><label for="loading-company">Company or website<input id="loading-company" name="companyUrl" type="text" autocomplete="organization" required></label><label for="loading-role">Job role<input id="loading-role" name="jobTitle" type="text" autocomplete="organization-title" required></label><div class="loading-actions"><button type="submit" class="is-primary">Build my briefing</button></div><p class="loading-edit-status" data-edit-status aria-live="polite"></p></form></div></div><div class="generation-footer">${poweredBy}<span class="generation-legal">${legal}</span></div></section>`;
+  return `${sharedStyles()}<section class="generation-frame hosted-card loading-frame" id="hosted-app" aria-labelledby="generation-heading" data-loading-state="running"><div class="generation-inner"><div class="generation-logo">${brand}</div><p class="generation-eyebrow">Personalised intelligence</p><h1 id="generation-heading" tabindex="-1" data-loading-heading>Building your briefing</h1><p class="generation-subtitle" data-loading-identity>${escapeHtml(manifest.branding.introductoryCopy ?? 'A focused view of the coverage most relevant to your work.')}</p><div class="loading-panel" data-loading-panel aria-busy="true"><ol class="loading-steps" aria-label="Briefing progress steps">${steps}</ol><div class="loading-progress" role="progressbar" aria-label="Briefing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-loading-progress><span data-progress-fill></span></div><p class="loading-message" data-loading-message aria-hidden="true"></p><p class="sr-only" aria-live="polite" data-loading-live></p></div><div class="loading-failure" data-loading-failure hidden><h2 class="sr-only" data-failure-heading>We couldn’t finish your briefing</h2><p data-failure-message></p><div class="loading-actions"><button type="button" class="is-primary" data-retry>Try again</button><button type="button" data-edit>Edit details</button></div><form class="loading-edit" data-edit-form hidden><label for="loading-company">Company or website<input id="loading-company" name="companyUrl" type="text" autocomplete="organization" required></label><label for="loading-role">Job role<input id="loading-role" name="jobTitle" type="text" autocomplete="organization-title" required></label><div class="loading-actions"><button type="submit" class="is-primary">Build my briefing</button></div><p class="loading-edit-status" data-edit-status aria-live="polite"></p></form></div></div><div class="generation-footer">${poweredBy}<span class="generation-legal">${legal}</span></div></section>`;
 }
 
 /**
@@ -217,8 +258,10 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
       if (state === 'active') step.setAttribute('aria-current', 'step'); else step.removeAttribute('aria-current');
     });
     const chips = query('[data-theme-chips]');
-    if (chips && details.themes?.length && chips.childElementCount !== details.themes.length) {
+    if (chips && details.themes?.length && chips.dataset.themes !== details.themes.join('|')) {
+      chips.dataset.themes = details.themes.join('|');
       chips.innerHTML = details.themes.map((theme, index) => `<span class="loading-chip" style="--i:${index}">${escapeHtml(theme)}</span>`).join('');
+      fitThemeChips(chips);
     }
     const identity = query('[data-loading-identity]');
     if (identity && details.jobTitle) identity.textContent = `For ${withArticle(displayTitle(details.jobTitle))}${details.companyName ? ` at ${details.companyName}` : ''}`;
@@ -287,9 +330,10 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
     const retry = query<HTMLButtonElement>('[data-retry]');
     if (retry) retry.hidden = !retryable || code === 'generation_not_found';
     const heading = query('[data-loading-heading]');
-    if (heading) heading.textContent = 'Your briefing is paused';
+    // The page title states the failure; the card's own heading repeats it for screen readers only.
+    if (heading) heading.textContent = 'We couldn’t finish your briefing';
     track('generation_failed', { errorCode: code, generationStage: currentStage(), elapsedMs: now() - startedAt });
-    (retry && !retry.hidden ? retry : query<HTMLElement>('[data-failure-heading]'))?.focus();
+    (retry && !retry.hidden ? retry : query<HTMLElement>('[data-loading-heading]'))?.focus();
   }
 
   async function poll(): Promise<void> {
@@ -336,6 +380,7 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
     const form = query<HTMLFormElement>('[data-edit-form]');
     if (!form) return;
     form.hidden = false;
+    frame.classList.add('is-editing');
     const company = form.querySelector<HTMLInputElement>('[name="companyUrl"]');
     const role = form.querySelector<HTMLInputElement>('[name="jobTitle"]');
     if (company && !company.value) company.value = details.companyName ?? '';
@@ -361,6 +406,13 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
     }
   });
 
+  // Chips may wrap differently after a resize or rotation.
+  let resizeFrame = 0;
+  const onResize = () => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(() => { const chips = query('[data-theme-chips]'); if (chips) fitThemeChips(chips); });
+  };
+  window.addEventListener('resize', onResize);
   const onPageHide = () => { if (!finished) track('loading_abandoned', { generationStage: currentStage(), elapsedMs: now() - startedAt }); };
   window.addEventListener('pagehide', onPageHide);
 
@@ -374,6 +426,7 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
     stopped = true;
     clearAllTimers();
     window.removeEventListener('pagehide', onPageHide);
+    window.removeEventListener('resize', onResize);
   }
 
   renderStages();

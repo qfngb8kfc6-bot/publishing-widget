@@ -121,7 +121,8 @@ function formatDate(value?: string): string {
 
 function articleImage(article: ReportRecommendation['article'], manifest: PublisherManifest): string {
   const image = safeUrl(article.imageUrl);
-  return image ? `<img class="story-image" src="${escapeHtml(image)}" alt="" loading="lazy">` : `<div class="story-placeholder" aria-hidden="true">${escapeHtml(manifest.name)} coverage</div>`;
+  // Without an image a compact labelled band stands in, never a large empty block.
+  return image ? `<img class="story-image" src="${escapeHtml(image)}" alt="" loading="lazy">` : `<div class="story-placeholder" aria-hidden="true"><span>${escapeHtml(manifest.name)} coverage</span></div>`;
 }
 
 function articleLink(article: ReportRecommendation['article'], manifest: PublisherManifest): string {
@@ -136,7 +137,7 @@ function storyMarkup(recommendation: ReportRecommendation, manifest: PublisherMa
   const description = escapeHtml(article.description ?? article.summary ?? article.contentSnippet ?? '');
   const category = article.categories[0] ? escapeHtml(article.categories[0]) : '';
   const date = formatDate(article.publishedAt);
-  return `<article class="${featured ? 'featured-story' : 'story-card'}" data-story-card="${escapeHtml(article.id)}">${articleImage(article, manifest)}<div class="story-body"><div class="story-meta"><span class="match-badge">${recommendation.displayScore}% match</span>${category ? `<span>${category}</span>` : ''}${date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''}</div><h3>${title}</h3>${description ? `<p class="story-summary">${description}</p>` : ''}${showWhy ? `<div class="why"><span class="why-icon" aria-hidden="true">✦</span><div><strong>Why this matters to you</strong><p>${escapeHtml(recommendation.explanation)}</p></div></div>` : ''}${articleLink(article, manifest)}</div></article>`;
+  return `<article class="${featured ? 'featured-story' : 'story-card'} ${safeUrl(article.imageUrl) ? 'has-image' : 'no-image'}" data-story-card="${escapeHtml(article.id)}">${articleImage(article, manifest)}<div class="story-body"><div class="story-meta"><span class="match-badge">${recommendation.displayScore}% match</span>${category ? `<span>${category}</span>` : ''}${date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''}</div><h3>${title}</h3>${description ? `<p class="story-summary">${description}</p>` : ''}${showWhy ? `<div class="why"><span class="why-icon" aria-hidden="true">✦</span><div><strong>Why this matters to you</strong><p class="why-text">${escapeHtml(recommendation.explanation)}</p><button class="why-toggle" type="button" aria-expanded="false" hidden>More</button></div></div>` : ''}${articleLink(article, manifest)}</div></article>`;
 }
 
 /** The AI-written line for a theme card, or the standard text when AI did not provide one. */
@@ -200,7 +201,7 @@ export async function renderHostedRoute(documentRef: Document, registry: Publish
   if (!manifest) { documentRef.body.innerHTML = '<main class="hosted-shell generation-shell"><div class="hosted-inner"><section class="generation-frame hosted-card"><div class="generation-inner"><p class="generation-eyebrow">Publisher unavailable</p><h1>Publisher not found</h1></div></section></div></main>'; return; }
   const reportId = parts[2] === 'generate' ? parts[3] : parts[2];
   const isGeneration = parts[2] === 'generate';
-  documentRef.body.innerHTML = routeStyle(manifest) + `<main class="hosted-shell ${reportId && !isGeneration ? 'report-shell report' : 'generation-shell generation'}"><div class="hosted-inner">${reportId && isGeneration ? generationPageMarkup(manifest, brandMarkup(manifest), legalMarkup(manifest)) : `<div class="report-loading hosted-card" id="hosted-app">${brandMarkup(manifest)}<p>Loading your briefing…</p></div>`}</div></main>`;
+  documentRef.body.innerHTML = routeStyle(manifest) + `<main class="hosted-shell ${reportId && !isGeneration ? 'report-shell report' : `generation-shell generation${reportId && isGeneration ? ' loading-shell' : ''}`}"><div class="hosted-inner">${reportId && isGeneration ? generationPageMarkup(manifest, brandMarkup(manifest), legalMarkup(manifest)) : `<div class="report-loading hosted-card" id="hosted-app">${brandMarkup(manifest)}<p>Loading your briefing…</p></div>`}</div></main>`;
   if (!reportId) return;
   if (isGeneration) {
     const app = documentRef.querySelector<HTMLElement>('#hosted-app');
@@ -216,20 +217,63 @@ export async function renderHostedRoute(documentRef: Document, registry: Publish
   renderReport(documentRef, manifest, report, analytics);
 }
 
+/**
+ * Compact hero and the mobile report layout. Loaded after the shared styles so it refines them: one headline,
+ * a short hero with the summary card above the fold, and below 640px a layout designed for phones (inline
+ * relevance ring, swipeable theme cards, compact stories, clamped "why" with More, one-line context bar).
+ */
+function compactReportStyle(): string {
+  // Story titles are serif by design (the approved production look). They used to get it only from the
+  // marketing page's global h1–h3 rule leaking into the shared HTML shell; it is stated here deliberately.
+  return `<style>
+html{scroll-padding-top:104px}.report-page section,.report-page .theme-results,.report-page [id]{scroll-margin-top:104px}
+.report-page .report-hero{min-height:0;padding:clamp(22px,2.6vw,34px) clamp(20px,3vw,40px) clamp(58px,6vw,74px);border-radius:clamp(24px,3vw,40px)}.report-page .report-hero-content{min-height:0;padding:0}
+.report-page .report-brand .hosted-brand{margin:0 auto 16px}.report-page .report-brand .hosted-brand img{max-width:180px;max-height:40px}.report-page .report-identity{margin:0 0 14px}
+.report-page .report-hero h1{font-size:clamp(2.5rem,3.9vw,3.5rem);line-height:1;letter-spacing:-.055em}
+.report-page .match-summary-card{grid-template-columns:auto minmax(0,1fr);grid-template-areas:"ring kicker" "ring summary" "ring actions";row-gap:0;column-gap:clamp(20px,3.5vw,40px);margin-top:-44px;padding:clamp(20px,2.6vw,32px)}
+.report-page .relevance-ring{grid-area:ring}.report-page .match-summary-card>.section-kicker{grid-area:kicker;align-self:end;margin:0 0 8px;color:#2a2c8f}.report-page .match-summary-text{grid-area:summary;max-width:700px;margin:0;color:#1b1d22;font-size:clamp(1rem,1.5vw,1.15rem);line-height:1.5}.report-page .summary-actions{grid-area:actions}
+.report-page .report-content{padding-top:clamp(56px,7vw,88px)}.report-page .highlights-section{margin-bottom:clamp(48px,6vw,80px)}
+.report-page .highlights-section h2,.report-page .section-heading{font-size:clamp(1.75rem,3vw,2.75rem);line-height:1;letter-spacing:-.05em}
+.report-page .story-placeholder{display:flex;align-items:center;justify-content:center;width:100%;height:48px;min-height:0;padding:0 16px;color:#69707d;background:linear-gradient(135deg,#f2f4f7,#eef1f6);font-size:.66rem;letter-spacing:.12em}
+.report-page .featured-story.no-image{grid-template-columns:1fr}.report-page .featured-story.no-image .story-placeholder{display:none}
+.report-page .featured-story h3,.report-page .story-card h3{font-family:Georgia,serif;font-weight:500;letter-spacing:-.045em}
+.why-toggle{display:none;margin-top:4px;padding:0;border:0;color:#2a2c8f;background:transparent;font-size:.78rem;font-weight:800}
+@media(max-width:639px){
+html{scroll-padding-top:72px}.report-page section,.report-page .theme-results,.report-page [id]{scroll-margin-top:72px}
+.report-page .report-hero{padding:18px 18px 54px;border-radius:0 0 24px 24px}.report-page .report-brand .hosted-brand{margin-bottom:12px}.report-page .report-brand .hosted-brand img{max-height:30px}
+.report-page .report-identity{max-width:100%;margin-bottom:10px;padding:7px 10px 7px 8px;font-size:.74rem}.report-page .report-identity>span:nth-child(2){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.report-page .report-hero h1{font-size:clamp(1.75rem,8vw,2rem)}
+.report-page .match-summary-card{grid-template-areas:"ring kicker" "summary summary" "actions actions";column-gap:12px;width:calc(100% - 24px);margin-top:-38px;padding:16px 16px 18px;border-radius:20px}
+.report-page .relevance-ring{width:52px;height:52px}.report-page .relevance-ring::before{width:40px;height:40px}.report-page .relevance-ring span{font-size:.85rem}.report-page .relevance-ring small{display:none}
+.report-page .match-summary-card>.section-kicker{align-self:center;margin:0;font-size:.66rem}.report-page .match-summary-text{margin-top:12px;font-size:.95rem}.report-page .summary-actions{gap:8px;margin-top:14px}.report-page .summary-actions .action-button,.report-page .summary-actions .text-button{min-height:40px;padding:8px 14px;font-size:.8rem}
+.report-page .report-content{padding:44px 14px 0}.report-page .highlights-section h2,.report-page .section-heading{font-size:1.5rem;letter-spacing:-.04em}.report-page .highlights-section{margin-bottom:44px}.report-page .top-stories{margin-bottom:48px}
+.report-page .highlight-grid{display:flex;gap:10px;margin:16px -14px 0;padding:0 14px 6px;overflow-x:auto;scroll-snap-type:x mandatory;scroll-padding:0 14px;scrollbar-width:none}.report-page .highlight-grid::-webkit-scrollbar{display:none}
+.report-page .highlight-card{flex:0 0 78%;min-height:0;padding:16px 16px 46px;border-radius:18px;scroll-snap-align:start}.report-page .highlight-index{display:none}.report-page .highlight-card h3{margin-bottom:8px;font-size:1rem}.report-page .highlight-card p{display:-webkit-box;max-width:none;overflow:hidden;font-size:.8rem;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .highlight-action{left:16px;bottom:14px}
+.report-page .featured-story,.report-page .story-card{border-radius:18px}.report-page .featured-story .story-image,.report-page .story-card .story-image{width:100%;height:auto;min-height:0;max-height:180px;aspect-ratio:16/9}.report-page .story-placeholder{height:36px}
+.report-page .story-body,.report-page .story-card .story-body{min-height:0;padding:14px 16px 16px}.report-page .featured-story h3,.report-page .story-card h3{display:-webkit-box;margin:10px 0 6px;overflow:hidden;font-size:1.25rem;line-height:1.1;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.report-page .story-summary{display:-webkit-box;overflow:hidden;font-size:.86rem;line-height:1.45;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .story-meta{font-size:.66rem}
+.report-page .why{margin:12px 0;padding:10px 12px}.report-page .why-text{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .why.is-expanded .why-text{display:block}.report-page .why-toggle{display:inline-flex}
+.report-page .story-grid{grid-template-columns:1fr;gap:12px}.report-page .also-relevant,.report-page .additional-section{margin-top:48px}
+.report-page .context-bar,.report-page .context-bar.is-visible{top:8px;width:calc(100% - 16px);min-height:46px;margin:12px auto -58px;padding:5px 5px 5px 14px}.report-page .context-bar .hosted-brand{display:none}.report-page .context-bar-inner{min-width:0}.report-page .context-label{overflow:hidden;font-size:.74rem;text-overflow:ellipsis;white-space:nowrap}.report-page .bar-actions{gap:5px}.report-page .bar-actions .action-button,.report-page .bar-actions .text-button{min-height:34px;padding:6px 12px;font-size:.74rem}
+.report-page .theme-results{margin:-12px 0 44px;padding:18px 14px;border-radius:18px}
+}
+</style>`;
+}
+
 function renderReport(documentRef: Document, manifest: PublisherManifest, report: ReportRecord, analytics: BatchingAnalyticsClient): void {
   const app = documentRef.querySelector<HTMLElement>('#hosted-app');
   if (!app) return;
   const identity = identityLabel(report);
   const reportBranding = manifest.branding.report;
   const reportBackground = 'background-color:var(--report-fallback)';
-  const reportCoverStyle = `<style>.report-hero{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${cssUrl(reportBranding?.desktopBackgroundImage)}}@media(max-width:780px){.report-hero{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${cssUrl(reportBranding?.mobileBackgroundImage ?? reportBranding?.desktopBackgroundImage)}}}.highlight-action{position:absolute;z-index:1;left:22px;bottom:22px;display:inline-flex;padding:0;border:0;color:#2a2c8f;background:transparent;font-size:.8rem;font-weight:800}.highlight-action:hover{text-decoration:underline}.theme-results{max-width:1100px;margin:-58px auto 80px;padding:28px;border:1px solid rgba(20,30,60,.1);border-radius:24px;background:#fff;box-shadow:0 16px 44px rgba(21,26,58,.08)}.theme-results[hidden]{display:none}.theme-results-heading{margin:0;color:#151a3a;font:600 clamp(1.8rem,4vw,3rem)/1 var(--font);letter-spacing:-.055em}.theme-results-subheading{margin:8px 0 22px;color:#69707d;font-size:.9rem}.theme-results-status{margin:0;color:#69707d}.theme-results .story-grid{margin-top:20px}@media(max-width:520px){.theme-results{margin:-20px 0 56px;padding:22px 18px}}</style>`;
+  const reportCoverStyle = `${compactReportStyle()}<style>.report-hero{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${cssUrl(reportBranding?.desktopBackgroundImage)}}@media(max-width:780px){.report-hero{background-image:linear-gradient(var(--report-overlay),var(--report-overlay)),${cssUrl(reportBranding?.mobileBackgroundImage ?? reportBranding?.desktopBackgroundImage)}}}.highlight-action{position:absolute;z-index:1;left:22px;bottom:22px;display:inline-flex;padding:0;border:0;color:#2a2c8f;background:transparent;font-size:.8rem;font-weight:800}.highlight-action:hover{text-decoration:underline}.theme-results{max-width:1100px;margin:-58px auto 80px;padding:28px;border:1px solid rgba(20,30,60,.1);border-radius:24px;background:#fff;box-shadow:0 16px 44px rgba(21,26,58,.08)}.theme-results[hidden]{display:none}.theme-results-heading{margin:0;color:#151a3a;font:600 clamp(1.8rem,4vw,3rem)/1 var(--font);letter-spacing:-.055em}.theme-results-subheading{margin:8px 0 22px;color:#69707d;font-size:.9rem}.theme-results-status{margin:0;color:#69707d}.theme-results .story-grid{margin-top:20px}@media(max-width:520px){.theme-results{margin:-20px 0 56px;padding:22px 18px}}</style>`;
   const feature = report.recommendations[0];
   const presentation = reportPresentation(report, manifest);
   const additional = presentation.additional;
   const additionalMarkup = additional.length ? `<section class="also-relevant stories-section" aria-labelledby="additional-heading"><p class="section-kicker">Also relevant</p><h2 class="section-heading" id="additional-heading">More stories for your work</h2><div class="story-grid">${additional.map((recommendation) => storyMarkup(recommendation, manifest)).join('')}</div></section>` : '';
   const reportTitle = manifest.results.heading || 'Stories selected for your work';
   app.className = 'report-page';
-  app.innerHTML = `${reportCoverStyle}<section class="report-hero" style="${reportBackground}" aria-labelledby="report-heading"><div class="report-hero-content"><div class="report-brand">${brandMarkup(manifest)}</div><button class="report-identity" type="button" data-edit><span class="identity-icon" aria-hidden="true">↗</span><span>${escapeHtml(identity)}</span><span class="identity-edit">Edit</span></button><p class="section-kicker">Your personalised briefing</p><h1 id="report-heading">Your personalised briefing</h1><h2 class="report-title">${escapeHtml(reportTitle)}</h2></div></section><section class="match-summary-card" aria-label="${report.overallMatchScore}% relevance"><div class="relevance-ring" style="--match:${report.overallMatchScore}%"><span>${report.overallMatchScore}%</span><small>relevance</small></div><div class="match-summary-copy"><p class="section-kicker">A briefing shaped around your context</p><p>${escapeHtml(report.generatedSummary)}</p><div class="summary-actions"><a class="action-button" href="#top-stories">View top stories <span aria-hidden="true">↓</span></a><button class="text-button" type="button" data-share>Share report <span aria-hidden="true">↗</span></button></div></div></section><div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div><div class="report-content">${highlightMarkup(report)}${themeResultsMarkup()}<section class="stories-section top-stories" id="top-stories" aria-labelledby="top-stories-heading"><div class="section-heading-row"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">Stories selected for your work</h2></div><span class="story-count">${report.recommendations.length} recommendations</span></div>${feature ? storyMarkup(feature, manifest, true) : '<p>No strong matches were found in the current coverage.</p>'}</section>${additionalMarkup}${optionalSectionsMarkup(manifest, presentation.sections)}<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div></div>${editSheetMarkup(report)}`;
+  app.innerHTML = `${reportCoverStyle}<section class="report-hero" style="${reportBackground}" aria-labelledby="report-heading"><div class="report-hero-content"><div class="report-brand">${brandMarkup(manifest)}</div><button class="report-identity" type="button" data-edit><span class="identity-icon" aria-hidden="true">↗</span><span>${escapeHtml(identity)}</span><span class="identity-edit">Edit</span></button><h1 id="report-heading">Your personalised briefing</h1></div></section><section class="match-summary-card" aria-label="${report.overallMatchScore}% relevance"><div class="relevance-ring" style="--match:${report.overallMatchScore}%"><span>${report.overallMatchScore}%</span><small>relevance</small></div><p class="section-kicker">A briefing shaped around your context</p><p class="match-summary-text">${escapeHtml(report.generatedSummary)}</p><div class="summary-actions"><a class="action-button" href="#top-stories">View top stories <span aria-hidden="true">↓</span></a><button class="text-button" type="button" data-share>Share report <span aria-hidden="true">↗</span></button></div></section><div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div><div class="report-content">${highlightMarkup(report)}${themeResultsMarkup()}<section class="stories-section top-stories" id="top-stories" aria-labelledby="top-stories-heading"><div class="section-heading-row"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${escapeHtml(reportTitle)}</h2></div><span class="story-count">${report.recommendations.length} recommendations</span></div>${feature ? storyMarkup(feature, manifest, true) : '<p>No strong matches were found in the current coverage.</p>'}</section>${additionalMarkup}${optionalSectionsMarkup(manifest, presentation.sections)}<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div></div>${editSheetMarkup(report)}`;
 
   const cover = app.querySelector<HTMLElement>('.report-hero');
   const contextBar = app.querySelector<HTMLElement>('[data-sticky-context]');
@@ -252,6 +296,24 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
     });
   });
   bindStoryClicks(app);
+  // "Why this matters" is clamped to three lines on mobile; More appears only where the text is cut off.
+  const setupWhyToggles = (scope: ParentNode) => scope.querySelectorAll<HTMLElement>('.why').forEach((why) => {
+    const text = why.querySelector<HTMLElement>('.why-text');
+    const toggle = why.querySelector<HTMLButtonElement>('.why-toggle');
+    if (!text || !toggle) return;
+    if (!toggle.dataset.bound) {
+      toggle.dataset.bound = 'true';
+      toggle.addEventListener('click', () => {
+        const expanded = why.classList.toggle('is-expanded');
+        toggle.setAttribute('aria-expanded', String(expanded));
+        toggle.textContent = expanded ? 'Less' : 'More';
+      });
+    }
+    toggle.hidden = !why.classList.contains('is-expanded') && text.scrollHeight <= text.clientHeight + 1;
+  });
+  setupWhyToggles(app);
+  let whyFrame = 0;
+  window.addEventListener('resize', () => { cancelAnimationFrame(whyFrame); whyFrame = requestAnimationFrame(() => setupWhyToggles(app)); }, { passive: true });
 
   const themeResults = app.querySelector<HTMLElement>('[data-theme-results]');
   // Articles shown by each theme opened on this page, so another theme's results do not repeat them.
@@ -279,6 +341,7 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
       themeResults.dataset.theme = resolvedTheme;
       themeResults.innerHTML = themeResultsContent(resolvedTheme, report, manifest, recommendations);
       bindStoryClicks(themeResults);
+      setupWhyToggles(themeResults);
       analytics.track(createEvent('theme_results_loaded', report.publisherId, report.sessionId, { reportId: report.id, theme: normalizeToken(resolvedTheme), resultCount: recommendations.length }));
     } catch {
       themeResults.innerHTML = '<p class="theme-results-status">We couldn’t find stories for this theme right now.</p>';

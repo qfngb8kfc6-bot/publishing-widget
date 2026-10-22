@@ -234,7 +234,9 @@ export type AnalyticsEventName =
   | 'generation_stage_completed'
   | 'generation_completed'
   | 'generation_failed'
-  | 'loading_abandoned';
+  | 'loading_abandoned'
+  | 'widget_expanded'
+  | 'widget_minimised';
 
 export type AnalyticsMetadataValue = string | number | boolean;
 export type AnalyticsMetadata = Record<string, AnalyticsMetadataValue>;

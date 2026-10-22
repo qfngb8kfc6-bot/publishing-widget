@@ -62,7 +62,7 @@ describe('widget hand-off to the hosted loading page', () => {
     await tick();
     await tick();
     expect(navigate).not.toHaveBeenCalled();
-    expect(widget.shadowRoot.querySelector('[data-profile-error]')?.textContent).toBe("We couldn't find 'adids'. Check the spelling or enter the website (adids.com).");
+    expect(widget.shadowRoot.querySelector('[data-profile-error]')?.textContent).toBe("We couldn't find 'adids'. Check the spelling or enter the company's website.");
     expect(widget.shadowRoot.querySelector('.error-state')).toBeNull();
     const company = widget.shadowRoot.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]')!;
     expect(company.value).toBe('adids');
@@ -93,9 +93,59 @@ describe('widget hand-off to the hosted loading page', () => {
   });
 
   it('has a specific message for each input error the endpoint can return', () => {
-    expect(generationInputMessage('company_resolution_timeout', 'Acme Sports')).toBe("We couldn't look up 'Acme Sports' in time. Try again, or enter the website (acmesports.com).");
+    expect(generationInputMessage('company_resolution_timeout', 'Acme Sports')).toBe("We couldn't look up 'Acme Sports' in time. Try again, or enter the company's website.");
     expect(generationInputMessage('unsafe_company_url', 'http://10.0.0.1')).toContain('public website');
     expect(generationInputMessage('rate_limited', 'nike')).toContain('wait a minute');
     expect(generationInputMessage('generation_unavailable', 'nike')).toBeUndefined();
+  });
+
+  it('resets to the editable form, keeping the entered values, when Back restores the page from the bfcache', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ generationId: 'gen-1', generationUrl: '/p/sgi-europe/generate/gen-1' }, { status: 202 })));
+    const { widget, navigate } = await loadWidget();
+    fill(widget, 'nike', 'Head of Retail');
+    await tick();
+    await tick();
+    expect(navigate).toHaveBeenCalledOnce();
+    // Navigation began, so the page was frozen mid-"Starting".
+    expect(widget.shadowRoot.querySelector('[data-action="generate"]')?.textContent).toBe('Starting your briefing…');
+
+    const pageshow = new Event('pageshow');
+    Object.defineProperty(pageshow, 'persisted', { value: true });
+    window.dispatchEvent(pageshow);
+    const button = widget.shadowRoot.querySelector<HTMLButtonElement>('[data-action="generate"]')!;
+    expect(button.textContent).toContain('Build my briefing');
+    expect(button.hasAttribute('aria-busy')).toBe(false);
+    const company = widget.shadowRoot.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]')!;
+    expect(company.value).toBe('nike');
+    expect(company.readOnly).toBe(false);
+    expect(widget.shadowRoot.querySelector<HTMLInputElement>('[data-profile-field="jobTitle"]')?.value).toBe('Head of Retail');
+
+    // And another briefing can be started straight away.
+    fill(widget, 'adidas', 'Head of Retail');
+    await tick();
+    await tick();
+    expect(navigate).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a normal pageshow, and resets on becoming visible only when no request is in flight', async () => {
+    let respond!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { respond = resolve; })));
+    const { widget } = await loadWidget();
+    fill(widget, 'nike', 'Head of Retail');
+    await tick();
+    const label = () => widget.shadowRoot.querySelector('[data-action="generate"]')?.textContent;
+    window.dispatchEvent(new Event('pageshow'));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    // The POST is still pending: keep "Starting".
+    expect(label()).toBe('Starting your briefing…');
+
+    respond(Response.json({ generationId: 'gen-1', generationUrl: '/p/sgi-europe/generate/gen-1' }, { status: 202 }));
+    await tick();
+    await tick();
+    expect(label()).toBe('Starting your briefing…');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(label()).toContain('Build my briefing');
+    delete (document as { visibilityState?: string }).visibilityState;
   });
 });
