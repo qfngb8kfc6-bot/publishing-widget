@@ -24,6 +24,7 @@
     "sample:briefings": "npm run build:server && node scripts/sample-briefings.mjs",
     "rank:sample": "npm run build:server && node scripts/rank-sample.mjs",
     "ai:check": "npm run build:server && node scripts/ai-check.mjs",
+    "wvc:check": "npm run build:server && node scripts/wvc-check.mjs",
     "release:check": "npm run typecheck && npm test && npm run build && npm run scan:secrets && node scripts/release-check.mjs",
     "ci": "npm run typecheck && npm test && npm run build && npm run scan:secrets",
     "scan:secrets": "node scripts/scan-secrets.mjs"

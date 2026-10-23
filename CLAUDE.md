@@ -41,7 +41,8 @@ qfngb8kfc6-bot/publishing-widget.
   (~600 ms), real stages, weighted creeping progress, Retry/Edit. `src/reports/generation-jobs.ts` — async job status.
 - `src/publishers/` — manifests, adapters (`content/adapters.ts`), runtime registry, per-publisher folders.
 - `db/migrations/` — numbered SQL migrations; `db/schema.sql`. Docs in `docs/` (DEPLOYMENT, SECURITY, …).
-- Scripts: `npm run rank:sample` (ranking samples), `npm run sample:briefings`, `npm run db:migrate`.
+- Scripts: `npm run rank:sample` (ranking samples), `npm run sample:briefings`, `npm run db:migrate`,
+  `npm run wvc:check` (read-only WVC last-page diagnostics; counts only).
 
 ## Report pipeline (generate.ts)
 1. Resolve company (name or URL) → company context.

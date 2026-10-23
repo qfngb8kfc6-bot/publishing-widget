@@ -47,6 +47,7 @@ Required values depend on the publisher. Persist only a `secretRef` in the publi
 - `SGI_WVC_API_KEY` holds the WVC key (rotated, never a key from an old chat). It is read only through the `secretRef` `env:SGI_WVC_API_KEY` in `src/publishers/sgi-europe/config.ts`, never logged, and sent only to `www.sgieurope.com` (no redirects).
 - A database is required (`DATABASE_URL`, migration 009). The sync runs in the background only, after startup prewarm: a one-off backfill of every page (~230 pages, ~1 s apart, resumable), then the last two pages every 30 minutes. Each page runs on the catalogue background queue, so it never overlaps a refresh, index prebuild or snapshot save.
 - Use: matching adds a 1,500-character lead per article to its match index as hashes (~14 MB for 11.5k articles; logged as `lead_index_update`); the AI content call gets an 800-character lead per selected article (one query). Public recommendations expose only `subscriberOnly`. Body text never reaches public JSON, the hosted page, the widget, analytics, logs or catalogue snapshots.
+- Check the key and API before enabling: `SGI_WVC_API_KEY=… npm run wvc:check` (read-only; prints counts, never the key or text).
 - Logs: `wvc_sync_progress` (page, totalPages, recordsWritten), `wvc_sync_failed` (safe error code), `full_text_lookup_failed`. Admin → Content health shows records synced, backfill position, last sync and last error.
 
 Never pass API keys through Vite, `PublisherManifest`, browser configuration, analytics, request IDs or logs. `AI_API_KEY` and publisher tokens are server-only.

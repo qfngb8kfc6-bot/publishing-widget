@@ -1,4 +1,4 @@
-import { ContentSourceError, fetchText } from './security';
+import { ContentSourceError, fetchText, safeSourceFetch } from './security';
 import type { WvcEnrichmentSourceConfig } from './types';
 
 /** The API rejects smaller pages. */
@@ -188,4 +188,83 @@ export async function fetchWvcPage(config: WvcEnrichmentSourceConfig, page: numb
   let body: unknown;
   try { body = JSON.parse(raw); } catch { throw new WvcError('wvc_invalid_response'); }
   return parseWvcPage(body, page);
+}
+
+/** Diagnostics for one page: counts, dates and lengths only. Never text, URLs or the key. */
+export interface WvcPageSummary {
+  page: number;
+  httpStatus: number;
+  errorsFound: boolean;
+  errorCode?: string;
+  totalPages?: number;
+  totalRecords?: number;
+  storyCount: number;
+  newestDatePublished?: string;
+  privateCount: number;
+  storyTextLength?: { min: number; median: number; max: number };
+  /** Stories whose story code is in the supplied catalogue codes. */
+  catalogueMatches?: number;
+}
+
+export function summarizeWvcBody(body: unknown, catalogueCodes?: ReadonlySet<string>): Omit<WvcPageSummary, 'page' | 'httpStatus'> {
+  const record = asRecord(body);
+  if (!record) return { errorsFound: false, errorCode: 'wvc_invalid_response', storyCount: 0, privateCount: 0 };
+  const errorsFound = field(record, 'ERRORSFOUND') === true || field(record, 'ERRORSFOUND') === 'true';
+  if (errorsFound) {
+    try { parseWvcPage(record, 0); } catch (error) { return { errorsFound, errorCode: error instanceof WvcError ? error.code : 'wvc_api_error', storyCount: 0, privateCount: 0 }; }
+  }
+  const paged = asRecord(field(record, 'PAGEDDATA')) ?? {};
+  const stories = (storyArray(record) ?? []).map(asRecord).filter((story): story is Record<string, unknown> => Boolean(story));
+  const lengths = stories.map((story) => text(field(story, 'STORYTEXT'))?.length ?? 0).sort((left, right) => left - right);
+  const dates = stories.map((story) => parseWvcDate(field(story, 'DATEPUBLISHED'))).filter((date): date is string => Boolean(date)).sort();
+  const codes = stories.map((story) => storyCodeFromUrl(text(field(story, 'STORYURL'))) ?? text(field(story, 'STORYCODE'))?.match(/^\d{1,12}$/)?.[0]);
+  return {
+    errorsFound,
+    totalPages: count(field(paged, 'TOTALNUMBEROFPAGES')),
+    totalRecords: count(field(paged, 'TOTALNUMBEROFRECORDS')),
+    storyCount: stories.length,
+    newestDatePublished: dates.at(-1),
+    privateCount: stories.filter((story) => String(field(story, 'PRIVATE')).toLowerCase() === 'true').length,
+    ...(lengths.length ? { storyTextLength: { min: lengths[0], median: lengths[Math.floor((lengths.length - 1) / 2)], max: lengths[lengths.length - 1] } } : {}),
+    ...(catalogueCodes ? { catalogueMatches: codes.filter((code) => code && catalogueCodes.has(code)).length } : {}),
+  };
+}
+
+async function fetchWvcBody(config: WvcEnrichmentSourceConfig, page: number, options: WvcFetchOptions): Promise<{ httpStatus: number; body?: unknown; errorCode?: string }> {
+  const key = options.resolveSecret(config.secretRef)?.trim();
+  if (!key) return { httpStatus: 0, errorCode: 'wvc_not_configured' };
+  const maxBytes = config.maxBytes ?? DEFAULT_PAGE_MAX_BYTES;
+  try {
+    const response = await safeSourceFetch(wvcPageUrl(config, page), { method: 'GET', headers: { API_ACCESS_TOKEN: key, Accept: 'application/json' } }, { fetchImpl: options.fetchImpl, allowedHostnames: config.allowedHostnames, maxRedirects: 0, timeoutMs: config.timeoutMs ?? 20_000, maxBytes });
+    // Bounded read: stops at maxBytes even without a content-length header.
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let raw = '';
+    let total = 0;
+    while (reader) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      total += chunk.value.byteLength;
+      if (total > maxBytes) { await reader.cancel(); return { httpStatus: response.status, errorCode: 'wvc_source_response_too_large' }; }
+      raw += decoder.decode(chunk.value, { stream: true });
+    }
+    raw += decoder.decode();
+    try { return { httpStatus: response.status, body: JSON.parse(raw) }; } catch { return { httpStatus: response.status, errorCode: 'wvc_invalid_response' }; }
+  } catch (error) {
+    if (error instanceof ContentSourceError) return { httpStatus: error.status ?? 0, errorCode: `wvc_${error.code.replace(/-/g, '_')}` };
+    return { httpStatus: 0, errorCode: 'wvc_api_error' };
+  }
+}
+
+/**
+ * Inspects the newest (last) page. A metadata-only probe of page 1 (dataconstraint 0, no STORYTEXT) learns the
+ * page count first, since pages come oldest-first. Read-only: nothing is stored.
+ */
+export async function inspectWvcLastPage(config: WvcEnrichmentSourceConfig, options: WvcFetchOptions & { catalogueCodes?: ReadonlySet<string> }): Promise<{ probe: WvcPageSummary; last?: WvcPageSummary }> {
+  const probeResult = await fetchWvcBody({ ...config, dataConstraint: 0 }, 1, options);
+  const probe: WvcPageSummary = { page: 1, httpStatus: probeResult.httpStatus, ...(probeResult.body !== undefined ? summarizeWvcBody(probeResult.body) : { errorsFound: false, storyCount: 0, privateCount: 0 }), ...(probeResult.errorCode ? { errorCode: probeResult.errorCode } : {}) };
+  if (probe.errorCode || !probe.totalPages) return { probe };
+  const lastResult = await fetchWvcBody(config, probe.totalPages, options);
+  const last: WvcPageSummary = { page: probe.totalPages, httpStatus: lastResult.httpStatus, ...(lastResult.body !== undefined ? summarizeWvcBody(lastResult.body, options.catalogueCodes) : { errorsFound: false, storyCount: 0, privateCount: 0 }), ...(lastResult.errorCode ? { errorCode: lastResult.errorCode } : {}) };
+  return { probe, last };
 }

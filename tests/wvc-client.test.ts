@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanStoryText, fetchWvcPage, parseWvcDate, parseWvcPage, storyCodeFromUrl, WvcError, wvcPageUrl, type WvcEnrichmentSourceConfig } from '../src/publishers/content';
+import { cleanStoryText, fetchWvcPage, inspectWvcLastPage, parseWvcDate, parseWvcPage, storyCodeFromUrl, WvcError, wvcPageUrl, type WvcEnrichmentSourceConfig } from '../src/publishers/content';
 import { sgiEuropeEnrichmentSource } from '../src/publishers/sgi-europe';
 import { enrichmentSourceFor } from '../src/publishers/enrichment';
 import { leadExcerpt, MemoryArticleTextStore, PostgresArticleTextStore } from '../src/reports/article-texts';
@@ -95,6 +95,33 @@ describe('WVC enrichment client', () => {
     expect(enrichmentSourceFor('ibi')).toBeUndefined();
     expect(enrichmentSourceFor('__proto__')).toBeUndefined();
     expect(JSON.stringify(sgiEuropeEnrichmentSource)).not.toMatch(/key"\s*:\s*"[^e]/i);
+  });
+});
+
+describe('wvc:check inspection', () => {
+  it('probes the page count without text, then summarises only the last page as counts', async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      urls.push(String(input));
+      expect(new Headers(init?.headers).get('API_ACCESS_TOKEN')).toBe(KEY);
+      const page = Number(new URL(String(input)).searchParams.get('pagenumber'));
+      if (page === 1) return Response.json(livePage([{ STORYCODE: '1' }]));
+      return Response.json(livePage([story(9775, { STORYTEXT: 'a'.repeat(100), DATEPUBLISHED: '2026-10-20T08:00:00' }), story(9776, { PRIVATE: 'false', STORYTEXT: 'b'.repeat(300), DATEPUBLISHED: '2026-10-21T08:00:00' }), story(9777, { STORYTEXT: 'secret body text'.repeat(40) })]));
+    }) as typeof fetch;
+    const result = await inspectWvcLastPage(config, { fetchImpl, resolveSecret, catalogueCodes: new Set(['9775', '9777', '1']) });
+    expect(urls.map((url) => [new URL(url).searchParams.get('pagenumber'), new URL(url).searchParams.get('dataconstraint')])).toEqual([['1', '0'], ['231', '4']]);
+    expect(result.last).toMatchObject({ page: 231, httpStatus: 200, errorsFound: false, storyCount: 3, privateCount: 2, newestDatePublished: new Date('2026-10-21T08:00:00').toISOString(), storyTextLength: { min: 100, median: 300, max: 640 }, catalogueMatches: 2 });
+    const printed = JSON.stringify(result);
+    expect(printed).not.toContain('secret body');
+    expect(printed).not.toContain(KEY);
+  });
+
+  it('reports error payloads and missing keys as codes without fetching text', async () => {
+    const fetchImpl = (async () => Response.json({ ErrorsFound: true, Messages: [`key ${KEY} invalid`] })) as typeof fetch;
+    const failed = await inspectWvcLastPage(config, { fetchImpl, resolveSecret });
+    expect(failed).toEqual({ probe: { page: 1, httpStatus: 200, errorsFound: true, errorCode: 'wvc_auth_invalid', storyCount: 0, privateCount: 0 } });
+    expect(JSON.stringify(failed)).not.toContain(KEY);
+    expect((await inspectWvcLastPage(config, { fetchImpl, resolveSecret: () => undefined })).probe.errorCode).toBe('wvc_not_configured');
   });
 });
 

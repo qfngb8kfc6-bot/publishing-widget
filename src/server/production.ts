@@ -63,6 +63,9 @@ export { PostgresPublisherStore } from '../publishers/store';
 export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 export { PostgresGenerationJobStore } from '../reports/generation-jobs';
 export { PostgresArticleTextStore } from '../reports/article-texts';
+// Used by scripts/wvc-check.mjs (read-only diagnostics).
+export { inspectWvcLastPage, storyCodeFromUrl } from '../publishers/content/wvc';
+export { sgiEuropeEnrichmentSource, sgiEuropeFeedUrl } from '../publishers/sgi-europe/config';
 export { resolveCommitSha } from './health';
 export { explanationQualityWarnings, summaryQualityWarnings } from '../ai/content-quality';
 
