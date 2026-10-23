@@ -88,10 +88,25 @@ export function parseWvcDate(value: unknown): string | undefined {
   return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined);
+const isStory = (value: unknown): boolean => Boolean(asRecord(value)) && field(value as Record<string, unknown>, 'STORYCODE') !== undefined;
+
+/**
+ * The confirmed shape is Data.seq.STORY, where STORY is an array, or a single object when a page has one story.
+ * A present Data.seq without STORY is an empty page. Other shapes fall back to searching Data, PagedData and the
+ * top level for a list of objects with STORYCODE.
+ */
 function storyArray(body: Record<string, unknown>): unknown[] | undefined {
-  const isStoryList = (value: unknown): value is unknown[] => Array.isArray(value) && (value.length === 0 || (typeof value[0] === 'object' && value[0] !== null && field(value[0] as Record<string, unknown>, 'STORYCODE') !== undefined));
-  const paged = field(body, 'PAGEDDATA');
-  const containers = [paged, body].filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value));
+  const data = asRecord(field(body, 'DATA'));
+  const seq = data ? asRecord(field(data, 'SEQ')) : undefined;
+  if (seq) {
+    const stories = field(seq, 'STORY');
+    if (Array.isArray(stories)) return stories;
+    if (isStory(stories)) return [stories];
+    if (stories === undefined || stories === null) return [];
+  }
+  const isStoryList = (value: unknown): value is unknown[] => Array.isArray(value) && (value.length === 0 || isStory(value[0]));
+  const containers = [seq, data, asRecord(field(body, 'PAGEDDATA')), body].filter((value): value is Record<string, unknown> => Boolean(value));
   for (const container of containers) {
     for (const value of Object.values(container)) if (isStoryList(value) && value.length > 0) return value;
   }

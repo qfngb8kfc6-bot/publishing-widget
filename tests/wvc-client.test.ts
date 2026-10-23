@@ -16,7 +16,24 @@ function page(stories: unknown[], totalPages = 230) {
   return { ErrorsFound: false, Messages: [], PagedData: { TotalNumberOfPages: totalPages, TotalNumberOfRecords: 11_500, Next: 'https://www.sgieurope.com/next', Data: stories } };
 }
 
+/** The confirmed live shape: stories at Data.seq.STORY, paging metadata in PagedData. */
+function livePage(story: unknown, totalPages = 231) {
+  return { Domain: 'www.sgieurope.com', ErrorsFound: false, Messages: [], PagedData: { PageNumber: totalPages, PageSize: 50, TotalNumberOfPages: totalPages, TotalNumberOfRecords: 11_523, Next: null, Previous: 'https://www.sgieurope.com/prev', More: false }, Data: { seq: { STORY: story } } };
+}
+
 describe('WVC enrichment client', () => {
+  it('reads stories from Data.seq.STORY, as an array or a single object', () => {
+    const parsed = parseWvcPage(livePage([story(9775), story(9776, { PRIVATE: 'false' })]), 231);
+    expect(parsed).toMatchObject({ page: 231, totalPages: 231, totalRecords: 11_523 });
+    expect(parsed.stories.map((item) => [item.storyCode, item.isPrivate])).toEqual([['9775', true], ['9776', false]]);
+    expect(parseWvcPage(livePage(story(9777)), 231).stories.map((item) => item.storyCode)).toEqual(['9777']);
+    expect(parseWvcPage({ ...livePage(undefined), Data: { seq: {} } }, 231).stories).toEqual([]);
+    // Data.seq.STORY wins over any other list in the payload.
+    const decoy = { ...livePage([story(9778)]), Other: [story(1)] };
+    expect(parseWvcPage(decoy, 231).stories.map((item) => item.storyCode)).toEqual(['9778']);
+  });
+
+
   it('cleans HTML to capped plain text with entities decoded and whitespace collapsed', () => {
     expect(cleanStoryText('<p>Nike&rsquo;s  <script>alert(1)</script>growth</p>\n<p>rose&nbsp;12%&#8212;fast &amp; wide.</p>')).toBe('Nike’s growth rose 12%—fast & wide.');
     const long = cleanStoryText(`<p>${'word '.repeat(10_000)}</p>`);
