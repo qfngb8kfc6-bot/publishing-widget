@@ -19,6 +19,30 @@ import { angleForArticle, normalizeAngle } from '../ai/angles';
 import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
 import { MAX_GENERATION_THEMES, type GenerationProgress } from './generation-jobs';
+import { storyCodeFromUrl } from '../publishers/content/wvc';
+import type { ArticleLead } from './article-texts';
+
+/**
+ * Server-side full-text lookup (enriched publishers, only while enrichment is enabled). Leads feed the AI content
+ * call; only the derived subscriberOnly flag ever reaches a report.
+ */
+export interface FullTextLookup {
+  covers(publisherId: string): boolean;
+  leads(publisherId: string, storyCodes: readonly string[], maxChars: number): Promise<ArticleLead[]>;
+}
+
+/** Characters of each selected article's full text sent to the AI content call. */
+export const AI_LEAD_CHARS = 800;
+/** The lookup is on the request path: past this, the report is written without leads, as before enrichment. */
+const FULL_TEXT_LOOKUP_TIMEOUT_MS = 1500;
+
+/** The only full-text-derived field a public recommendation carries; absent when no text is stored. */
+function withSubscriberOnly(recommendations: ReportRecommendation[], texts: ReadonlyMap<string, { isPrivate: boolean }>): ReportRecommendation[] {
+  return texts.size ? recommendations.map((recommendation) => {
+    const text = texts.get(recommendation.articleId);
+    return text ? { ...recommendation, subscriberOnly: text.isPrivate } : recommendation;
+  }) : recommendations;
+}
 
 export const GENERATION_VERSION = '1.2';
 
@@ -235,7 +259,7 @@ export class ReportGenerationService {
   private readonly enrichedProfileInFlight = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
   private readonly enrichmentRetries = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
 
-  constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver, private readonly catalogueCache = new PublisherCatalogueCache()) {
+  constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver, private readonly catalogueCache = new PublisherCatalogueCache(), private readonly fullText?: FullTextLookup) {
     this.companyResolver = companyResolver ?? new BoundedCompanyInputResolver();
   }
 
@@ -754,6 +778,31 @@ export class ReportGenerationService {
     return { ranked, ownCompanyDeferred, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
   }
 
+  /** Leads and privacy for the given articles, in one query. Empty when not enriched, slow or failing. */
+  private async articleLeads(publisherId: string, articles: readonly NormalizedArticle[], maxChars: number, requestId?: string): Promise<Map<string, { lead: string; isPrivate: boolean }>> {
+    const byId = new Map<string, { lead: string; isPrivate: boolean }>();
+    if (!this.fullText?.covers(publisherId) || !articles.length) return byId;
+    const idsByCode = new Map<string, string[]>();
+    for (const article of articles) {
+      const code = storyCodeFromUrl(article.url) ?? storyCodeFromUrl(article.canonicalUrl);
+      if (code) idsByCode.set(code, [...(idsByCode.get(code) ?? []), article.id]);
+    }
+    if (!idsByCode.size) return byId;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const rows = await Promise.race([
+        this.fullText.leads(publisherId, [...idsByCode.keys()], maxChars),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('full_text_lookup_timeout')), FULL_TEXT_LOOKUP_TIMEOUT_MS); }),
+      ]);
+      for (const row of rows) for (const id of idsByCode.get(row.storyCode) ?? []) byId.set(id, { lead: row.lead, isPrivate: row.isPrivate });
+    } catch (error) {
+      this.logger?.error('full_text_lookup_failed', { requestId, publisherId, errorName: error instanceof Error ? error.name : 'unknown', errorCode: error instanceof Error && error.message === 'full_text_lookup_timeout' ? 'timeout' : 'query_failed' });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    return byId;
+  }
+
   private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set(), lowerConfidenceIds: ReadonlySet<string> = new Set(), fallbackExplanation: (item: RankedCandidate) => string = (item) => explanation(profile, item)): ReportRecommendation[] {
     return ranked.map((item, index) => ({
       articleId: item.article.id,
@@ -799,7 +848,8 @@ export class ReportGenerationService {
     const { ranked } = ranking;
     const failureStage = ranked.length > 0 ? 'complete' : ranking.aiFilteredCount > 0 && ranking.deterministicEligible > 0 ? 'ai_filtered_all' : ranking.deterministicEligible > 0 ? 'final_filter' : 'deterministic_threshold';
     const finalFormattingStartedAt = clockMs();
-    const recommendations = this.recommendationsFromRanked(profile, ranked, undefined, undefined, undefined, (item) => factualLine(item.article));
+    const privacy = await this.articleLeads(report.publisherId, ranked.map((item) => item.article), 1, requestId);
+    const recommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, ranked, undefined, undefined, undefined, (item) => factualLine(item.article)), privacy);
     timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
     timing.catalogueStale = ranking.timings.catalogueStale;
@@ -952,13 +1002,20 @@ export class ReportGenerationService {
     let themeDescriptions: Record<string, string> | undefined;
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
     const aiExplanationStartedAt = clockMs();
+    // One query for the selected articles: leads for the AI content call and the subscriberOnly flag.
+    const articleTexts = await this.articleLeads(input.publisherId, contentRanked.map((item) => item.article), AI_LEAD_CHARS, input.requestId);
     if (aiAvailable && ranked.length > 0) {
       // Two batched calls in parallel keep each inside the AI time cap: A writes the summary and the first
       // explanations, B (only when needed) the remaining explanations. Each falls back independently.
       const explanationsEnabled = this.ai!.config.explanationsEnabled;
+      // Lead excerpts ride only on the AI request objects, never on the recommendations that are persisted.
+      const contentRecommendations = deterministicRecommendations.map((recommendation) => {
+        const leadExcerpt = articleTexts.get(recommendation.article.id)?.lead;
+        return leadExcerpt ? { ...recommendation, leadExcerpt } : recommendation;
+      });
       const parts: Array<{ part: 'A' | 'B'; request: ReportContentRequest }> = [
-        { part: 'A', request: { publisherId: input.publisherId, profile, themes, recommendations: deterministicRecommendations.slice(0, CONTENT_PART_A_SIZE) } },
-        ...(explanationsEnabled && deterministicRecommendations.length > CONTENT_PART_A_SIZE ? [{ part: 'B' as const, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: deterministicRecommendations.slice(CONTENT_PART_A_SIZE) } }] : []),
+        { part: 'A', request: { publisherId: input.publisherId, profile, themes, recommendations: contentRecommendations.slice(0, CONTENT_PART_A_SIZE) } },
+        ...(explanationsEnabled && contentRecommendations.length > CONTENT_PART_A_SIZE ? [{ part: 'B' as const, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: contentRecommendations.slice(CONTENT_PART_A_SIZE) } }] : []),
       ];
       const outcomes = await Promise.all(parts.map(async ({ part, request }) => {
         const rejections: Array<ExplanationRejection | ExplanationShapeIssue> = [];
@@ -1027,7 +1084,7 @@ export class ReportGenerationService {
     timing.briefingSummaryMs = aiExplanationMs;
     this.markStage(input, 'ai_complete');
     this.progress(input, { stage: 'ai_complete' });
-    const rawRecommendations = this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds).map((recommendation) => ({
+    const rawRecommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds), articleTexts).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
         ...recommendation.rankingMetadata,

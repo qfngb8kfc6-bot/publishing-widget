@@ -183,7 +183,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     }
   }
   const textEnrichmentStatus = async (publisherId: string) => textSyncs.get(publisherId)?.status(textEnrichmentEnabled);
-  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache);
+  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache, textEnrichmentEnabled && articleTextStore ? { covers: (publisherId) => Boolean(enrichmentSourceFor(publisherId)), leads: (publisherId, storyCodes, maxChars) => articleTextStore.leads(publisherId, storyCodes, maxChars) } : undefined);
   const generationJobs = new GenerationJobs({
     store: options.generationJobStore ?? new MemoryGenerationJobStore(),
     onPersistError: (error) => logger.error('generation_status_write_failed', { errorName: error instanceof Error ? error.name : 'unknown', errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation status write failed.', 240) }),

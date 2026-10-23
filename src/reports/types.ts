@@ -10,6 +10,8 @@ export interface ReportRecommendation {
   displayScore: number;
   explanation: string;
   article: RankedArticle['article'];
+  /** True when the publisher marks the article as subscriber-only (known only for articles with stored full text). */
+  subscriberOnly?: boolean;
   rankingMetadata: {
     relevanceSignals: string[];
     rankingMode: 'deterministic' | 'hybrid';
