@@ -65,3 +65,56 @@ describe('date and reader warnings', () => {
     expect(summaryQualityWarnings('Adidas and Puma both shortened launch cycles; your roadmap should plan for faster competitor drops.', ['a1', 'a2'], reader)).toEqual([]);
   });
 });
+
+describe('figure periods', () => {
+  it('tells the model to keep the period an article gives for its figures', () => {
+    for (const instructions of [REPORT_CONTENT_INSTRUCTIONS, REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS, REPORT_SUMMARY_ONLY_INSTRUCTIONS]) {
+      expect(instructions).toContain('published year is when it was written, not the period its figures describe');
+      expect(instructions).toContain('Never relabel a figure with the published year');
+      expect(instructions).toContain('present them as different periods');
+    }
+  });
+
+  it('flags a summary year that no cited article states (a 2024 figure relabelled with the 2025 publication year)', () => {
+    const reader = { jobTitle: 'Product Manager', companyName: 'Nike' };
+    const sources = new Map([
+      ['market-2024', { text: 'Market Analysis: the global athletic apparel market. 2024 sales reached $122.6bn, up 2.1%.' }],
+      ['market-2025', { text: 'Market Analysis: athletic apparel grew 7% in 2025.' }],
+      ['old', { text: 'Decathlon plans environmental labels', olderYear: '2019' }],
+    ]);
+    expect(summaryQualityWarnings('In 2025 global athletic apparel sales rose just 2.1%, while Puma and Adidas cut prices; your team should watch margins.', ['market-2024', 'old'], reader, sources)).toEqual(['unsupported_year']);
+    expect(summaryQualityWarnings('Athletic apparel sales rose 2.1% in 2024 and 7% in 2025; in 2019 Decathlon added labels, so your team should watch margins.', ['market-2024', 'market-2025', 'old'], reader, sources)).toEqual([]);
+    expect(summaryQualityWarnings('In 2025 sales rose 2.1%.', ['a1', 'a2'], reader)).not.toContain('unsupported_year');
+  });
+
+  it('flags an explanation year missing from that article', () => {
+    const articles = new Map([['m', { title: 'Market Analysis: athletic apparel', sourceText: 'Market Analysis: athletic apparel. 2024 sales reached $122.6bn, up 2.1%.' }]]);
+    expect(explanationQualityWarnings([{ articleId: 'm', explanation: 'Athletic apparel sales rose 2.1% in 2025, a slow market for new product lines.' }], articles)).toEqual([{ articleId: 'm', code: 'unsupported_year' }]);
+    expect(explanationQualityWarnings([{ articleId: 'm', explanation: 'Athletic apparel sales rose 2.1% in 2024, a slow market for new product lines.' }], articles)).toEqual([]);
+  });
+});
+
+describe('summary voice and length', () => {
+  const reader = { jobTitle: 'Head of Retail', companyName: 'Nike' };
+
+  it('asks for at most 90 words addressed to you, with the reader company only as context', () => {
+    for (const instructions of [REPORT_CONTENT_INSTRUCTIONS, REPORT_SUMMARY_ONLY_INSTRUCTIONS]) {
+      expect(instructions).toContain('3-4 short sentences, at most 90 words in total');
+      expect(instructions).toContain('Never make the reader\'s own company (reader.company) the subject of a sentence ("Nike is facing ...", "For Nike, ...", "Nike should ...")');
+      expect(instructions).toContain('The company may appear only as context ("your Nike stores", "brands competing with Nike")');
+    }
+  });
+
+  it('flags the reader company as a third-person subject', () => {
+    expect(summaryQualityWarnings('Nike is facing slower wholesale as Adidas and Puma open stores.', ['a1', 'a2'], reader)).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings('Adidas and Puma opened 40 stores. For Nike, this means tighter shelf space.', ['a1', 'a2'], reader)).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings('Adidas and Puma opened 40 stores, and Nike should expect tighter shelf space.', ['a1', 'a2'], reader)).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings('Adidas and Puma opened 40 stores while Nike\'s rivals cut wholesale; your Nike stores compete with brands like Nike will for space, so watch rents.', ['a1', 'a2'], { ...reader, companyName: 'Asics' })).toEqual([]);
+    expect(summaryQualityWarnings('Adidas and Puma opened 40 stores while Nike\'s rivals cut wholesale; watch whether your Nike stores lose footfall to brands competing with Nike.', ['a1', 'a2'], reader)).toEqual([]);
+  });
+
+  it('flags a summary well over 90 words', () => {
+    expect(summaryQualityWarnings(`Adidas opened 12 stores; ${'you should watch rents closely. '.repeat(20)}`, ['a1', 'a2'], reader)).toEqual(['too_long']);
+    expect(summaryQualityWarnings(`Adidas opened 12 stores; ${'you should watch rents closely. '.repeat(15)}`, ['a1', 'a2'], reader)).toEqual([]);
+  });
+});

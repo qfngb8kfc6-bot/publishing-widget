@@ -130,13 +130,16 @@ export interface ServerLogFields {
   ownCompanyCount?: number;
   recommendationCount?: number;
   ownCompanyDeferred?: number;
+  /** duplicates_collapsed: near-duplicate stories removed before the AI calls, and "removedId>keptId" pairs. */
+  duplicatesCollapsed?: number;
+  duplicatePairs?: string;
   /** weak_fit_removed counts. */
   weakFlagged?: number;
   weakFromRerank?: number;
   weakFromContent?: number;
   weakRemoved?: number;
   weakKeptLowerConfidence?: number;
-  /** ai_quality_warning code: banned_phrase, duplicate_opening, too_long, no_specific_fact, too_few_citations, restates_reader. */
+  /** ai_quality_warning code: banned_phrase, duplicate_opening, too_long, no_specific_fact, too_few_citations, restates_reader, third_person_reader, old_fact_not_dated, unsupported_year, reader_company_subject (too_long also applies to summaries over ~100 words). */
   qualityCode?: string;
   /** Index prebuild: articles indexed, synchronous time spent and number of event-loop slices. */
   articleCount?: number;
@@ -181,7 +184,7 @@ export function logHeapUsage(logger: StructuredLogger | undefined, stage: string
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'not_returned_treated_as_weak', 'own_company_share', 'enrichment_retry', 'heap_usage', 'report_performance', 'theme_performance', 'slow_span', 'wvc_sync_progress', 'lead_index_update'].includes(message);
+    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'duplicates_collapsed', 'not_returned_treated_as_weak', 'own_company_share', 'enrichment_retry', 'heap_usage', 'report_performance', 'theme_performance', 'slow_span', 'wvc_sync_progress', 'lead_index_update'].includes(message);
     if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };

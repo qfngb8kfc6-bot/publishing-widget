@@ -38,6 +38,27 @@ function contentWords(normalized: string): string[] {
   return normalized ? normalized.split(' ').filter((word) => !STOPWORDS.has(word)) : [];
 }
 
+/** Probe hashes per concept, shared by every article's index: a profile has ~30 concepts, an archive ~11.5k leads. */
+const PROBE_CACHE_LIMIT = 4_096;
+const probeCache = new Map<string, readonly number[]>();
+
+/** The hashes a concept needs: its token or prefix, or for a phrase every adjacent content-word pair. */
+function conceptProbes(normalizedConcept: string): readonly number[] {
+  if (!normalizedConcept) return [];
+  const cached = probeCache.get(normalizedConcept);
+  if (cached) return cached;
+  let probes: number[];
+  const single = (word: string) => (word.length >= 6 ? hash(PREFIX, word.slice(0, 5)) : hash(TOKEN, word));
+  if (!normalizedConcept.includes(' ')) probes = [single(normalizedConcept)];
+  else {
+    const words = contentWords(normalizedConcept);
+    probes = words.length === 0 ? [] : words.length === 1 ? [single(words[0])] : words.slice(1).map((word, index) => hash(BIGRAM, `${words[index]} ${word}`));
+  }
+  if (probeCache.size >= PROBE_CACHE_LIMIT) probeCache.clear();
+  probeCache.set(normalizedConcept, probes);
+  return probes;
+}
+
 /**
  * Compact match index for an article's lead excerpt (the opening of its full text, held in Postgres). Only
  * 24-bit hashes are kept, in one sorted typed array: tokens shorter than six characters, five-character prefixes
@@ -82,14 +103,9 @@ export class LeadMatchIndex {
 
   /** `normalizedConcept` is already normalized with normalizeToken. */
   matches(normalizedConcept: string): boolean {
-    if (!normalizedConcept) return false;
-    if (!normalizedConcept.includes(' ')) {
-      return normalizedConcept.length >= 6 ? this.has(hash(PREFIX, normalizedConcept.slice(0, 5))) : this.has(hash(TOKEN, normalizedConcept));
-    }
-    const words = contentWords(normalizedConcept);
-    if (words.length === 0) return false;
-    if (words.length === 1) return this.matches(words[0]);
-    for (let index = 1; index < words.length; index += 1) if (!this.has(hash(BIGRAM, `${words[index - 1]} ${words[index]}`))) return false;
+    const required = conceptProbes(normalizedConcept);
+    if (required.length === 0) return false;
+    for (const value of required) if (!this.has(value)) return false;
     return true;
   }
 }

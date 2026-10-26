@@ -52,13 +52,13 @@ async function generate(target: ReturnType<typeof app>['instance']) {
 
 describe('content prompt', () => {
   it('states grounding, the summary and explanation rules, the banned phrases and placeholder examples', () => {
-    for (const rule of ['use only facts stated', 'Never invent numbers, companies', 'Use only the supplied article ids', '3-4 sentences', 'strongest pattern', 'one specific thing to watch', 'citedArticleIds', 'never more than 45', 'angle is exactly one of: competitor benchmark, market signal', 'a collaboration or product launch is never a leadership move', 'no two explanations may start with the same three words', '"relevant because"', '"the profile"', '"the most relevant articles"', 'Acme Apparel', 'Northwind Sports']) {
+    for (const rule of ['use only facts stated', 'Never invent numbers, companies', 'Use only the supplied article ids', '3-4 short sentences', 'strongest pattern', 'one specific thing to watch', 'citedArticleIds', 'never more than 45', 'angle is exactly one of: competitor benchmark, market signal', 'a collaboration or product launch is never a leadership move', 'no two explanations may start with the same three words', '"relevant because"', '"the profile"', '"the most relevant articles"', 'Acme Apparel', 'Northwind Sports']) {
       expect(REPORT_CONTENT_INSTRUCTIONS).toContain(rule);
     }
   });
 
   it('gives the summary-only call (part S) the same summary, grounding, lead and theme rules without explanation rules', () => {
-    for (const rule of ['use only facts stated', 'Never invent numbers, companies', 'Use only the supplied article ids', '3-4 sentences', 'strongest pattern', 'one specific thing to watch', 'citedArticleIds', 'never copy more than five consecutive words', 'themeDescriptions with one entry per theme', '"relevant because"', 'Do not write explanations']) {
+    for (const rule of ['use only facts stated', 'Never invent numbers, companies', 'Use only the supplied article ids', '3-4 short sentences', 'strongest pattern', 'one specific thing to watch', 'citedArticleIds', 'never copy more than five consecutive words', 'themeDescriptions with one entry per theme', '"relevant because"', 'Do not write explanations']) {
       expect(REPORT_SUMMARY_ONLY_INSTRUCTIONS).toContain(rule);
     }
     for (const rule of ['COMPLETENESS', 'EXPLANATIONS:', 'angle is exactly one of']) expect(REPORT_SUMMARY_ONLY_INSTRUCTIONS).not.toContain(rule);

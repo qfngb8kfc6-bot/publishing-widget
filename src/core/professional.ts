@@ -1,7 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 
-export const PROFESSIONAL_PROFILE_VERSION = '1.6';
-export const RANKING_VERSION = '1.4';
+export const PROFESSIONAL_PROFILE_VERSION = '1.7';
+export const RANKING_VERSION = '1.5';
 
 export interface CompanyContext {
   domain: string;
@@ -96,6 +96,11 @@ export interface ProfessionalProfile {
 
 interface RoleRule {
   test: RegExp;
+  /**
+   * A people move (hire, appointment, departure) counts only when its title names this role's own area, e.g. a
+   * retail, stores or DTC appointment for Retail; a VP of footwear product strategy is not retail news.
+   */
+  peopleMovesNeedTitleMatch?: boolean;
   /** Catch-all rules match on seniority words, not on what the person works on. */
   generic?: boolean;
   function: string;
@@ -114,7 +119,9 @@ const ROLE_RULES: RoleRule[] = [
   { test: /marketing|brand|communications|audience/i, function: 'Marketing and communications', responsibilities: ['audience strategy', 'positioning', 'campaign planning'], direct: ['audiences', 'content', 'brands', 'communications', 'growth', 'customer research', 'digital marketing'], adjacent: ['technology', 'AI', 'culture', 'data', 'sustainability'], exclusions: ['astronomy', 'marine engineering'] },
   { test: /research|scientist|academic|laboratory|lab/i, function: 'Research', responsibilities: ['research design', 'evidence review', 'knowledge development'], direct: ['science', 'evidence', 'methodology', 'measurement', 'data', 'research'], adjacent: ['technology', 'climate', 'ecology', 'health', 'innovation'], exclusions: ['generic finance', 'generic marketing'] },
   { test: /operations|operational|delivery|process|supply chain/i, function: 'Operations', responsibilities: ['process improvement', 'delivery planning', 'operational resilience'], direct: ['operations', 'processes', 'delivery', 'systems', 'workflow', 'efficiency', 'supply chain'], adjacent: ['automation', 'manufacturing', 'logistics', 'technology', 'resilience'], exclusions: ['astronomy', 'observatories', 'marine science'] },
-  { test: /retail|merchandising|store|omnichannel|category|sales/i, function: 'Retail', responsibilities: ['retail operations', 'commercial planning', 'customer and channel performance'], direct: ['retail operations', 'stores', 'omnichannel', 'distribution', 'merchandising', 'sales performance', 'consumer behavior', 'markets', 'expansion', 'category performance', 'retail strategy'], adjacent: ['strategy', 'growth', 'pricing', 'channel strategy', 'market positioning', 'supply chain', 'ecommerce', 'brand', 'customer experience'], exclusions: ['astronomy', 'observatories', 'marine science'] },
+  // "markets" and "expansion" are adjacent: as single words their five-letter prefixes match "go-to-market",
+  // "marketing" and any "expanding into ..." launch, which let product-strategy hires and fragrance launches in.
+  { test: /retail|merchandising|store|omnichannel|category|sales/i, peopleMovesNeedTitleMatch: true, function: 'Retail', responsibilities: ['retail operations', 'commercial planning', 'customer and channel performance'], direct: ['retail', 'retail operations', 'stores', 'store openings', 'omnichannel', 'distribution', 'wholesale', 'direct to consumer', 'DTC', 'merchandising', 'sales performance', 'consumer behavior', 'store expansion', 'retail expansion', 'category performance', 'retail strategy'], adjacent: ['markets', 'expansion', 'strategy', 'growth', 'pricing', 'channel strategy', 'market positioning', 'supply chain', 'ecommerce', 'brand', 'customer experience'], exclusions: ['astronomy', 'observatories', 'marine science'] },
   { test: /chief|ceo|cto|cfo|director|vp|vice president|head of|executive|founder/i, generic: true, function: 'Leadership', responsibilities: ['strategic planning', 'organisational decisions', 'risk management'], direct: ['strategy', 'technology', 'markets', 'operations', 'regulation', 'growth', 'leadership', 'risk'], adjacent: ['industry context', 'sustainability', 'AI', 'finance', 'innovation'], exclusions: ['astronomy', 'observatories'] },
 ];
 
@@ -193,6 +200,11 @@ export function subjectMatcher(role: RoleContext): ((concept: string) => boolean
   if (!terms) return undefined;
   const topics = role.titleTopics ?? [];
   return (concept) => terms.some((term) => anchoredTo(concept, term)) || topics.some((topic) => partOfTopic(concept, topic));
+}
+
+/** True when the role's people-move stories must name its own area in the title (see RoleRule). */
+export function peopleMovesNeedTitleMatch(role: RoleContext): boolean {
+  return role.roleSource !== 'generic' && Boolean(ROLE_RULES.find((rule) => rule.function === role.function)?.peopleMovesNeedTitleMatch);
 }
 
 /** "sustainability" or "legal and compliance": the reader-facing subject of a generic titled role. */

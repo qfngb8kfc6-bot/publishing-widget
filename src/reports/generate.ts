@@ -14,6 +14,7 @@ import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
 import { articleRelationship, limitOwnCompanyShare } from './relationship';
+import { collapseNearDuplicates } from './near-duplicates';
 import { explanationQualityWarnings, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
 import { angleForArticle, normalizeAngle } from '../ai/angles';
 import { articleTiming } from '../ai/providers/openai-compatible';
@@ -50,6 +51,8 @@ function clockMs(): number { return typeof performance !== 'undefined' ? perform
 
 /** Any single generation span above this is logged individually so untimed stalls are visible in production. */
 const SLOW_SPAN_MS = 1_000;
+/** Near-duplicate check covers the head of the ranked list: everything that can reach a rerank or a report. */
+const DUPLICATE_SCAN_LIMIT = 100;
 
 /**
  * Content calls are split so no single call writes more than ~350 output tokens: S writes the summary, cited IDs
@@ -671,14 +674,16 @@ export class ReportGenerationService {
         return article ? [article] : [];
       });
     const exclusionStartedAt = clockMs();
-    const excludedArticleCount = normalizedCandidates.filter((article) => articleIdentityKeys(article).some((key) => excludedArticleKeys.has(key))).length;
-    const normalizedArticles = normalizedCandidates.filter((article) => articleIdentityKeys(article).every((key) => !excludedArticleKeys.has(key)));
+    // One sliced pass: identity keys parse each URL, which for a whole archive is too long to do synchronously.
+    let excludedArticleCount = 0;
     const seenArticleKeys = new Set<string>();
-    const unique = normalizedArticles.filter((article) => {
+    const unique: NormalizedArticle[] = [];
+    await mapInSlices(normalizedCandidates, (article) => {
       const keys = articleIdentityKeys(article);
-      if (keys.some((key) => seenArticleKeys.has(key))) return false;
+      if (keys.some((key) => excludedArticleKeys.has(key))) { excludedArticleCount += 1; return; }
+      if (keys.some((key) => seenArticleKeys.has(key))) return;
       keys.forEach((key) => seenArticleKeys.add(key));
-      return true;
+      unique.push(article);
     });
     const currentReportExclusionMs = clockMs() - exclusionStartedAt;
     const sourceStats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { normalizedArticles?: number; preselectionInputCount?: number; preselectionOutputCount?: number } } }).lastDiagnostics?.sourceStats;
@@ -688,13 +693,14 @@ export class ReportGenerationService {
     const preselectionStartedAt = clockMs();
     const scoreArticle = createProfessionalScorer(profile);
     const preselectionScores = new Map<NormalizedArticle, ReturnType<typeof scoreProfessionalArticle>>();
+    // Archive-wide scoring touches every article (11.5k for SGI) and, right after a refresh, builds the match
+    // indexes the background prebuild has not reached yet: in slices, so it never stalls other requests.
     const preselected = archiveWide
-      ? unique
-        .map((article) => {
-          const result = scoreArticle(article, catalogueIndex?.professionalFields(article));
-          preselectionScores.set(article, result);
-          return { article, score: result.score };
-        })
+      ? (await mapInSlices(unique, (article) => {
+        const result = scoreArticle(article, catalogueIndex?.professionalFields(article));
+        preselectionScores.set(article, result);
+        return { article, score: result.score };
+      }))
         .sort((left, right) => right.score - left.score)
         .slice(0, preselectionLimit)
         .map(({ article }) => article)
@@ -705,7 +711,7 @@ export class ReportGenerationService {
     const finalLimit = Math.min(definition.config.results.maximumRecommendations, definition.config.content.resultLimit);
     const aiAvailable = this.canUseAI(definition);
     const deterministicStartedAt = clockMs();
-    const deterministicRanked: RankedCandidate[] = preselected
+    const scored: RankedCandidate[] = preselected
       .map((article) => {
         const result = preselectionScores.get(article) ?? scoreArticle(article, catalogueIndex?.professionalFields(article));
         return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
@@ -716,6 +722,11 @@ export class ReportGenerationService {
           || (b.scoreComponents?.postRecencyScore ?? b.deterministicScore) - (a.scoreComponents?.postRecencyScore ?? a.deterministicScore)
         : a.relevanceType === 'direct' ? -1 : 1))
       .map(({ result: _result, ...item }) => item);
+    // Before the AI calls: the same story twice (or two instalments of a recurring series) would take two
+    // rerank slots and two report places. Only duplicates leave; the threshold has already been applied.
+    const duplicates = collapseNearDuplicates(scored, DUPLICATE_SCAN_LIMIT);
+    const deterministicRanked: RankedCandidate[] = duplicates.kept;
+    if (duplicates.collapsed.length) this.logger?.info('duplicates_collapsed', { requestId, publisherId, duplicatesCollapsed: duplicates.collapsed.length, duplicatePairs: safeLogText(duplicates.collapsed.slice(0, 10).map((pair) => `${pair.removedId}>${pair.keptId}`).join(','), 2_000) });
     const deterministicRankingMs = clockMs() - deterministicStartedAt;
     const aiEligibleCount = aiAvailable ? Math.min(deterministicRanked.length, this.ai!.config.rerankLimit) : 0;
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, rankingCandidateCount: preselected.length, normalizedArticles: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, eligibleCount: deterministicRanked.length });
@@ -1035,6 +1046,12 @@ export class ReportGenerationService {
         { part: 'S', request: { publisherId: input.publisherId, profile, themes, includeExplanations: false, recommendations: contentRecommendations } },
         ...(explanationsEnabled ? explanationBatches(contentRecommendations).map((batch, index) => ({ part: `E${index + 1}`, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: batch } })) : []),
       ];
+      // What each article's figures can be dated from (title, description, lead): only for the year check, never logged.
+      const yearSources = new Map(contentRecommendations.map((recommendation) => {
+        const timing = articleTiming(recommendation.article.publishedAt);
+        const text = [recommendation.article.title, recommendation.article.description ?? recommendation.article.summary ?? recommendation.article.contentSnippet, 'leadExcerpt' in recommendation ? recommendation.leadExcerpt : undefined].filter(Boolean).join(' ');
+        return [recommendation.article.id, { text, olderYear: timing.older ? timing.published : undefined }];
+      }));
       const outcomes = await Promise.all(parts.map(async ({ part, request }) => {
         const rejections: Array<ExplanationRejection | ExplanationShapeIssue> = [];
         const outcome = await this.runAI('report_content', async (observe) => {
@@ -1050,7 +1067,7 @@ export class ReportGenerationService {
         generatedSummary = summaryPart.value.summary;
         aiSummaryUsed = true;
         citedIds = new Set(summaryPart.value.citedArticleIds ?? []);
-        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(summaryPart.value.summary, summaryPart.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
+        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(summaryPart.value.summary, summaryPart.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }, yearSources).map((code) => ({ code })));
       } else summaryFallbackReason = summaryPart.errorCode ?? 'summary_missing';
       themeDescriptions = summaryPart.value?.themeDescriptions;
       const explanationOutcomes = outcomes.filter((outcome) => outcome.part !== 'S');
@@ -1070,7 +1087,7 @@ export class ReportGenerationService {
         aiExplanationUsed = explanationById.size > 0;
         this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map(ranked.map((item) => {
           const timing = articleTiming(item.article.publishedAt);
-          return [item.article.id, { title: item.article.title, olderYear: timing.older ? timing.published : undefined }];
+          return [item.article.id, { title: item.article.title, olderYear: timing.older ? timing.published : undefined, sourceText: yearSources.get(item.article.id)?.text }];
         }))));
       }
     }
