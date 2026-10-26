@@ -2,7 +2,7 @@
  * Heuristic writing-quality checks for AI briefing text. They only produce warnings: rejecting text for
  * phrasing would bring back the deterministic template, so the text is kept and the warning is logged.
  */
-export type ContentQualityCode = 'banned_phrase' | 'duplicate_opening' | 'too_long' | 'no_specific_fact' | 'too_few_citations' | 'restates_reader' | 'third_person_reader' | 'old_fact_not_dated';
+export type ContentQualityCode = 'banned_phrase' | 'duplicate_opening' | 'too_long' | 'no_specific_fact' | 'too_few_citations' | 'restates_reader' | 'third_person_reader' | 'old_fact_not_dated' | 'unsupported_year';
 
 export const BANNED_EXPLANATION_PHRASES = ['this article', 'this matters', 'relevant because', 'relevant to your work', 'your role as', 'maps to', 'aligns with', 'the profile', 'directly relevant'];
 export const BANNED_SUMMARY_PHRASES = ['the most relevant articles', 'focus on', 'focuses on', 'the profile', 'this briefing'];
@@ -31,11 +31,32 @@ function hasSpecificFact(text: string, title: string): boolean {
   return words(text).some((word) => titleWords.has(word));
 }
 
+const YEAR = /\b(?:19[5-9]\d|20\d\d)\b/g;
+
+/** Text an article's figures can be dated from: title, description and lead, plus its year when it is older. */
+export interface YearSource {
+  text: string;
+  olderYear?: string;
+}
+
+/**
+ * Years in the AI text that none of the given sources state. A market report published in 2025 usually gives
+ * 2024 figures, so a "2025" that only matches the publication date is how a figure gets relabelled. An older
+ * article's own year is allowed: the DATES rule asks for it ("In 2019, Decathlon ...").
+ */
+function hasUnsupportedYear(text: string, sources: readonly YearSource[]): boolean {
+  if (!sources.length) return false;
+  const supported = new Set(sources.flatMap((source) => [...(source.text.match(YEAR) ?? []), ...(source.olderYear ? [source.olderYear] : [])]));
+  return (text.match(YEAR) ?? []).some((year) => !supported.has(year));
+}
+
 /** Article facts the explanation checks need: its title and, for articles older than the cutoff, its year. */
 export interface ExplanationArticleFacts {
   title: string;
   /** Publication year when the article is older than the 18-month cutoff; the explanation should name it. */
   olderYear?: string;
+  /** Title, description and lead; when given, every year in the explanation must appear in it (or be olderYear). */
+  sourceText?: string;
 }
 
 export function explanationQualityWarnings(explanations: ReadonlyArray<{ articleId: string; explanation: string }>, articles: ReadonlyMap<string, string | ExplanationArticleFacts>): Array<{ articleId: string; code: ContentQualityCode }> {
@@ -48,18 +69,21 @@ export function explanationQualityWarnings(explanations: ReadonlyArray<{ article
     openings.add(opening);
     if (words(explanation).length > MAX_EXPLANATION_WORDS) warnings.push({ articleId, code: 'too_long' });
     const facts = articles.get(articleId);
-    const { title, olderYear } = typeof facts === 'string' ? { title: facts, olderYear: undefined } : facts ?? { title: '', olderYear: undefined };
+    const { title, olderYear, sourceText } = typeof facts === 'string' ? { title: facts, olderYear: undefined, sourceText: undefined } : facts ?? { title: '', olderYear: undefined, sourceText: undefined };
     if (!hasSpecificFact(explanation, title)) warnings.push({ articleId, code: 'no_specific_fact' });
     if (olderYear && !explanation.includes(olderYear)) warnings.push({ articleId, code: 'old_fact_not_dated' });
+    if (sourceText !== undefined && hasUnsupportedYear(explanation, [{ text: sourceText, olderYear }])) warnings.push({ articleId, code: 'unsupported_year' });
   }
   return warnings;
 }
 
-export function summaryQualityWarnings(summary: string, citedArticleIds: readonly string[], reader: { jobTitle?: string; companyName?: string }): ContentQualityCode[] {
+/** sources: the cited-articles' year sources by article ID; years in the summary must come from one of them. */
+export function summaryQualityWarnings(summary: string, citedArticleIds: readonly string[], reader: { jobTitle?: string; companyName?: string }, sources?: ReadonlyMap<string, YearSource>): ContentQualityCode[] {
   const warnings: ContentQualityCode[] = [];
   if (containsPhrase(summary, BANNED_SUMMARY_PHRASES)) warnings.push('banned_phrase');
   if (citedArticleIds.length < 2) warnings.push('too_few_citations');
   if (reader.jobTitle && reader.companyName && containsPhrase(summary, [`${reader.jobTitle} at ${reader.companyName}`])) warnings.push('restates_reader');
   if (THIRD_PERSON_READER.test(summary) || (reader.jobTitle && containsPhrase(summary, [`for a ${reader.jobTitle}`, `for an ${reader.jobTitle}`, `for the ${reader.jobTitle}`]))) warnings.push('third_person_reader');
+  if (sources && hasUnsupportedYear(summary, citedArticleIds.flatMap((id) => sources.get(id) ?? []))) warnings.push('unsupported_year');
   return warnings;
 }

@@ -1035,6 +1035,12 @@ export class ReportGenerationService {
         { part: 'S', request: { publisherId: input.publisherId, profile, themes, includeExplanations: false, recommendations: contentRecommendations } },
         ...(explanationsEnabled ? explanationBatches(contentRecommendations).map((batch, index) => ({ part: `E${index + 1}`, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: batch } })) : []),
       ];
+      // What each article's figures can be dated from (title, description, lead): only for the year check, never logged.
+      const yearSources = new Map(contentRecommendations.map((recommendation) => {
+        const timing = articleTiming(recommendation.article.publishedAt);
+        const text = [recommendation.article.title, recommendation.article.description ?? recommendation.article.summary ?? recommendation.article.contentSnippet, 'leadExcerpt' in recommendation ? recommendation.leadExcerpt : undefined].filter(Boolean).join(' ');
+        return [recommendation.article.id, { text, olderYear: timing.older ? timing.published : undefined }];
+      }));
       const outcomes = await Promise.all(parts.map(async ({ part, request }) => {
         const rejections: Array<ExplanationRejection | ExplanationShapeIssue> = [];
         const outcome = await this.runAI('report_content', async (observe) => {
@@ -1050,7 +1056,7 @@ export class ReportGenerationService {
         generatedSummary = summaryPart.value.summary;
         aiSummaryUsed = true;
         citedIds = new Set(summaryPart.value.citedArticleIds ?? []);
-        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(summaryPart.value.summary, summaryPart.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
+        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(summaryPart.value.summary, summaryPart.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }, yearSources).map((code) => ({ code })));
       } else summaryFallbackReason = summaryPart.errorCode ?? 'summary_missing';
       themeDescriptions = summaryPart.value?.themeDescriptions;
       const explanationOutcomes = outcomes.filter((outcome) => outcome.part !== 'S');
@@ -1070,7 +1076,7 @@ export class ReportGenerationService {
         aiExplanationUsed = explanationById.size > 0;
         this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map(ranked.map((item) => {
           const timing = articleTiming(item.article.publishedAt);
-          return [item.article.id, { title: item.article.title, olderYear: timing.older ? timing.published : undefined }];
+          return [item.article.id, { title: item.article.title, olderYear: timing.older ? timing.published : undefined, sourceText: yearSources.get(item.article.id)?.text }];
         }))));
       }
     }
