@@ -674,14 +674,16 @@ export class ReportGenerationService {
         return article ? [article] : [];
       });
     const exclusionStartedAt = clockMs();
-    const excludedArticleCount = normalizedCandidates.filter((article) => articleIdentityKeys(article).some((key) => excludedArticleKeys.has(key))).length;
-    const normalizedArticles = normalizedCandidates.filter((article) => articleIdentityKeys(article).every((key) => !excludedArticleKeys.has(key)));
+    // One sliced pass: identity keys parse each URL, which for a whole archive is too long to do synchronously.
+    let excludedArticleCount = 0;
     const seenArticleKeys = new Set<string>();
-    const unique = normalizedArticles.filter((article) => {
+    const unique: NormalizedArticle[] = [];
+    await mapInSlices(normalizedCandidates, (article) => {
       const keys = articleIdentityKeys(article);
-      if (keys.some((key) => seenArticleKeys.has(key))) return false;
+      if (keys.some((key) => excludedArticleKeys.has(key))) { excludedArticleCount += 1; return; }
+      if (keys.some((key) => seenArticleKeys.has(key))) return;
       keys.forEach((key) => seenArticleKeys.add(key));
-      return true;
+      unique.push(article);
     });
     const currentReportExclusionMs = clockMs() - exclusionStartedAt;
     const sourceStats = (definition.adapter as { lastDiagnostics?: { sourceStats?: { normalizedArticles?: number; preselectionInputCount?: number; preselectionOutputCount?: number } } }).lastDiagnostics?.sourceStats;
@@ -691,13 +693,14 @@ export class ReportGenerationService {
     const preselectionStartedAt = clockMs();
     const scoreArticle = createProfessionalScorer(profile);
     const preselectionScores = new Map<NormalizedArticle, ReturnType<typeof scoreProfessionalArticle>>();
+    // Archive-wide scoring touches every article (11.5k for SGI) and, right after a refresh, builds the match
+    // indexes the background prebuild has not reached yet: in slices, so it never stalls other requests.
     const preselected = archiveWide
-      ? unique
-        .map((article) => {
-          const result = scoreArticle(article, catalogueIndex?.professionalFields(article));
-          preselectionScores.set(article, result);
-          return { article, score: result.score };
-        })
+      ? (await mapInSlices(unique, (article) => {
+        const result = scoreArticle(article, catalogueIndex?.professionalFields(article));
+        preselectionScores.set(article, result);
+        return { article, score: result.score };
+      }))
         .sort((left, right) => right.score - left.score)
         .slice(0, preselectionLimit)
         .map(({ article }) => article)
