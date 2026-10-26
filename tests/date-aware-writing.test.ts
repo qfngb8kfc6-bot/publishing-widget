@@ -118,3 +118,13 @@ describe('summary voice and length', () => {
     expect(summaryQualityWarnings(`Adidas opened 12 stores; ${'you should watch rents closely. '.repeat(15)}`, ['a1', 'a2'], reader)).toEqual([]);
   });
 });
+
+describe('possessive reader company as subject', () => {
+  it('flags a sentence that opens on the reader company possessive', () => {
+    const adidas = { jobTitle: 'Product Manager', companyName: 'Adidas' };
+    expect(summaryQualityWarnings("Adidas' move into lifestyle keeps building as Puma and New Balance chase the same terrace look.", ['a1', 'a2'], adidas)).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings("Adidas's lifestyle push faces Puma and New Balance. Watch your margins.", ['a1', 'a2'], adidas)).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings("Puma cut prices. Nike's stores lost footfall to JD Sports, so watch your wholesale terms.", ['a1', 'a2'], { jobTitle: 'Head of Retail', companyName: 'Nike' })).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings("Puma and New Balance are chasing Adidas' terrace look, so your team should watch lifestyle drops.", ['a1', 'a2'], adidas)).toEqual([]);
+  });
+});
