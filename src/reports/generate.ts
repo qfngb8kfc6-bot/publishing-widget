@@ -201,17 +201,6 @@ export function factualLine(article: Pick<NormalizedArticle, 'title' | 'descript
   return `${clipped.slice(0, Math.max(clipped.lastIndexOf(' '), 160)).trim()}…`;
 }
 
-function explanation(profile: ReturnType<typeof buildProfessionalProfile>, relevance: Pick<RelevanceResult, 'relevanceSignals' | 'relevanceType' | 'directMatches' | 'adjacentMatches'>): string {
-  const matches = relevance.relevanceType === 'direct' ? relevance.directMatches : relevance.adjacentMatches;
-  if (matches?.length) {
-    const lead = relevance.relevanceType === 'direct' ? 'Directly matches' : 'Connects with adjacent themes';
-    return `${lead} ${matches.slice(0, 2).join(' and ')}, relevant to your work as ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}.`;
-  }
-  const relevanceSignals = relevance.relevanceSignals;
-  const signal = relevanceSignals[0] ?? 'comes from the publisher’s coverage';
-  return `${signal.charAt(0).toUpperCase()}${signal.slice(1)}, with a focus on developments relevant to ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}.`;
-}
-
 function reportSummary(profile: ReturnType<typeof buildProfessionalProfile>, selectedCount: number): string {
   const focus = profile.directInterests.slice(0, 4).join(', ') || profile.professionalInterests.slice(0, 4).join(', ');
   return `Based on your role in ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}, this briefing focuses on ${focus} and includes ${selectedCount} selected ${selectedCount === 1 ? 'story' : 'stories'} with a clear connection to your work.`;
@@ -872,7 +861,7 @@ export class ReportGenerationService {
     return byId;
   }
 
-  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set(), lowerConfidenceIds: ReadonlySet<string> = new Set(), fallbackExplanation: (item: RankedCandidate) => string = (item) => explanation(profile, item)): ReportRecommendation[] {
+  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set(), lowerConfidenceIds: ReadonlySet<string> = new Set(), fallbackExplanation: (item: RankedCandidate) => string = (item) => factualLine(item.article)): ReportRecommendation[] {
     return ranked.map((item, index) => ({
       articleId: item.article.id,
       rank: index + 1,
@@ -1056,7 +1045,7 @@ export class ReportGenerationService {
     const contentRanked = afterRerank.kept;
     const deterministicRecommendations = contentRanked.map((item) => ({
       article: item.article,
-      deterministicExplanation: explanation(profile, item),
+      deterministicExplanation: factualLine(item.article),
       relevanceSignals: item.relevanceSignals,
       semanticSignals: item.semanticSignals,
       matchedConcepts: [...item.directMatches, ...item.adjacentMatches],
@@ -1073,6 +1062,8 @@ export class ReportGenerationService {
     const contentWeakIds = new Set<string>();
     // Articles a successful content call skipped: treated as weak fits rather than shown with template text.
     const notReturnedIds = new Map<string, string>();
+    // Articles whose explanation batch failed or timed out, by part (E1...).
+    const failedBatchIds = new Map<string, string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let themeDescriptions: Record<string, string> | undefined;
@@ -1118,6 +1109,7 @@ export class ReportGenerationService {
       } else summaryFallbackReason = summaryPart.errorCode ?? 'summary_missing';
       themeDescriptions = summaryPart.value?.themeDescriptions;
       const explanationOutcomes = outcomes.filter((outcome) => outcome.part !== 'S');
+      for (const outcome of explanationOutcomes) if (!outcome.value) for (const recommendation of outcome.request.recommendations) failedBatchIds.set(recommendation.article.id, outcome.part);
       for (const outcome of explanationOutcomes) for (const articleId of outcome.value?.weakArticleIds ?? []) contentWeakIds.add(articleId);
       if (explanationsEnabled) {
         const accepted = explanationOutcomes.flatMap((outcome) => {
@@ -1169,6 +1161,15 @@ export class ReportGenerationService {
     timing.briefingSummaryMs = aiExplanationMs;
     this.markStage(input, 'ai_complete');
     this.progress(input, { stage: 'ai_complete' });
+    // A shown story without an AI explanation gets its own first sentence; say why, per article (IDs only).
+    if (aiAvailable && this.ai!.config.explanationsEnabled) {
+      for (const item of weakFit.kept) {
+        const articleId = item.article.id;
+        if (explanationById.has(articleId)) continue;
+        const reason = contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
+        this.logger?.info('explanation_fallback', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: notReturnedIds.get(articleId) ?? failedBatchIds.get(articleId), rejectReason: reason });
+      }
+    }
     const rawRecommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds), articleTexts).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {

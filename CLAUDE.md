@@ -62,7 +62,7 @@ qfngb8kfc6-bot/publishing-widget.
   form, concept family or shared report articles) and stored as `professionalProfile.themes`.
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
-  `ai_quality_warning`, `weak_fit_removed`, `own_company_share`, `report_performance`, `theme_performance`,
+  `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed), `own_company_share`, `report_performance`, `theme_performance`,
   `slow_span`, `catalogue_refresh_complete`, `index_prebuild_complete`, `heap_usage`.
 
 ## Publishers
@@ -103,8 +103,8 @@ qfngb8kfc6-bot/publishing-widget.
 ## Open tasks
 - Confirm production `heap_usage` matches the local measurements (synthetic feed); then consider downsizing.
 - AI rerank is close to the 5 s cap for some roles (e.g. nike / Head of Procurement ~4.99 s).
-- Diagnose the occasional deterministic explanation fallback (pull `ai_performance` parts S/E1…En and
-  `ai_explanation_rejected` for the request); consider adding `part` to `ai_explanation_rejected`.
+- Explanation fallbacks now use the article's own first sentence (never a template) and log `explanation_fallback`
+  with the reason; check production for how often `weak_kept` occurs.
 - Theme results have no AI explanations yet (the "why" box is hidden for them).
 - Scorer's 5-character prefix match causes rare false positives ("investigation" ~ "invests").
 - WVC full text: run the backfill in production, confirm `heap_usage`, then compare real before/after top 8 with
