@@ -93,3 +93,28 @@ describe('figure periods', () => {
     expect(explanationQualityWarnings([{ articleId: 'm', explanation: 'Athletic apparel sales rose 2.1% in 2024, a slow market for new product lines.' }], articles)).toEqual([]);
   });
 });
+
+describe('summary voice and length', () => {
+  const reader = { jobTitle: 'Head of Retail', companyName: 'Nike' };
+
+  it('asks for at most 90 words addressed to you, with the reader company only as context', () => {
+    for (const instructions of [REPORT_CONTENT_INSTRUCTIONS, REPORT_SUMMARY_ONLY_INSTRUCTIONS]) {
+      expect(instructions).toContain('3-4 short sentences, at most 90 words in total');
+      expect(instructions).toContain('Never make the reader\'s own company (reader.company) the subject of a sentence ("Nike is facing ...", "For Nike, ...", "Nike should ...")');
+      expect(instructions).toContain('The company may appear only as context ("your Nike stores", "brands competing with Nike")');
+    }
+  });
+
+  it('flags the reader company as a third-person subject', () => {
+    expect(summaryQualityWarnings('Nike is facing slower wholesale as Adidas and Puma open stores.', ['a1', 'a2'], reader)).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings('Adidas and Puma opened 40 stores. For Nike, this means tighter shelf space.', ['a1', 'a2'], reader)).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings('Adidas and Puma opened 40 stores, and Nike should expect tighter shelf space.', ['a1', 'a2'], reader)).toEqual(['reader_company_subject']);
+    expect(summaryQualityWarnings('Adidas and Puma opened 40 stores while Nike\'s rivals cut wholesale; your Nike stores compete with brands like Nike will for space, so watch rents.', ['a1', 'a2'], { ...reader, companyName: 'Asics' })).toEqual([]);
+    expect(summaryQualityWarnings('Adidas and Puma opened 40 stores while Nike\'s rivals cut wholesale; watch whether your Nike stores lose footfall to brands competing with Nike.', ['a1', 'a2'], reader)).toEqual([]);
+  });
+
+  it('flags a summary well over 90 words', () => {
+    expect(summaryQualityWarnings(`Adidas opened 12 stores; ${'you should watch rents closely. '.repeat(20)}`, ['a1', 'a2'], reader)).toEqual(['too_long']);
+    expect(summaryQualityWarnings(`Adidas opened 12 stores; ${'you should watch rents closely. '.repeat(15)}`, ['a1', 'a2'], reader)).toEqual([]);
+  });
+});

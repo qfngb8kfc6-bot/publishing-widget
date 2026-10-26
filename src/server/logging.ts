@@ -139,7 +139,7 @@ export interface ServerLogFields {
   weakFromContent?: number;
   weakRemoved?: number;
   weakKeptLowerConfidence?: number;
-  /** ai_quality_warning code: banned_phrase, duplicate_opening, too_long, no_specific_fact, too_few_citations, restates_reader, third_person_reader, old_fact_not_dated, unsupported_year. */
+  /** ai_quality_warning code: banned_phrase, duplicate_opening, too_long, no_specific_fact, too_few_citations, restates_reader, third_person_reader, old_fact_not_dated, unsupported_year, reader_company_subject (too_long also applies to summaries over ~100 words). */
   qualityCode?: string;
   /** Index prebuild: articles indexed, synchronous time spent and number of event-loop slices. */
   articleCount?: number;
