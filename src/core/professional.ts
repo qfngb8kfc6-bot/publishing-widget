@@ -1,7 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 
-export const PROFESSIONAL_PROFILE_VERSION = '1.8';
-export const RANKING_VERSION = '1.5';
+export const PROFESSIONAL_PROFILE_VERSION = '1.9';
+export const RANKING_VERSION = '1.6';
 
 export interface CompanyContext {
   domain: string;
@@ -47,6 +47,13 @@ export interface RoleContext {
    * generic role. Set only for generic roles with title topics.
    */
   subjectTerms?: string[];
+  /**
+   * The role's function sits outside the publisher's core domain (software, IT, data, finance, HR): its subject is
+   * what such a person reads in this publisher's industry, from AI vocabulary generated for that industry.
+   */
+  outsideDomain?: boolean;
+  /** Reader-facing subject of an out-of-domain role ("software engineering"). */
+  subjectLabel?: string;
 }
 
 export type RelevanceType = 'direct' | 'adjacent';
@@ -103,6 +110,8 @@ interface RoleRule {
    * retail, stores or DTC appointment for Retail; a VP of footwear product strategy is not retail news.
    */
   peopleMovesNeedTitleMatch?: boolean;
+  /** Function outside a trade publisher's core domain; its subject comes from industry-specific AI vocabulary. */
+  outsideDomain?: { subjectLabel: string };
   /** Catch-all rules match on seniority words, not on what the person works on. */
   generic?: boolean;
   function: string;
@@ -114,9 +123,12 @@ interface RoleRule {
 
 const GENERIC_CONCEPTS = new Set(['business', 'change', 'developments', 'decision support', 'industry', 'industry developments', 'innovation', 'professional practice', 'technology']);
 const ROLE_RULES: RoleRule[] = [
-  { test: /software|developer|engineering|architect|devops|platform|technical|technology/i, function: 'Engineering', responsibilities: ['software development', 'system architecture', 'technical implementation'], direct: ['software engineering', 'developer technology', 'APIs', 'infrastructure', 'cloud', 'security', 'AI', 'machine learning', 'language models', 'automation', 'integration', 'data systems', 'platforms', 'systems architecture'], adjacent: ['robotics', 'manufacturing automation', 'IoT', 'embedded systems', 'operational technology', 'sensors', 'digital twins'], exclusions: ['astronomy', 'observatories', 'ecology', 'marine transport'] },
+  { test: /\b(?:it|ict)\b|information technology|\bcio\b|chief information officer/i, outsideDomain: { subjectLabel: 'IT' }, function: 'IT', responsibilities: ['IT systems', 'cybersecurity', 'enterprise software'], direct: ['information technology', 'IT systems', 'cybersecurity', 'ERP', 'enterprise software', 'cloud', 'digital transformation', 'IT infrastructure'], adjacent: ['data', 'AI', 'automation', 'e-commerce', 'supply chain systems', 'vendors'], exclusions: ['astronomy', 'observatories'] },
+  { test: /data scien|data analy|data engineer|\bdata\b|machine learning|\bml engineer/i, outsideDomain: { subjectLabel: 'data and analytics' }, function: 'Data and analytics', responsibilities: ['data analysis', 'modelling', 'decision support'], direct: ['data science', 'analytics', 'machine learning', 'AI', 'customer data', 'personalisation', 'forecasting', 'data platforms'], adjacent: ['e-commerce', 'consumer behavior', 'technology', 'wearables'], exclusions: ['astronomy', 'observatories'] },
+  { test: /\bhr\b|human resources|chief people|people (?:director|partner|lead|operations)|talent|recruit/i, outsideDomain: { subjectLabel: 'HR' }, function: 'People and HR', responsibilities: ['hiring', 'workforce planning', 'employee experience'], direct: ['human resources', 'hiring', 'talent', 'workforce', 'job cuts', 'employees', 'company culture', 'diversity'], adjacent: ['leadership', 'appointments', 'restructuring'], exclusions: ['astronomy', 'observatories'] },
+  { test: /software|developer|engineering|architect|devops|platform|technical|technology/i, outsideDomain: { subjectLabel: 'software engineering' }, function: 'Engineering', responsibilities: ['software development', 'system architecture', 'technical implementation'], direct: ['software engineering', 'developer technology', 'APIs', 'infrastructure', 'cloud', 'security', 'AI', 'machine learning', 'language models', 'automation', 'integration', 'data systems', 'platforms', 'systems architecture'], adjacent: ['robotics', 'manufacturing automation', 'IoT', 'embedded systems', 'operational technology', 'sensors', 'digital twins'], exclusions: ['astronomy', 'observatories', 'ecology', 'marine transport'] },
   { test: /procurement|purchasing|supply|sourcing|buyer/i, function: 'Procurement', responsibilities: ['supplier evaluation', 'commercial planning', 'operational resilience'], direct: ['procurement', 'suppliers', 'sourcing', 'vendors', 'supply chains', 'materials', 'lifecycle', 'manufacturing', 'cost', 'resilience', 'risk'], adjacent: ['sustainability', 'logistics', 'automation', 'operations', 'regulation'], exclusions: ['astronomy', 'observatories', 'marine science'] },
-  { test: /investment|investor|portfolio|finance|financial|bank|analyst|accounting|controller/i, function: 'Finance and investment', responsibilities: ['market analysis', 'risk assessment', 'capital allocation'], direct: ['finance', 'markets', 'investment', 'capital allocation', 'financial performance', 'financial technology', 'cost', 'risk', 'forecasting', 'regulation', 'accounting', 'data'], adjacent: ['AI', 'automation', 'operations', 'strategy', 'sustainability'], exclusions: ['astronomy', 'marine transport', 'ecology'] },
+  { test: /investment|investor|portfolio|finance|financial|bank|analyst|accounting|controller/i, outsideDomain: { subjectLabel: 'finance' }, function: 'Finance and investment', responsibilities: ['market analysis', 'risk assessment', 'capital allocation'], direct: ['finance', 'markets', 'investment', 'capital allocation', 'financial performance', 'financial technology', 'cost', 'risk', 'forecasting', 'regulation', 'accounting', 'data'], adjacent: ['AI', 'automation', 'operations', 'strategy', 'sustainability'], exclusions: ['astronomy', 'marine transport', 'ecology'] },
   { test: /product manager|product management|product owner|head of product|vp product|chief product/i, function: 'Product management', responsibilities: ['product strategy', 'roadmap planning', 'product development', 'user and customer needs', 'product launches', 'category performance'], direct: ['product strategy', 'product development', 'roadmap', 'innovation', 'user needs', 'customer needs', 'product launches', 'product performance', 'competition', 'design', 'consumer products', 'merchandising', 'technology', 'materials', 'footwear', 'apparel'], adjacent: ['marketing', 'brand', 'sustainability', 'data', 'operations', 'manufacturing', 'retail'], exclusions: ['astronomy', 'marine engineering'] },
   { test: /marketing|brand|communications|audience/i, function: 'Marketing and communications', responsibilities: ['audience strategy', 'positioning', 'campaign planning'], direct: ['audiences', 'content', 'brands', 'communications', 'growth', 'customer research', 'digital marketing'], adjacent: ['technology', 'AI', 'culture', 'data', 'sustainability'], exclusions: ['astronomy', 'marine engineering'] },
   { test: /research|scientist|academic|laboratory|lab/i, function: 'Research', responsibilities: ['research design', 'evidence review', 'knowledge development'], direct: ['science', 'evidence', 'methodology', 'measurement', 'data', 'research'], adjacent: ['technology', 'climate', 'ecology', 'health', 'innovation'], exclusions: ['generic finance', 'generic marketing'] },
@@ -141,6 +153,20 @@ function specific(values: string[]): string[] {
  */
 /** Filler words that describe a kind of coverage, not a subject; never a subject term or theme on their own. */
 const FILLER_WORDS = new Set(['benchmark', 'benchmarks', 'developments', 'news', 'program', 'programme', 'report', 'reporting', 'reports', 'trends', 'update', 'updates']);
+
+/**
+ * Single words that mean something else in a trade publisher's coverage: "testing" is textile or product testing,
+ * "backend" a logistics back end, "platform" a sneaker sole, "development" store or product development. On their
+ * own they are never themes or direct concepts of an out-of-domain role; compounds ("software testing", "digital
+ * platform") are fine.
+ */
+const AMBIGUOUS_SINGLE_WORDS = new Set(['testing', 'test', 'tests', 'backend', 'frontend', 'development', 'developer', 'developers', 'platform', 'platforms', 'programming', 'programme', 'program', 'engineering', 'integration', 'infrastructure', 'systems', 'system', 'architecture', 'deployment', 'framework', 'pipeline', 'release', 'build', 'code', 'coding', 'security', 'network', 'networks']);
+
+/** True for a lone word such as "testing" or "backend" that is ambiguous in trade coverage. */
+export function isAmbiguousSingleWord(term: string): boolean {
+  const key = normalizeToken(term);
+  return !key.includes(' ') && AMBIGUOUS_SINGLE_WORDS.has(key);
+}
 
 const LEADERSHIP_WORDS = new Set(['board', 'business', 'corporate', 'decision', 'decisions', 'executive', 'finance', 'financial', 'governance', 'growth', 'leader', 'leaders', 'leadership', 'management', 'market', 'markets', 'operational', 'operations', 'organisation', 'organisational', 'organization', 'organizational', 'performance', 'planning', 'results', 'risk', 'risks', 'strategic', 'strategy']);
 
@@ -180,7 +206,7 @@ export function subjectTermsFor(role: RoleContext, vocabulary: string[] = []): s
     .map((term) => term.replace(/\s+/g, ' ').trim())
     .filter((term) => {
       const key = normalizeToken(term);
-      if (!key || key.length > 40 || key.split(' ').length > 3 || GENERIC_CONCEPTS.has(key)) return false;
+      if (!key || key.length > 40 || key.split(' ').length > 3 || GENERIC_CONCEPTS.has(key) || isAmbiguousSingleWord(key)) return false;
       return topicKeys.has(key) || !key.split(' ').every((word) => LEADERSHIP_WORDS.has(word) || FILLER_WORDS.has(word));
     });
   return unique([...topics, ...accepted]).slice(0, 32);
@@ -188,6 +214,9 @@ export function subjectTermsFor(role: RoleContext, vocabulary: string[] = []): s
 
 /** The subject terms that anchor a generic titled role, or undefined when the role is not anchored. */
 export function roleSubjectTerms(role: RoleContext): string[] | undefined {
+  // An out-of-domain role is anchored once industry vocabulary is known: on "what a software engineer reads in
+  // sporting goods coverage" (apps, wearables, e-commerce platforms), not on its own trade's words.
+  if (role.outsideDomain && role.subjectTerms?.length) return role.subjectTerms;
   if (role.roleSource !== 'generic' || !role.titleTopics?.length) return undefined;
   return role.subjectTerms?.length ? role.subjectTerms : role.titleTopics;
 }
@@ -211,6 +240,7 @@ export function peopleMovesNeedTitleMatch(role: RoleContext): boolean {
 
 /** "sustainability" or "legal and compliance": the reader-facing subject of a generic titled role. */
 export function roleSubjectLabel(role: RoleContext): string | undefined {
+  if (role.outsideDomain && role.subjectLabel && role.subjectTerms?.length) return role.subjectLabel;
   return role.roleSource === 'generic' && role.titleTopics?.length ? role.titleTopics.join(' and ') : undefined;
 }
 
@@ -245,7 +275,7 @@ export function analyzeRole(jobTitle: string): RoleContext {
   // Its responsibility is the subject itself, not the catch-all "strategic planning, organisational decisions"
   // and not invented compounds ("legal reporting") that would surface as themes.
   const responsibilities = topics.length ? topics : match.responsibilities;
-  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics, subjectTerms: topics } : {}) };
+  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics, subjectTerms: topics } : {}), ...(match.outsideDomain ? { outsideDomain: true, subjectLabel: match.outsideDomain.subjectLabel } : {}) };
 }
 
 function ruleFor(role: RoleContext): RoleRule {
@@ -273,8 +303,10 @@ function companyConcepts(company: CompanyContext, rule: RoleRule, title: string)
 function buildConcepts(role: RoleContext, company: CompanyContext, directInterests: string[], adjacentInterests: string[], exclusions: string[]): RetrievalConcept[] {
   const rule = ruleFor(role);
   // For a titled generic role the catch-all responsibilities (strategic planning, ...) are context, not core.
-  const roleDirect = specific(role.titleTopics?.length ? rule.direct : [...rule.direct, ...role.responsibilities]);
-  const roleAdjacent = specific(rule.adjacent);
+  const allDirect = specific(role.titleTopics?.length ? rule.direct : [...rule.direct, ...role.responsibilities]);
+  // An out-of-domain role's lone ambiguous words ("platforms", "infrastructure") are context, not core.
+  const roleDirect = role.outsideDomain ? allDirect.filter((concept) => !isAmbiguousSingleWord(concept)) : allDirect;
+  const roleAdjacent = specific([...rule.adjacent, ...allDirect.filter((concept) => !roleDirect.includes(concept))]);
   const roleConcepts = [
     ...roleDirect.map((concept) => ({ concept, weight: 1.25, relevanceType: 'direct' as const, source: 'role' as const })),
     ...roleAdjacent.map((concept) => ({ concept, weight: 0.75, relevanceType: 'adjacent' as const, source: 'role' as const })),

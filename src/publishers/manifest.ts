@@ -24,6 +24,11 @@ export interface PublisherExperienceBranding {
 export interface PublisherManifest {
   publisherId: string;
   name: string;
+  /**
+   * What the publication covers, in a few words ("the sporting goods industry"). Out-of-domain roles (software,
+   * IT, data, finance, HR) get their vocabulary for this industry: what such a reader looks for in this coverage.
+   */
+  domain?: string;
   enabled: boolean;
   environment: 'development' | 'staging' | 'production';
   publisherConfigVersion: string;
@@ -64,6 +69,16 @@ export interface PublisherManifest {
   termsUrl?: string;
   privacyUrl?: string;
   poweredBy?: boolean;
+}
+
+/** Built-in domains for publishers whose stored manifests predate the domain field. */
+const DEFAULT_PUBLISHER_DOMAINS: Record<string, string> = {
+  'sgi-europe': 'the sporting goods industry (sports brands, retailers, footwear, apparel, equipment and their markets)',
+  ibi: 'the boating and marine industry (boatbuilders, marinas, marine equipment and their markets)',
+};
+
+export function publisherDomain(manifest: Pick<PublisherManifest, 'publisherId' | 'domain'> | undefined): string | undefined {
+  return manifest?.domain?.trim() || (manifest ? DEFAULT_PUBLISHER_DOMAINS[manifest.publisherId] : undefined);
 }
 
 export function manifestToPublisherConfig(manifest: PublisherManifest): PublisherConfig {

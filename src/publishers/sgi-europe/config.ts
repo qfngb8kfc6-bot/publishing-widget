@@ -54,6 +54,7 @@ export const sgiEuropeConfig: PublisherConfig = {
 export const sgiEuropeManifest: PublisherManifest = {
   publisherId: 'sgi-europe',
   name: 'SGI Europe',
+  domain: 'the sporting goods industry (sports brands, retailers, footwear, apparel, equipment and their markets)',
   enabled: true,
   environment: 'production',
   publisherConfigVersion: '1',

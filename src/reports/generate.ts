@@ -21,6 +21,7 @@ import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
 import { MAX_GENERATION_THEMES, type GenerationProgress } from './generation-jobs';
 import { storyCodeFromUrl } from '../publishers/content/wvc';
+import { publisherDomain } from '../publishers/manifest';
 import type { ArticleLead } from './article-texts';
 
 /**
@@ -482,17 +483,19 @@ export class ReportGenerationService {
    */
   private async runEnrichment(publisherId: string, normalized: ResolvedCompanyInput, company: Awaited<ReturnType<CompanyContextProvider['getContext']>>, profile: ReturnType<typeof buildProfessionalProfile>, requestId?: string, reuse: EnrichmentParts = {}, retryCount = 0): Promise<EnrichmentResult> {
     const provider = this.ai!.provider as ProfessionalAIProvider;
-    const titleTopics = roleSubjectTerms(profile.role) ? profile.role.titleTopics ?? [] : [];
+    // Out-of-domain roles (software, IT, data, finance, HR) need vocabulary for this publisher's industry too.
+    const titleTopics = roleSubjectTerms(profile.role) ? profile.role.titleTopics ?? [] : profile.role.outsideDomain && profile.role.subjectLabel ? [profile.role.subjectLabel] : [];
     const needsVocabulary = titleTopics.length > 0 && typeof provider.generateSubjectVocabulary === 'function';
+    const domain = publisherDomain(this.registry.get(publisherId)?.manifest);
     const context = { publisherId, requestId, aiRetryCount: retryCount };
     const [main, vocabulary] = await Promise.all([
       reuse.main ? Promise.resolve(reuse.main) : this.runAI('professional_profile_enrichment', async (observe) => {
-        const raw = observe(await provider.enhanceProfessionalProfile({ publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile }));
+        const raw = observe(await provider.enhanceProfessionalProfile({ publisherId, ...(domain ? { publisherDomain: domain } : {}), submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile }));
         if (!validateProfessionalProfileEnhancement(raw)) throw new Error('invalid_profile_enrichment');
         return raw;
       }, context).then((outcome) => outcome.value),
       !needsVocabulary || reuse.vocabulary ? Promise.resolve(reuse.vocabulary) : this.runAI('subject_vocabulary', async (observe) => {
-        const terms = validateSubjectVocabulary(observe(await provider.generateSubjectVocabulary!({ publisherId, jobTitle: profile.jobTitle, titleTopics, industry: company.industry, companyName: profile.companyName ?? company.name })));
+        const terms = validateSubjectVocabulary(observe(await provider.generateSubjectVocabulary!({ publisherId, ...(domain ? { publisherDomain: domain } : {}), jobTitle: profile.jobTitle, titleTopics, industry: company.industry, companyName: profile.companyName ?? company.name })));
         if (!terms.length) throw new Error('invalid_subject_vocabulary');
         return terms;
       }, context).then((outcome) => outcome.value),

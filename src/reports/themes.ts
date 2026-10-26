@@ -1,4 +1,4 @@
-import { normalizeToken, roleSubjectTerms, wordsMatch } from '../core';
+import { isAmbiguousSingleWord, normalizeToken, roleSubjectTerms, wordsMatch } from '../core';
 import type { ProfessionalProfile } from '../core';
 import type { ReportRecord } from './types';
 
@@ -78,7 +78,7 @@ function distinctSubjectThemes(topics: string[], subjectTerms: string[], article
     const terms = family >= 0 ? [theme, ...THEME_FAMILIES[family]] : [theme];
     return new Set(articleWords.flatMap((text, index) => (terms.some((term) => containsTerm(text, term)) ? [index] : [])));
   };
-  const vocabulary = unique(subjectTerms).filter((term) => !topicKeys.has(normalizeToken(term)));
+  const vocabulary = unique(subjectTerms).filter((term) => !topicKeys.has(normalizeToken(term)) && !isAmbiguousSingleWord(term));
   const grounded = vocabulary.filter((term) => coverage(term).size > 0);
   const candidates = [...grounded, ...vocabulary.filter((term) => !grounded.includes(term)), ...unique(topics)];
   const chosen: Array<{ theme: string; family: number; articles: Set<number> }> = [];
@@ -111,7 +111,8 @@ export function selectReportThemes(profile: ProfessionalProfile, articles: Theme
     // "legal reporting" or generic words (risk, growth, reporting) driving a theme search.
     return distinctSubjectThemes(profile.role.titleTopics ?? [], subjectTerms, articles);
   }
-  return unique([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes]).slice(0, 4);
+  // A lone ambiguous word ("infrastructure", "platforms") would search for the wrong sense in trade coverage.
+  return unique([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes]).filter((theme) => !isAmbiguousSingleWord(theme)).slice(0, 4);
 }
 
 /** The same bounded theme list is used by the report UI and the focused-search API. */

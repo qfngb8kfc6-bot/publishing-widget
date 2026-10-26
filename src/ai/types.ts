@@ -76,6 +76,8 @@ export type ArticleRelationship = 'own_company' | 'likely_competitor' | 'supplie
 
 export interface ProfessionalProfileEnhancementInput {
   publisherId: string;
+  /** What the publication covers ("the sporting goods industry"). */
+  publisherDomain?: string;
   submittedCompanyUrl: string;
   submittedJobTitle: string;
   company: CompanyContext;
@@ -166,6 +168,8 @@ export interface AIProvider extends IntentEnhancer, RerankingProvider, AIExplana
 
 export interface SubjectVocabularyInput {
   publisherId: string;
+  /** What the publication covers: the vocabulary is for this industry's news. */
+  publisherDomain?: string;
   jobTitle: string;
   titleTopics: string[];
   industry?: string;

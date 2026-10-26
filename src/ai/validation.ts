@@ -1,4 +1,4 @@
-import { normalizeToken, subjectMatcher, subjectTermsFor, tokenize, type Intent } from '../core';
+import { isAmbiguousSingleWord, normalizeToken, subjectMatcher, subjectTermsFor, tokenize, type Intent } from '../core';
 import type { AIExplanationResult, AIProfessionalProfileEnhancement, AIReportContent, EnrichedIntent, ReportContentRequest, SemanticCandidate } from './types';
 import type { ProfessionalProfile } from '../core';
 import { normalizeAngle } from './angles';
@@ -86,7 +86,10 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
   const companyEnhancement = enhancement.company;
   const personEnhancement = enhancement.person;
   // A generic titled role is anchored on its title subject: the subject plus its validated news vocabulary.
-  const subjectTerms = profile.role.roleSource === 'generic' && profile.role.titleTopics?.length ? subjectTermsFor(profile.role, enhancement.subjectVocabulary) : undefined;
+  // An out-of-domain role (software, IT, data, finance, HR) is anchored on its industry vocabulary instead: what
+  // such a person reads in this publisher's coverage. Without that vocabulary it keeps its dedicated concepts.
+  const domainTerms = profile.role.outsideDomain && profile.role.roleSource !== 'generic' ? subjectTermsFor({ ...profile.role, titleTopics: [] }, enhancement.subjectVocabulary) : [];
+  const subjectTerms = profile.role.roleSource === 'generic' && profile.role.titleTopics?.length ? subjectTermsFor(profile.role, enhancement.subjectVocabulary) : domainTerms.length ? domainTerms : undefined;
   const subjectTest = subjectTerms ? subjectMatcher({ ...profile.role, subjectTerms }) : undefined;
   const onSubject = (concept: string) => !subjectTest || subjectTest(concept);
   const company = {
@@ -131,10 +134,12 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
   // A titled generic role promotes its subject vocabulary first and only concepts anchored to its subject;
   // leadership-flavoured ones (strategy, finance, governance) stay adjacent at most.
   const exclusionKeys = new Set([...(profile.retrieval?.exclusions ?? []), ...(enhancement.excludedConcepts ?? [])].map(normalizeToken));
-  const aiRoleConcepts = profile.role.roleSource === 'generic'
+  // Lone ambiguous words ("testing", "backend", "programming") never become core concepts: in trade coverage they
+  // mean textile testing, logistics back ends and sports programmes.
+  const aiRoleConcepts = profile.role.roleSource === 'generic' || domainTerms.length
     ? [...new Map([...(subjectTerms ?? []), ...(personEnhancement?.themes ?? []), ...(personEnhancement?.decisionAreas ?? []), ...(enhancement.searchTerms ?? []), ...(enhancement.professionalInterests ?? []), ...(personEnhancement?.responsibilities ?? [])]
       .map((concept) => concept.replace(/\s+/g, ' ').trim())
-      .filter((concept) => isSpecificConcept(concept) && concept.length <= 40 && concept.split(' ').length <= 3 && !exclusionKeys.has(normalizeToken(concept)) && onSubject(concept))
+      .filter((concept) => isSpecificConcept(concept) && concept.length <= 40 && concept.split(' ').length <= 3 && !exclusionKeys.has(normalizeToken(concept)) && !isAmbiguousSingleWord(concept) && onSubject(concept))
       .map((concept) => [normalizeToken(concept), concept] as const)).values()].slice(0, 24)
     : [];
   const deterministicDirect = appendUnique(profile.directInterests?.length ? profile.directInterests : profile.professionalInterests, aiRoleConcepts, 48);
