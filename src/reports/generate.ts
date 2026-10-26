@@ -14,6 +14,7 @@ import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
 import { articleRelationship, limitOwnCompanyShare } from './relationship';
+import { collapseNearDuplicates } from './near-duplicates';
 import { explanationQualityWarnings, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
 import { angleForArticle, normalizeAngle } from '../ai/angles';
 import { articleTiming } from '../ai/providers/openai-compatible';
@@ -50,6 +51,8 @@ function clockMs(): number { return typeof performance !== 'undefined' ? perform
 
 /** Any single generation span above this is logged individually so untimed stalls are visible in production. */
 const SLOW_SPAN_MS = 1_000;
+/** Near-duplicate check covers the head of the ranked list: everything that can reach a rerank or a report. */
+const DUPLICATE_SCAN_LIMIT = 100;
 
 /**
  * Content calls are split so no single call writes more than ~350 output tokens: S writes the summary, cited IDs
@@ -705,7 +708,7 @@ export class ReportGenerationService {
     const finalLimit = Math.min(definition.config.results.maximumRecommendations, definition.config.content.resultLimit);
     const aiAvailable = this.canUseAI(definition);
     const deterministicStartedAt = clockMs();
-    const deterministicRanked: RankedCandidate[] = preselected
+    const scored: RankedCandidate[] = preselected
       .map((article) => {
         const result = preselectionScores.get(article) ?? scoreArticle(article, catalogueIndex?.professionalFields(article));
         return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
@@ -716,6 +719,11 @@ export class ReportGenerationService {
           || (b.scoreComponents?.postRecencyScore ?? b.deterministicScore) - (a.scoreComponents?.postRecencyScore ?? a.deterministicScore)
         : a.relevanceType === 'direct' ? -1 : 1))
       .map(({ result: _result, ...item }) => item);
+    // Before the AI calls: the same story twice (or two instalments of a recurring series) would take two
+    // rerank slots and two report places. Only duplicates leave; the threshold has already been applied.
+    const duplicates = collapseNearDuplicates(scored, DUPLICATE_SCAN_LIMIT);
+    const deterministicRanked: RankedCandidate[] = duplicates.kept;
+    if (duplicates.collapsed.length) this.logger?.info('duplicates_collapsed', { requestId, publisherId, duplicatesCollapsed: duplicates.collapsed.length, duplicatePairs: safeLogText(duplicates.collapsed.slice(0, 10).map((pair) => `${pair.removedId}>${pair.keptId}`).join(','), 2_000) });
     const deterministicRankingMs = clockMs() - deterministicStartedAt;
     const aiEligibleCount = aiAvailable ? Math.min(deterministicRanked.length, this.ai!.config.rerankLimit) : 0;
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, rankingCandidateCount: preselected.length, normalizedArticles: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, eligibleCount: deterministicRanked.length });
