@@ -76,11 +76,13 @@ export class MockAIProvider implements AIProvider, ProfessionalAIProvider {
 
   async generateReportContent(input: ReportContentRequest): Promise<unknown> {
     return {
-      summary: `This briefing connects ${input.profile.role.rawTitle} at ${input.profile.companyName ?? input.profile.companyDomain} with the publisher's coverage of ${input.profile.professionalInterests.slice(0, 3).join(', ')}.`,
-      explanations: input.recommendations.map((recommendation) => ({
-        articleId: recommendation.article.id,
-        explanation: `This story matters because it ${recommendation.relevanceSignals[0] ?? 'matches the professional themes in your profile'}.`,
-      })),
+      ...(input.includeSummary !== false ? { summary: `This briefing connects ${input.profile.role.rawTitle} at ${input.profile.companyName ?? input.profile.companyDomain} with the publisher's coverage of ${input.profile.professionalInterests.slice(0, 3).join(', ')}.` } : {}),
+      ...(input.includeExplanations !== false ? {
+        explanations: input.recommendations.map((recommendation) => ({
+          articleId: recommendation.article.id,
+          explanation: `This story matters because it ${recommendation.relevanceSignals[0] ?? 'matches the professional themes in your profile'}.`,
+        })),
+      } : {}),
     };
   }
 

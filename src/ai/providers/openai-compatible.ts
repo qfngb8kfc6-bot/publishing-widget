@@ -127,29 +127,41 @@ function resolveContentAliases(raw: unknown, aliases: ReadonlyMap<string, string
   };
 }
 
-/** Writing rules shared by every content call. Grounding rules come first and are absolute. */
-const REPORT_CONTENT_RULES = [
-  'COMPLETENESS: you MUST return exactly one explanations entry for every supplied articleId, either {"articleId": "...", "angle": "...", "explanation": "..."} or {"articleId": "...", "fit": "weak"}. Never skip an article; if you are unsure, mark it weak.',
-  'FIT: if an article does not genuinely help this reader, return {"articleId": "...", "fit": "weak"} for it instead of an explanation, and do not build the summary on it. Never stretch a weak fit into a justification.',
-  'GROUNDING: use only facts stated in each article\'s title, description and lead (the opening of the article body, when supplied). Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.',
-  'DATES: each article has published (its year) and older:true when it is more than 18 months old (today is reader.today). For an older article, anchor the fact in time ("In 2019, Decathlon ...") and present it as precedent or context, never as a current plan or current news.',
-  'SUMMARY: 3-4 sentences, like an analyst\'s briefing note, addressed to the reader directly (you, your team), never in the third person ("for a retailer", "for a product manager"). Build the opening pattern primarily from articles that are not older; use older articles only as supporting context, dated. Open with the strongest pattern across the articles, backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. citedArticleIds lists every article the summary draws on.',
-  'LEAD: lead is subscriber-only reference text. Use it to pick specific facts; never copy more than five consecutive words from it and never reproduce or summarise it at length.',
-  `EXPLANATIONS: 1-2 sentences, 25-35 words, never more than 45. Start from one specific fact in that article (a company, number, place or action), then state what it means for the reader through one angle. angle is exactly one of: ${ALLOWED_ANGLES.join(', ')}. leadership move is only for a change of people (a hire, appointment or departure); a collaboration or product launch is never a leadership move (use partnership signal or product innovation). Vary the wording: no two explanations may start with the same three words.`,
-  'NEVER write "the most relevant articles", "focus on", "the profile", "this briefing", "This article", "This matters", "relevant because", "relevant to your work", "your role as", "maps to", "aligns with" or "directly relevant". Never restate the reader\'s job title and company, and never just list themes or topics.',
+const COMPLETENESS_RULE = 'COMPLETENESS: you MUST return exactly one explanations entry for every supplied articleId, either {"articleId": "...", "angle": "...", "explanation": "..."} or {"articleId": "...", "fit": "weak"}. Never skip an article; if you are unsure, mark it weak.';
+const FIT_RULE = 'FIT: if an article does not genuinely help this reader, return {"articleId": "...", "fit": "weak"} for it instead of an explanation, and do not build the summary on it. Never stretch a weak fit into a justification.';
+const SUMMARY_FIT_RULE = 'FIT: do not build the summary on an article that does not genuinely help this reader. Never stretch a weak fit into a justification.';
+const GROUNDING_RULE = 'GROUNDING: use only facts stated in each article\'s title, description and lead (the opening of the article body, when supplied). Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.';
+const DATES_RULE = 'DATES: each article has published (its year) and older:true when it is more than 18 months old (today is reader.today). For an older article, anchor the fact in time ("In 2019, Decathlon ...") and present it as precedent or context, never as a current plan or current news.';
+const SUMMARY_RULE = 'SUMMARY: 3-4 sentences, like an analyst\'s briefing note, addressed to the reader directly (you, your team), never in the third person ("for a retailer", "for a product manager"). Build the opening pattern primarily from articles that are not older; use older articles only as supporting context, dated. Open with the strongest pattern across the articles, backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. citedArticleIds lists every article the summary draws on.';
+const LEAD_RULE = 'LEAD: lead is subscriber-only reference text. Use it to pick specific facts; never copy more than five consecutive words from it and never reproduce or summarise it at length.';
+const EXPLANATION_RULE = `EXPLANATIONS: 1-2 sentences, 25-35 words, never more than 45. Start from one specific fact in that article (a company, number, place or action), then state what it means for the reader through one angle. angle is exactly one of: ${ALLOWED_ANGLES.join(', ')}. leadership move is only for a change of people (a hire, appointment or departure); a collaboration or product launch is never a leadership move (use partnership signal or product innovation). Vary the wording: no two explanations may start with the same three words.`;
+const BANNED_PHRASES_RULE = 'NEVER write "the most relevant articles", "focus on", "the profile", "this briefing", "This article", "This matters", "relevant because", "relevant to your work", "your role as", "maps to", "aligns with" or "directly relevant". Never restate the reader\'s job title and company, and never just list themes or topics.';
+const EXPLANATION_EXAMPLES = [
   'EXAMPLES (placeholder companies, not from the articles). Bad: "This article is relevant because it focuses on supplier risk, which maps to your role." Good, angle "sourcing shift": "Acme Apparel moved 30% of its footwear output to two new vendors in Vietnam, a benchmark for how fast a single-region supply base can be diversified."',
   'Bad: "This matters because it centers on retail expansion and aligns with the profile." Good, angle "competitor benchmark": "Northwind Sports opened 12 owned stores in Germany while cutting wholesale accounts; watch whether that squeezes shelf space and terms for brands still selling through those partners."',
 ];
+const THEMES_RULE = 'THEMES: when themes are supplied, return themeDescriptions with one entry per theme, theme copied exactly as supplied. description is one line of at most 18 words saying what the supplied articles show about that theme, naming a company, number or fact from them (for example "Acme Apparel and Northwind Sports both cut PFAS from outerwear ahead of EU limits"). Do not address the reader, restate their role or write "relevant to". Omit themeDescriptions when no themes are supplied.';
 
-/** Summary plus explanations (the whole report, or part A of a split request). */
+/** Writing rules shared by every content call that writes explanations. Grounding rules come first and are absolute. */
+const REPORT_CONTENT_RULES = [COMPLETENESS_RULE, FIT_RULE, GROUNDING_RULE, DATES_RULE, SUMMARY_RULE, LEAD_RULE, EXPLANATION_RULE, BANNED_PHRASES_RULE, ...EXPLANATION_EXAMPLES];
+
+/** Summary plus explanations in one call (kept for single-call clients; the report pipeline splits into S and E). */
 export const REPORT_CONTENT_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
   'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}, {"articleId": "a2", "fit": "weak"}], "themeDescriptions": [{"theme": "...", "description": "..."}]} with exactly one entry per supplied article.',
   ...REPORT_CONTENT_RULES,
-  'THEMES: when themes are supplied, return themeDescriptions with one entry per theme, theme copied exactly as supplied. description is one line of at most 18 words saying what the supplied articles show about that theme, naming a company, number or fact from them (for example "Acme Apparel and Northwind Sports both cut PFAS from outerwear ahead of EU limits"). Do not address the reader, restate their role or write "relevant to". Omit themeDescriptions when no themes are supplied.',
+  THEMES_RULE,
 ].join(' ');
 
-/** Explanations only (part B of a split request): same rules, no summary. */
+/** Summary, citedArticleIds and theme lines only (part S of a split request): the same summary rules, no explanations. */
+export const REPORT_SUMMARY_ONLY_INSTRUCTIONS = [
+  'You write a briefing note for one professional reader, using only the supplied articles.',
+  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "themeDescriptions": [{"theme": "...", "description": "..."}]}. Do not write explanations.',
+  SUMMARY_FIT_RULE, GROUNDING_RULE, DATES_RULE, SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
+  THEMES_RULE,
+].join(' ');
+
+/** Explanations only (parts E1..En of a split request): same rules, no summary. */
 export const REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
   'Return ONLY JSON: {"explanations": [{"articleId": "a1", "angle": "...", "explanation": "..."}, {"articleId": "a2", "fit": "weak"}]} with exactly one entry per supplied article. Do not write a summary; ignore the SUMMARY rules below.',
@@ -261,7 +273,8 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
   }
 
   /**
-   * One batched call writes the summary and every explanation. Articles are sent under short aliases (a1, a2, …)
+   * One batched call writes the summary, the explanations, or both (see includeSummary / includeExplanations).
+   * Articles are sent under short aliases (a1, a2, …)
    * so long publisher IDs do not cost output tokens; aliases are mapped back before validation.
    */
   async generateReportContent(input: ReportContentRequest): Promise<unknown> {
@@ -274,7 +287,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
         return { id: `a${index + 1}`, ...projection, relationship: recommendation.relationship, ...(lead ? { lead } : {}) };
       }),
       ...(input.includeSummary !== false && input.themes?.length ? { themes: input.themes } : {}),
-    }, input.includeSummary === false ? REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS : REPORT_CONTENT_INSTRUCTIONS);
+    }, input.includeSummary === false ? REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS : input.includeExplanations === false ? REPORT_SUMMARY_ONLY_INSTRUCTIONS : REPORT_CONTENT_INSTRUCTIONS);
     return attachAIResponseDiagnostics(resolveContentAliases(raw, aliases), aiResponseDiagnostics(raw) ?? {});
   }
 

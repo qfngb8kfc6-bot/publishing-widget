@@ -77,7 +77,8 @@ describe('production AI performance safeguards', () => {
     expect((await generate(app)).status).toBe(201);
     expect(provider.profileCalls).toBe(1);
     expect(provider.rerankCalls).toBe(2);
-    expect(provider.contentCalls).toBe(2);
+    // Per report: one summary call (S) plus one explanation batch (E1) for this fixture's recommendations.
+    expect(provider.contentCalls).toBe(4);
     expect(provider.explanationCalls).toBe(0);
 
     const report = await app.reportStore.get(firstPayload.reportId, 'sgi-europe');
@@ -86,7 +87,8 @@ describe('production AI performance safeguards', () => {
     expect(themeResponse.status).toBe(200);
     expect(provider.profileCalls).toBe(1);
     expect(provider.rerankCalls).toBeGreaterThanOrEqual(2);
-    expect(provider.contentCalls).toBe(2);
+    // Per report: one summary call (S) plus one explanation batch (E1) for this fixture's recommendations.
+    expect(provider.contentCalls).toBe(4);
 
     expect((await generate(app, 'nike.com', 'Software Engineer')).status).toBe(201);
     expect(provider.profileCalls).toBe(2);
@@ -144,7 +146,8 @@ describe('production AI performance safeguards', () => {
     expect(allAiEvents.filter((event) => event.fields?.aiRetryCount === 1).map((event) => event.fields?.aiOperation)).toEqual(['professional_profile_enrichment']);
     expect(events.find((event) => event.message === 'enrichment_retry')?.fields).toMatchObject({ retryOperations: 'professional_profile_enrichment', retrySuccess: false });
     const aiEvents = allAiEvents.filter((event) => event.fields?.aiRetryCount === 0);
-    expect(aiEvents).toHaveLength(3);
+    // Profile enrichment, rerank, and the content calls S and E1.
+    expect(aiEvents).toHaveLength(4);
     expect(aiEvents.every((event) => event.fields?.publisherId === 'sgi-europe' && typeof event.fields?.requestId === 'string')).toBe(true);
     expect(aiEvents.every((event) => event.fields?.aiSuccess === false && event.fields?.aiFallbackUsed === true)).toBe(true);
   });

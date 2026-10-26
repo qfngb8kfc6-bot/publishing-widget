@@ -52,7 +52,8 @@ qfngb8kfc6-bot/publishing-widget.
 3. Catalogue from cache (warm-up in parallel) → archive-wide preselection with the professional scorer (same as
    theme search) to ≤100 candidates → deterministic ranking.
 4. AI rerank (compact `{id, score, weak}`), hybrid blend; weak fits removed (min 3 kept).
-5. Content calls A (summary + first 7 explanations + theme card lines) and B (rest), in parallel.
+5. Content calls in parallel, each ≤ ~350 output tokens under its own 5 s cap and fallback: S (summary +
+   citedArticleIds + theme card lines) and E1..En (explanations, ≤4 articles per batch, ≤4 batches; ≤5 calls).
 6. Own-company articles held to ~60% when alternatives pass the threshold; sections; transactional persist;
    analytics in the background.
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
@@ -102,7 +103,7 @@ qfngb8kfc6-bot/publishing-widget.
 ## Open tasks
 - Confirm production `heap_usage` matches the local measurements (synthetic feed); then consider downsizing.
 - AI rerank is close to the 5 s cap for some roles (e.g. nike / Head of Procurement ~4.99 s).
-- Diagnose the occasional deterministic explanation fallback (pull `ai_performance` part A/B and
+- Diagnose the occasional deterministic explanation fallback (pull `ai_performance` parts S/E1…En and
   `ai_explanation_rejected` for the request); consider adding `part` to `ai_explanation_rejected`.
 - Theme results have no AI explanations yet (the "why" box is hidden for them).
 - Scorer's 5-character prefix match causes rare false positives ("investigation" ~ "invests").

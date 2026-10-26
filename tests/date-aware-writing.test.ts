@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { explanationQualityWarnings, summaryQualityWarnings } from '../src/ai/content-quality';
-import { articleTiming, OpenAICompatibleProvider, REPORT_CONTENT_INSTRUCTIONS, REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS } from '../src/ai/providers/openai-compatible';
+import { articleTiming, OpenAICompatibleProvider, REPORT_CONTENT_INSTRUCTIONS, REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS, REPORT_SUMMARY_ONLY_INSTRUCTIONS } from '../src/ai/providers/openai-compatible';
 
 const NOW = Date.parse('2026-10-20T12:00:00.000Z');
 
@@ -17,13 +17,15 @@ describe('article timing', () => {
 
 describe('date-aware prompt and inputs', () => {
   it('tells the model to date older facts, build the pattern from recent articles and address the reader directly', () => {
-    for (const instructions of [REPORT_CONTENT_INSTRUCTIONS, REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS]) {
+    for (const instructions of [REPORT_CONTENT_INSTRUCTIONS, REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS, REPORT_SUMMARY_ONLY_INSTRUCTIONS]) {
       expect(instructions).toContain('older:true when it is more than 18 months old');
       expect(instructions).toContain('anchor the fact in time ("In 2019, Decathlon ...")');
       expect(instructions).toContain('never as a current plan or current news');
     }
     expect(REPORT_CONTENT_INSTRUCTIONS).toContain('addressed to the reader directly (you, your team)');
     expect(REPORT_CONTENT_INSTRUCTIONS).toContain('primarily from articles that are not older');
+    expect(REPORT_SUMMARY_ONLY_INSTRUCTIONS).toContain('addressed to the reader directly (you, your team)');
+    expect(REPORT_SUMMARY_ONLY_INSTRUCTIONS).toContain('primarily from articles that are not older');
   });
 
   it('sends published year, an older flag and today instead of full timestamps', async () => {
