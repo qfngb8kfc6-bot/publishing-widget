@@ -9,6 +9,14 @@ const MAX_COMPANY_LENGTH = 253;
 /** Below this width the widget starts minimised and opens as a bottom sheet. Matches the styles' breakpoint. */
 const MOBILE_QUERY = '(max-width: 639px)';
 const START_FOCUS = '[data-focus-start], [data-action="retry"]';
+/** The mobile pill hides while the reader scrolls down and returns once scrolling has stopped this long. */
+const SCROLL_SETTLE_MS = 500;
+/** Smaller scroll steps (iOS bounce, address-bar resize) neither hide nor show the pill. */
+const SCROLL_STEP_PX = 4;
+
+function isMobileViewport(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(MOBILE_QUERY).matches;
+}
 
 /** Session storage can be unavailable (privacy modes, sandboxed frames); the widget works without it. */
 function readMinimised(key: string): boolean | undefined {
@@ -48,6 +56,19 @@ export class ContentDiscoveryWidget extends HTMLElement {
   private readonly handlePageShow = (event: PageTransitionEvent) => { if (event.persisted) this.resetAfterHandOff(); };
   private readonly handleVisibility = () => { if (document.visibilityState === 'visible' && this.starting && !this.requestInFlight) this.resetAfterHandOff(); };
   private inputError = '';
+  private lastScrollY = 0;
+  private scrollSettleTimer?: number;
+  /** Mobile only: the minimised pill steps aside while the reader scrolls down so it never sits on publisher CTAs. */
+  private readonly handleScroll = () => {
+    const y = window.scrollY;
+    const delta = y - this.lastScrollY;
+    if (Math.abs(delta) < SCROLL_STEP_PX) return;
+    this.lastScrollY = y;
+    window.clearTimeout(this.scrollSettleTimer);
+    const hide = delta > 0 && this.minimised && isMobileViewport();
+    this.toggleAttribute('data-scroll-hidden', hide);
+    if (hide) this.scrollSettleTimer = window.setTimeout(() => this.removeAttribute('data-scroll-hidden'), SCROLL_SETTLE_MS);
+  };
   /** Collapsed to the bottom-centre pill. Starts minimised on mobile, expanded on desktop, then per session. */
   private minimised = false;
   private listenersAttached = false;
@@ -57,7 +78,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
   configure(registry: PublisherRegistry, analytics?: AnalyticsClient, _debug?: DebugSink, _ai?: AIRecommendationLayer): void {
     this.analytics = analytics ?? new ConsoleAnalytics();
     this.definition = registry.get(this.dataset.publisher ?? 'demo');
-    this.minimised = readMinimised(this.storageKey()) ?? (typeof window.matchMedia === 'function' && window.matchMedia(MOBILE_QUERY).matches);
+    this.minimised = readMinimised(this.storageKey()) ?? isMobileViewport();
     this.render();
     this.trackImpressionIfReady();
   }
@@ -85,6 +106,8 @@ export class ContentDiscoveryWidget extends HTMLElement {
       this.listenersAttached = true;
     }
     window.addEventListener('pageshow', this.handlePageShow);
+    this.lastScrollY = window.scrollY;
+    window.addEventListener('scroll', this.handleScroll, { passive: true });
     document.addEventListener('visibilitychange', this.handleVisibility);
     this.render();
     this.trackImpressionIfReady();
@@ -92,6 +115,8 @@ export class ContentDiscoveryWidget extends HTMLElement {
 
   disconnectedCallback(): void {
     window.removeEventListener('pageshow', this.handlePageShow);
+    window.removeEventListener('scroll', this.handleScroll);
+    window.clearTimeout(this.scrollSettleTimer);
     document.removeEventListener('visibilitychange', this.handleVisibility);
   }
 
@@ -247,12 +272,13 @@ export class ContentDiscoveryWidget extends HTMLElement {
     const content = this.closedByUser ? '' : this.renderPanel();
     this.hidden = this.closedByUser;
     this.dataset.state = this.minimised ? 'minimised' : 'expanded';
+    if (!this.minimised) this.removeAttribute('data-scroll-hidden');
     this.root.innerHTML = `<style>${css}</style>${content}`;
     if (!this.closedByUser && focus) this.root.querySelector<HTMLElement>(focus)?.focus();
   }
 
   private renderPanel(): string {
-    if (this.minimised) return '<button class="briefing-pill" type="button" data-action="expand" aria-expanded="false" aria-controls="ld-briefing-panel"><span class="briefing-pill-spark" aria-hidden="true">✦</span>Get your personalised briefing</button>';
+    if (this.minimised) return '<button class="briefing-pill" type="button" data-action="expand" aria-expanded="false" aria-controls="ld-briefing-panel"><span class="briefing-pill-spark" aria-hidden="true">✦</span><span class="pill-label-full">Get your personalised briefing</span><span class="pill-label-short">Your briefing</span></button>';
     const minimise = '<button class="close-control" type="button" data-action="close" aria-label="Minimise briefing" aria-expanded="true" aria-controls="ld-briefing-panel"><span class="icon-close" aria-hidden="true">×</span><svg class="icon-minimise" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5l6 6 6-6" /></svg></button>';
     if (this.state === 'error') return `${minimise}<div class="error-state" id="ld-briefing-panel" role="alert"><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="briefing-submit" data-action="retry">Try again</button></div>`;
     return `${minimise}<form class="briefing-bar" id="ld-briefing-panel" data-profile-form role="dialog" aria-modal="true" aria-label="Build your professional briefing"><span class="briefing-label">I work at</span><label class="briefing-field briefing-field--company"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5.5h9V20M14 9h5v11M8 8.5h2M8 12h2M8 15.5h2M16.5 12h1M16.5 15.5h1M3 20h18" /></svg><input type="text" inputmode="text" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="Nike or nike.com" autocomplete="organization" spellcheck="false" data-focus-start aria-label="Company or website"${this.inputError ? ' aria-invalid="true" aria-describedby="profile-error"' : ''}${this.starting ? ' readonly' : ''}></label><span class="briefing-label">as a</span><label class="briefing-field briefing-field--role"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16v11H4zM8 8.5V6h8v2.5M8 13h8M12 13v2" /></svg><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role"${this.starting ? ' readonly' : ''}></label><span class="briefing-arrow" aria-hidden="true">→</span>${this.starting

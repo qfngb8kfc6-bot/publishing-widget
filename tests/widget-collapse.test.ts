@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createEvent, MemoryAnalytics } from '../src/core';
 import { createDemoRegistry } from '../src/demo/definition';
-import { mountWidget } from '../src/widget/mount';
+import { mountWidget, parseWidgetPosition } from '../src/widget/mount';
 import { validateAnalyticsEvent } from '../src/server/analytics-validation';
 import '../src/widget/widget';
 
@@ -78,6 +78,60 @@ describe('collapsible widget', () => {
     expect(styles).toContain('border-radius:24px 24px 0 0');
     expect(styles).toContain('calc(16px + env(safe-area-inset-bottom))');
     expect(styles).toContain(':host([data-state="minimised"])');
+  });
+
+  it('shrinks the pill to a corner chip on mobile, bottom-right unless the publisher sets data-position', () => {
+    setViewport(true);
+    const { widget, shadow } = mount();
+    expect(widget.dataset.position).toBe('bottom-right');
+    expect(shadow.querySelector('.pill-label-short')?.textContent).toBe('Your briefing');
+    expect(shadow.querySelector('.pill-label-full')?.textContent).toBe('Get your personalised briefing');
+    const styles = shadow.querySelector('style')?.textContent ?? '';
+    expect(styles).toContain(':host([data-state="minimised"]) { right:max(14px, env(safe-area-inset-right)); left:auto;');
+    expect(styles).toContain(':host([data-state="minimised"][data-position="bottom-left"]) { right:auto; left:max(14px, env(safe-area-inset-left)); }');
+    expect(styles).toContain(':host([data-state="minimised"][data-position="bottom-center"]) { right:auto; left:50%; transform:translateX(-50%); }');
+    expect(styles).toContain('.briefing-pill { gap:8px; min-height:44px;');
+    expect(['bottom-left', 'bottom-center', 'bottom-right', 'top-left', null, undefined].map(parseWidgetPosition)).toEqual(['bottom-left', 'bottom-center', 'bottom-right', 'bottom-right', 'bottom-right', 'bottom-right']);
+    expect(mountWidget(createDemoRegistry(), 'demo', undefined, document, undefined, undefined, { position: 'bottom-center' }).dataset.position).toBe('bottom-center');
+  });
+
+  it('hides the mobile pill while scrolling down and shows it on scroll up or once scrolling stops; never on desktop', () => {
+    vi.useFakeTimers();
+    try {
+      let y = 0;
+      vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => y);
+      const scrollTo = (value: number) => { y = value; window.dispatchEvent(new Event('scroll')); };
+      setViewport(true);
+      const { widget } = mount();
+      scrollTo(200);
+      expect(widget.hasAttribute('data-scroll-hidden')).toBe(true);
+      vi.advanceTimersByTime(499);
+      scrollTo(400);
+      expect(widget.hasAttribute('data-scroll-hidden')).toBe(true);
+      vi.advanceTimersByTime(500);
+      expect(widget.hasAttribute('data-scroll-hidden')).toBe(false);
+      scrollTo(600);
+      scrollTo(500);
+      expect(widget.hasAttribute('data-scroll-hidden')).toBe(false);
+      // A bounce of a few pixels changes nothing.
+      scrollTo(700);
+      scrollTo(698);
+      expect(widget.hasAttribute('data-scroll-hidden')).toBe(true);
+      // Expanded: the sheet never hides.
+      widget.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="expand"]')!.click();
+      expect(widget.hasAttribute('data-scroll-hidden')).toBe(false);
+      scrollTo(900);
+      expect(widget.hasAttribute('data-scroll-hidden')).toBe(false);
+
+      document.body.innerHTML = '';
+      window.sessionStorage.clear();
+      setViewport(false);
+      const desktop = mount().widget;
+      desktop.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="close"]')!.click();
+      scrollTo(1200);
+      expect(desktop.dataset.state).toBe('minimised');
+      expect(desktop.hasAttribute('data-scroll-hidden')).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
 
   it('remembers the choice for the session', () => {

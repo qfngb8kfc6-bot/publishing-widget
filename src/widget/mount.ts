@@ -3,7 +3,12 @@ import type { AIRecommendationLayer } from '../ai/types';
 import { ContentDiscoveryWidget } from './widget';
 import { CONTENT_DISCOVERY_ELEMENT_NAME, ensureContentDiscoveryElementRegistered } from './registration';
 
-export type WidgetPosition = 'bottom-right' | 'bottom-left';
+export type WidgetPosition = 'bottom-right' | 'bottom-left' | 'bottom-center';
+
+/** Reads a publisher's data-position attribute; anything unrecognised is the default, bottom-right. */
+export function parseWidgetPosition(value: string | null | undefined): WidgetPosition {
+  return value === 'bottom-left' || value === 'bottom-center' ? value : 'bottom-right';
+}
 
 export interface MountOptions {
   position?: WidgetPosition;
