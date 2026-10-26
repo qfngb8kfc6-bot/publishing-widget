@@ -1,7 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 import { compactFieldIndexes, type TextMatchIndex, type TokenDictionary } from './compact-index';
 import type { Intent, NormalizedArticle, RelevanceResult } from './types';
-import { subjectMatcher, type ProfessionalProfile, type RetrievalConcept } from './professional';
+import { peopleMovesNeedTitleMatch, subjectMatcher, type ProfessionalProfile, type RetrievalConcept } from './professional';
 import type { RelevanceScoreComponents } from './types';
 
 const STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'from', 'your', 'you', 'that', 'what', 'best', 'describes']);
@@ -247,6 +247,13 @@ function companyEvidence(terms: PreparedTerm[], fields: ProfessionalFieldIndexes
   return { score: Math.min(14, score), matches: [...seen] };
 }
 
+/** A headline about a change of people: a hire, appointment, promotion or departure. */
+const PEOPLE_MOVE_TITLE = /\b(?:appoints?|appointed|appointment|hires?|hired|promotes?|promoted|steps down|to step down|departs|names (?:new |(?:[a-z.'-]+ ){0,3}(?:as )?(?:ceo|cfo|coo|cmo|chief|president|vp|vice president|head|director|md|managing director|general manager)\b)|named (?:as )?(?:new )?(?:ceo|cfo|coo|cmo|chief|president|vp|vice president|head|director|md|managing director|general manager)\b|new (?:ceo|cfo|coo|cmo|president|vp|vice president|head of|managing director|general manager)\b)/i;
+
+export function isPeopleMoveTitle(title: string): boolean {
+  return PEOPLE_MOVE_TITLE.test(title);
+}
+
 export type ProfessionalArticleScorer = (article: NormalizedArticle, fields?: ProfessionalFieldIndexes) => RelevanceResult;
 
 /**
@@ -267,7 +274,8 @@ export function createProfessionalScorer(profile: ProfessionalProfile): Professi
   const roleConcepts = concepts.filter((concept) => concept.source === 'role');
   const companyTerms = tokenize(`${profile.companyName ?? ''} ${profile.companyDomain}`).map(prepareTerm);
   const companyLabel = normalizeToken(profile.companyName ?? profile.companyDomain);
-  return (article, fields = professionalFieldIndexes(article)) => scorePreparedProfessionalArticle(article, profile, fields, { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored: Boolean(onSubject) });
+  const peopleMovesNeedTitle = profile.role ? peopleMovesNeedTitleMatch(profile.role) : false;
+  return (article, fields = professionalFieldIndexes(article)) => scorePreparedProfessionalArticle(article, profile, fields, { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored: Boolean(onSubject), peopleMovesNeedTitle });
 }
 
 /** Version-independent deterministic professional score used by persisted reports. */
@@ -275,8 +283,8 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
   return createProfessionalScorer(profile)(article);
 }
 
-function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: ProfessionalProfile, fields: ProfessionalFieldIndexes, prepared: { directConcepts: PreparedConcept[]; adjacentConcepts: PreparedConcept[]; exclusions: PreparedTerm[]; roleConcepts: RetrievalConcept[]; companyTerms: PreparedTerm[]; companyLabel: string; subjectAnchored?: boolean }): RelevanceResult {
-  const { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored } = prepared;
+function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: ProfessionalProfile, fields: ProfessionalFieldIndexes, prepared: { directConcepts: PreparedConcept[]; adjacentConcepts: PreparedConcept[]; exclusions: PreparedTerm[]; roleConcepts: RetrievalConcept[]; companyTerms: PreparedTerm[]; companyLabel: string; subjectAnchored?: boolean; peopleMovesNeedTitle?: boolean }): RelevanceResult {
+  const { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored, peopleMovesNeedTitle } = prepared;
   const directEvidence = evidenceContribution(directConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.directTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.directMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.directBody, lead: PROFESSIONAL_SCORE_WEIGHTS.directLead }, 58);
   const adjacentEvidence = evidenceContribution(adjacentConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.adjacentTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.adjacentMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.adjacentBody, lead: PROFESSIONAL_SCORE_WEIGHTS.adjacentLead }, 28);
   const directMatches = unique(directEvidence.matches.map((item) => item.concept));
@@ -313,16 +321,20 @@ function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: P
   const preRecencyScore = Math.max(0, Math.round(baseScore - negativePenalty));
   const postRecencyScore = Math.max(0, Math.round(baseScore * recencyMultiplier + freshness - negativePenalty));
   const rawScore = postRecencyScore;
-  const meaningfulAdjacent = adjacentEvidence.nonLeadMatches.length > 0 && adjacentScore >= 8;
-  const relevanceType: RelevanceResult['relevanceType'] = meaningfulDirect ? 'direct' : meaningfulAdjacent ? 'adjacent' : rawScore > 0 ? 'weak' : 'none';
+  // A people move counts for such a role only when the title names the role's own area ("Nike names new VP of
+  // retail"); otherwise generic words in a hire story ("product strategy", "go-to-market") would carry it.
+  const offAreaPeopleMove = Boolean(peopleMovesNeedTitle) && isPeopleMoveTitle(article.title) && !directEvidence.nonLeadMatches.some((match) => normalizedConceptMatches(normalizeToken(match.concept), fields.title));
+  const directType = meaningfulDirect && !offAreaPeopleMove;
+  const meaningfulAdjacent = !offAreaPeopleMove && adjacentEvidence.nonLeadMatches.length > 0 && adjacentScore >= 8;
+  const relevanceType: RelevanceResult['relevanceType'] = directType ? 'direct' : meaningfulAdjacent ? 'adjacent' : rawScore > 0 ? 'weak' : 'none';
   const score = calibrateRelevanceScore(rawScore, relevanceType);
   const signals: string[] = [];
-  if (meaningfulDirect) signals.push(`directly matches ${directMatches.slice(0, 2).join(' and ')}`);
-  if (!meaningfulDirect && meaningfulAdjacent) signals.push(`connects with adjacent themes: ${adjacentMatches.slice(0, 2).join(' and ')}`);
+  if (directType) signals.push(`directly matches ${directMatches.slice(0, 2).join(' and ')}`);
+  if (relevanceType === 'adjacent') signals.push(`connects with adjacent themes: ${adjacentMatches.slice(0, 2).join(' and ')}`);
   if (company.matches.length) signals.push(`connects to ${profile.companyName ?? profile.companyDomain}`);
   if (negativeMatches.length) signals.push(`conflicts with excluded topic ${negativeMatches[0]}`);
-  if (freshness >= 3 && (meaningfulDirect || meaningfulAdjacent)) signals.push('is recent coverage');
-  const confidence = Math.max(0, Math.min(100, Math.round(score * 0.82 + (meaningfulDirect ? 12 : meaningfulAdjacent ? 3 : 0) - negativePenalty * 0.2)));
+  if (freshness >= 3 && (directType || meaningfulAdjacent)) signals.push('is recent coverage');
+  const confidence = Math.max(0, Math.min(100, Math.round(score * 0.82 + (directType ? 12 : meaningfulAdjacent ? 3 : 0) - negativePenalty * 0.2)));
   const scoreComponents: RelevanceScoreComponents = { direct: Math.round(directScore), adjacent: Math.round(adjacentScore), role: Math.round(roleBonus), company: Math.round(companyBonus), freshness: Math.round(freshness), negative: Math.round(negativePenalty), articleAgeDays: hasValidPublishedAt ? Number(ageDays.toFixed(1)) : undefined, recencyMultiplier: Number(recencyMultiplier.toFixed(3)), preRecencyScore, postRecencyScore, raw: rawScore, calibrated: score };
   return { score, relevanceSignals: unique(signals), scoreComponents, relevanceType, confidence, directMatches, adjacentMatches, negativeMatches };
 }
