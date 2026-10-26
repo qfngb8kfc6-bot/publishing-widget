@@ -96,6 +96,27 @@ export interface CsvSourceConfig {
   sourceName?: string;
 }
 
+/**
+ * Server-side full-text enrichment (WVC story-list API). It never replaces the catalogue source: it adds cleaned
+ * body text, stored in Postgres and joined on the numeric story code, for matching and AI grounding only.
+ * The key is read only from the server environment variable named by `secretRef`.
+ */
+export interface WvcEnrichmentSourceConfig {
+  type: 'wvc';
+  /** Full story-list endpoint, e.g. https://www.sgieurope.com/abaapi/storylistpagination/json (GET only). */
+  baseUrl: string;
+  profileName: string;
+  /** The API rejects page sizes below 50. */
+  pageSize: number;
+  /** 4 adds STORYTEXT (the body); 0-2 omit it. */
+  dataConstraint: number;
+  /** Environment variable holding the key, e.g. `env:SGI_WVC_API_KEY`. */
+  secretRef: string;
+  allowedHostnames: string[];
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
 export type ContentSourceConfig = RestJsonSourceConfig | FeedSourceConfig | SitemapSourceConfig | StaticJsonSourceConfig | CsvSourceConfig | { type: 'static-demo'; sourceName?: string };
 
 export interface ContentDiagnostic {

@@ -31,6 +31,11 @@ export const PROFESSIONAL_SCORE_WEIGHTS = {
   companyTitle: 8,
   companyMetadata: 4,
   companyBody: 2,
+  /** Lead-excerpt matches (opening of the full text, when a publisher supplies it): weaker than body, and only
+   * boosting: an article needs title, metadata or body evidence of the same kind to count as direct or adjacent. */
+  directLead: 4,
+  adjacentLead: 2,
+  companyLead: 1,
   freshnessMax: 6,
 } as const;
 
@@ -182,6 +187,8 @@ export interface ProfessionalFieldIndexes {
   title: ProfessionalTextIndex;
   metadata: ProfessionalTextIndex;
   body: ProfessionalTextIndex;
+  /** Lead excerpt of the article's full text, attached by the catalogue index when available. */
+  lead?: { matches(normalizedConcept: string): boolean };
 }
 
 function professionalValues(article: NormalizedArticle): { title: string; metadata: string; body: string } {
@@ -208,19 +215,23 @@ export function compactProfessionalFieldIndexes(article: NormalizedArticle, dict
 interface PreparedConcept { concept: RetrievalConcept; normalized: string }
 interface PreparedTerm { term: string; normalized: string }
 
-function evidenceContribution(matches: PreparedConcept[], fields: ProfessionalFieldIndexes, amounts: { title: number; metadata: number; body: number }, cap: number): { score: number; matches: RetrievalConcept[] } {
+function evidenceContribution(matches: PreparedConcept[], fields: ProfessionalFieldIndexes, amounts: { title: number; metadata: number; body: number; lead: number }, cap: number): { score: number; matches: RetrievalConcept[]; nonLeadMatches: RetrievalConcept[] } {
   const seen = new Set<string>();
   const selected: RetrievalConcept[] = [];
   let score = 0;
+  const nonLeadMatches: RetrievalConcept[] = [];
   for (const { concept: match, normalized: key } of matches) {
     if (!key || seen.has(key)) continue;
-    const field = normalizedConceptMatches(key, fields.title) ? 'title' : normalizedConceptMatches(key, fields.metadata) ? 'metadata' : normalizedConceptMatches(key, fields.body) ? 'body' : undefined;
+    const field = normalizedConceptMatches(key, fields.title) ? 'title' : normalizedConceptMatches(key, fields.metadata) ? 'metadata' : normalizedConceptMatches(key, fields.body) ? 'body' : fields.lead?.matches(key) ? 'lead' : undefined;
     if (!field) continue;
     seen.add(key);
     selected.push(match);
+    if (field !== 'lead') nonLeadMatches.push(match);
     score += amounts[field] * Math.max(0.65, Math.min(1.25, match.weight));
   }
-  return { score: Math.min(cap, score), matches: selected };
+  // Lead-excerpt matches only reinforce evidence found in the title, metadata or body; alone they count for nothing.
+  if (nonLeadMatches.length === 0) return { score: 0, matches: [], nonLeadMatches };
+  return { score: Math.min(cap, score), matches: selected, nonLeadMatches };
 }
 
 function companyEvidence(terms: PreparedTerm[], fields: ProfessionalFieldIndexes): { score: number; matches: string[] } {
@@ -228,7 +239,7 @@ function companyEvidence(terms: PreparedTerm[], fields: ProfessionalFieldIndexes
   let score = 0;
   for (const { normalized: key } of terms) {
     if (!key || seen.has(key)) continue;
-    const amount = normalizedConceptMatches(key, fields.title) ? PROFESSIONAL_SCORE_WEIGHTS.companyTitle : normalizedConceptMatches(key, fields.metadata) ? PROFESSIONAL_SCORE_WEIGHTS.companyMetadata : normalizedConceptMatches(key, fields.body) ? PROFESSIONAL_SCORE_WEIGHTS.companyBody : 0;
+    const amount = normalizedConceptMatches(key, fields.title) ? PROFESSIONAL_SCORE_WEIGHTS.companyTitle : normalizedConceptMatches(key, fields.metadata) ? PROFESSIONAL_SCORE_WEIGHTS.companyMetadata : normalizedConceptMatches(key, fields.body) ? PROFESSIONAL_SCORE_WEIGHTS.companyBody : fields.lead?.matches(key) ? PROFESSIONAL_SCORE_WEIGHTS.companyLead : 0;
     if (!amount) continue;
     seen.add(key);
     score += amount;
@@ -266,8 +277,8 @@ export function scoreProfessionalArticle(article: NormalizedArticle, profile: Pr
 
 function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: ProfessionalProfile, fields: ProfessionalFieldIndexes, prepared: { directConcepts: PreparedConcept[]; adjacentConcepts: PreparedConcept[]; exclusions: PreparedTerm[]; roleConcepts: RetrievalConcept[]; companyTerms: PreparedTerm[]; companyLabel: string; subjectAnchored?: boolean }): RelevanceResult {
   const { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored } = prepared;
-  const directEvidence = evidenceContribution(directConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.directTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.directMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.directBody }, 58);
-  const adjacentEvidence = evidenceContribution(adjacentConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.adjacentTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.adjacentMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.adjacentBody }, 28);
+  const directEvidence = evidenceContribution(directConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.directTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.directMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.directBody, lead: PROFESSIONAL_SCORE_WEIGHTS.directLead }, 58);
+  const adjacentEvidence = evidenceContribution(adjacentConcepts, fields, { title: PROFESSIONAL_SCORE_WEIGHTS.adjacentTitle, metadata: PROFESSIONAL_SCORE_WEIGHTS.adjacentMetadata, body: PROFESSIONAL_SCORE_WEIGHTS.adjacentBody, lead: PROFESSIONAL_SCORE_WEIGHTS.adjacentLead }, 28);
   const directMatches = unique(directEvidence.matches.map((item) => item.concept));
   const adjacentMatches = unique(adjacentEvidence.matches.map((item) => item.concept));
   const negativeTitle = exclusions.filter((term) => normalizedConceptMatches(term.normalized, fields.title)).map((term) => term.term);
@@ -288,9 +299,10 @@ function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: P
   // mentions the reader's company must not outrank an on-topic story about another company.
   const companyBonus = company.score * Math.min(1, directScore / PROFESSIONAL_SCORE_WEIGHTS.directTitle);
   const negativePenalty = Math.min(45, negativeTitle.length * 28 + negativeMetadata.length * 18 + negativeBody.length * 10);
-  const exceptionalBonus = company.matches.length > 0 && directEvidence.matches.filter((match) => match.source === 'role').length >= 3 && normalizedConceptMatches(companyLabel, fields.title) ? 26 : 0;
+  const exceptionalBonus = company.matches.length > 0 && directEvidence.nonLeadMatches.filter((match) => match.source === 'role').length >= 3 && normalizedConceptMatches(companyLabel, fields.title) ? 26 : 0;
   const recencyMultiplier = hasValidPublishedAt ? recencyMultiplierForAge(ageDays) : UNKNOWN_DATE_RECENCY_MULTIPLIER;
-  const meaningfulDirect = directMatches.length > 0 && directScore >= 8 && (directEvidence.matches.some((match) => normalizedConceptMatches(normalizeToken(match.concept), fields.title)) || directMatches.length >= 2 || directEvidence.matches.some((match) => match.source === 'company'));
+  // Lead-excerpt matches only add weight: the classification itself needs evidence outside the lead.
+  const meaningfulDirect = directEvidence.nonLeadMatches.length > 0 && directScore >= 8 && (directEvidence.matches.some((match) => normalizedConceptMatches(normalizeToken(match.concept), fields.title)) || directMatches.length >= 2 || directEvidence.matches.some((match) => match.source === 'company'));
   // Subject dominance for an anchored generic role: in a direct article, generic concepts add at most a quarter of
   // their evidence (28 × 0.25 = 7). One subject match in the title (22 × 1.1–1.25 = 24–27.5) therefore outweighs
   // every generic concept matching at once, so strategy + finance + growth cannot lift a thin subject match above
@@ -301,7 +313,7 @@ function scorePreparedProfessionalArticle(article: NormalizedArticle, profile: P
   const preRecencyScore = Math.max(0, Math.round(baseScore - negativePenalty));
   const postRecencyScore = Math.max(0, Math.round(baseScore * recencyMultiplier + freshness - negativePenalty));
   const rawScore = postRecencyScore;
-  const meaningfulAdjacent = adjacentMatches.length > 0 && adjacentScore >= 8;
+  const meaningfulAdjacent = adjacentEvidence.nonLeadMatches.length > 0 && adjacentScore >= 8;
   const relevanceType: RelevanceResult['relevanceType'] = meaningfulDirect ? 'direct' : meaningfulAdjacent ? 'adjacent' : rawScore > 0 ? 'weak' : 'none';
   const score = calibrateRelevanceScore(rawScore, relevanceType);
   const signals: string[] = [];

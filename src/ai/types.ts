@@ -128,6 +128,8 @@ export interface ReportContentRequest {
     /** Final relevance score used for ranking. */
     score?: number;
     relationship?: ArticleRelationship;
+    /** Opening of the article's full text (enriched publishers only, at most ~800 characters). Grounding only. */
+    leadExcerpt?: string;
   }>;
 }
 

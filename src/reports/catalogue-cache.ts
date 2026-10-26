@@ -1,5 +1,5 @@
-import { compactProfessionalFieldIndexes, mapInSlices, professionalFieldIndexes, TokenDictionary, type NormalizedArticle, type ProfessionalFieldIndexes } from '../core';
-import { compactFeedPreselectionFields, feedPreselectionFields, type ContentTimingDiagnostics, type FeedPreselectionFields } from '../publishers/content';
+import { compactProfessionalFieldIndexes, LeadMatchIndex, mapInSlices, professionalFieldIndexes, TokenDictionary, type NormalizedArticle, type ProfessionalFieldIndexes } from '../core';
+import { compactFeedPreselectionFields, feedPreselectionFields, storyCodeFromUrl, type ContentTimingDiagnostics, type FeedPreselectionFields } from '../publishers/content';
 import { shareRepeatedStrings, type CatalogueSnapshotStore } from './catalogue-snapshot';
 
 export interface CatalogueCacheDiagnostics extends ContentTimingDiagnostics {
@@ -24,6 +24,8 @@ export class CatalogueArticleIndex {
   private readonly dictionary = new TokenDictionary();
   private readonly preselection = new Map<NormalizedArticle, FeedPreselectionFields>();
   private readonly professional = new Map<NormalizedArticle, ProfessionalFieldIndexes>();
+  /** Lead-excerpt match indexes (hashes only, never text), attached in the background from the full-text store. */
+  private readonly leads = new Map<NormalizedArticle, LeadMatchIndex>();
 
   constructor(articles: readonly NormalizedArticle[]) {
     this.articles = articles;
@@ -73,9 +75,44 @@ export class CatalogueArticleIndex {
   readonly professionalFields = (article: NormalizedArticle): ProfessionalFieldIndexes => {
     if (!this.members.has(article)) return professionalFieldIndexes(article);
     let fields = this.professional.get(article);
-    if (!fields) { fields = compactProfessionalFieldIndexes(article, this.dictionary); this.professional.set(article, fields); }
+    if (!fields) {
+      fields = compactProfessionalFieldIndexes(article, this.dictionary);
+      const lead = this.leads.get(article);
+      if (lead) fields.lead = lead;
+      this.professional.set(article, fields);
+    }
     return fields;
   };
+
+  /** Attaches (or replaces) one article's lead index; already-built field indexes pick it up immediately. */
+  attachLead(article: NormalizedArticle, lead: LeadMatchIndex): void {
+    if (!this.members.has(article)) return;
+    this.leads.set(article, lead);
+    const fields = this.professional.get(article);
+    if (fields) fields.lead = lead;
+  }
+
+  /** Catalogue articles by story code (the id before ".article"), for joining full-text rows. */
+  articlesByStoryCode(): Map<string, NormalizedArticle> {
+    const byCode = new Map<string, NormalizedArticle>();
+    for (const article of this.articles) {
+      const code = storyCodeFromUrl(article.url) ?? storyCodeFromUrl(article.canonicalUrl);
+      if (code && !byCode.has(code)) byCode.set(code, article);
+    }
+    return byCode;
+  }
+
+  /** Lead indexes by story code, so a refreshed catalogue version can reuse them without re-reading the store. */
+  leadsByStoryCode(): Map<string, LeadMatchIndex> {
+    const byCode = new Map<string, LeadMatchIndex>();
+    for (const [article, lead] of this.leads) {
+      const code = storyCodeFromUrl(article.url) ?? storyCodeFromUrl(article.canonicalUrl);
+      if (code) byCode.set(code, lead);
+    }
+    return byCode;
+  }
+
+  get leadCount(): number { return this.leads.size; }
 
   get indexedCounts(): { preselection: number; professional: number; dictionary: number } {
     return { preselection: this.preselection.size, professional: this.professional.size, dictionary: this.dictionary.size };
@@ -121,9 +158,23 @@ export interface PublisherCatalogueCacheOptions {
   onRefreshComplete?: (publisherId: string, report: CatalogueRefreshReport) => void;
   /** Called after each memory-relevant stage, e.g. to log heap usage. */
   onStage?: (publisherId: string, stage: CatalogueStage) => void;
+  /** Full-text lead excerpts for matching (enriched publishers only, when enrichment is enabled). */
+  leadExcerpts?: LeadExcerptSource;
+  onLeadsAttached?: (publisherId: string, stats: { leadCount: number; durationMs: number; trigger: 'load' | 'update' }) => void;
 }
 
-export type CatalogueStage = 'snapshot_hydrated' | 'source_loaded' | 'index_prebuilt' | 'snapshot_saved';
+/** Reads bounded lead excerpts from the full-text store. Text is turned into hashes and dropped batch by batch. */
+export interface LeadExcerptSource {
+  covers(publisherId: string): boolean;
+  /** Keyset page in story-code order. */
+  page(publisherId: string, afterStoryCode: string, limit: number): Promise<Array<{ storyCode: string; lead: string }>>;
+  forStoryCodes(publisherId: string, storyCodes: readonly string[]): Promise<Array<{ storyCode: string; lead: string }>>;
+}
+
+/** Rows per lead query: about 0.75 MB of excerpt text at 1,500 characters, released after each batch. */
+const LEAD_BATCH_SIZE = 500;
+
+export type CatalogueStage = 'snapshot_hydrated' | 'source_loaded' | 'index_prebuilt' | 'snapshot_saved' | 'leads_attached';
 
 interface CacheEntry {
   publisherId: string;
@@ -137,6 +188,9 @@ interface CacheEntry {
   fingerprint?: Promise<string>;
   /** True once a prebuild of this version has been queued. */
   prebuildQueued?: boolean;
+  /** Lead excerpts: queued for this version, and fully attached. */
+  leadsQueued?: boolean;
+  leadsLoaded?: boolean;
   /** Where this version came from: the persisted snapshot or a source load. */
   origin: 'snapshot' | 'load';
 }
@@ -187,6 +241,8 @@ export class PublisherCatalogueCache {
   private readonly onIndexPrebuilt?: PublisherCatalogueCacheOptions['onIndexPrebuilt'];
   private readonly onRefreshComplete?: PublisherCatalogueCacheOptions['onRefreshComplete'];
   private readonly onStage?: PublisherCatalogueCacheOptions['onStage'];
+  private readonly leadExcerpts?: LeadExcerptSource;
+  private readonly onLeadsAttached?: PublisherCatalogueCacheOptions['onLeadsAttached'];
   private maintenance: Promise<void> = Promise.resolve();
 
   constructor(options: PublisherCatalogueCacheOptions = {}) {
@@ -200,6 +256,8 @@ export class PublisherCatalogueCache {
     this.onIndexPrebuilt = options.onIndexPrebuilt;
     this.onRefreshComplete = options.onRefreshComplete;
     this.onStage = options.onStage;
+    this.leadExcerpts = options.leadExcerpts;
+    this.onLeadsAttached = options.onLeadsAttached;
   }
 
   async get(publisherId: string, key: string, loader: CatalogueLoader): Promise<CatalogueCacheResult> {
@@ -282,6 +340,14 @@ export class PublisherCatalogueCache {
     return run;
   }
 
+  /**
+   * Runs other memory-heavy background work (e.g. a full-text sync page) on the same queue, so it never overlaps
+   * a catalogue refresh, index prebuild or snapshot save.
+   */
+  runExclusive<T>(job: () => Promise<T>): Promise<T> {
+    return this.enqueue(job);
+  }
+
   /** Resolves once all queued background work has finished (tests and diagnostics). */
   async idle(): Promise<void> {
     let current: Promise<void>;
@@ -293,7 +359,81 @@ export class PublisherCatalogueCache {
     const previous = this.entries.get(entry.publisherId);
     if (previous && previous !== entry) previous.index.cancel();
     this.entries.set(entry.publisherId, entry);
-    if (prebuild) this.schedulePrebuild(entry, trigger);
+    // Only the previous version's lead indexes (hashes, keyed by story code) are kept, never the version itself.
+    const carried = previous && previous !== entry && previous.leadsLoaded && previous.key === entry.key ? previous.index.leadsByStoryCode() : undefined;
+    if (prebuild) {
+      this.schedulePrebuild(entry, trigger);
+      this.scheduleLeads(entry, carried);
+    }
+  }
+
+  /**
+   * Queues loading this version's lead excerpts; skipped if the version was replaced before its turn came. Leads
+   * carried over from the previous version are reused, and only story codes without one are read from the store.
+   */
+  private scheduleLeads(entry: CacheEntry, carried?: Map<string, LeadMatchIndex>): void {
+    const source = this.leadExcerpts;
+    if (!source?.covers(entry.publisherId) || entry.leadsQueued) return;
+    entry.leadsQueued = true;
+    void this.enqueue(async () => {
+      if (this.entries.get(entry.publisherId) !== entry) return;
+      const startedAt = this.now();
+      const byCode = entry.index.articlesByStoryCode();
+      const attach = (rows: Array<{ storyCode: string; lead: string }>) => {
+        for (const row of rows) {
+          const article = byCode.get(row.storyCode);
+          if (article) entry.index.attachLead(article, new LeadMatchIndex(row.lead));
+        }
+      };
+      if (carried) {
+        const missing: string[] = [];
+        for (const [code, article] of byCode) {
+          const lead = carried.get(code);
+          if (lead) entry.index.attachLead(article, lead); else missing.push(code);
+        }
+        for (let offset = 0; offset < missing.length && this.entries.get(entry.publisherId) === entry; offset += LEAD_BATCH_SIZE) {
+          attach(await source.forStoryCodes(entry.publisherId, missing.slice(offset, offset + LEAD_BATCH_SIZE)));
+          await defaultYield();
+        }
+      } else {
+        let after = '';
+        while (this.entries.get(entry.publisherId) === entry) {
+          const rows = await source.page(entry.publisherId, after, LEAD_BATCH_SIZE);
+          attach(rows);
+          if (rows.length < LEAD_BATCH_SIZE) break;
+          after = rows[rows.length - 1].storyCode;
+          await defaultYield();
+        }
+      }
+      if (this.entries.get(entry.publisherId) !== entry) return;
+      entry.leadsLoaded = true;
+      this.onLeadsAttached?.(entry.publisherId, { leadCount: entry.index.leadCount, durationMs: Math.max(0, this.now() - startedAt), trigger: 'load' });
+      this.onStage?.(entry.publisherId, 'leads_attached');
+    }).catch((error) => this.onRefreshError?.(entry.publisherId, error, true));
+  }
+
+  /**
+   * Refreshes lead indexes for stories whose full text changed (after a sync page). Queued like other background
+   * work; a version whose full load has not run yet picks the new text up then.
+   */
+  updateLeads(publisherId: string, storyCodes: readonly string[]): Promise<void> {
+    const source = this.leadExcerpts;
+    if (!source?.covers(publisherId) || !storyCodes.length) return Promise.resolve();
+    return this.enqueue(async () => {
+      const entry = this.entries.get(publisherId);
+      if (!entry?.leadsLoaded) return;
+      const startedAt = this.now();
+      const byCode = entry.index.articlesByStoryCode();
+      const codes = storyCodes.filter((code) => byCode.has(code));
+      if (!codes.length) return;
+      const rows = await source.forStoryCodes(publisherId, codes);
+      if (this.entries.get(publisherId) !== entry) return;
+      for (const row of rows) {
+        const article = byCode.get(row.storyCode);
+        if (article) entry.index.attachLead(article, new LeadMatchIndex(row.lead));
+      }
+      this.onLeadsAttached?.(publisherId, { leadCount: entry.index.leadCount, durationMs: Math.max(0, this.now() - startedAt), trigger: 'update' });
+    }).catch((error) => this.onRefreshError?.(publisherId, error, true));
   }
 
   /** Queues this version's index prebuild; skipped if the version was replaced before its turn came. */
@@ -356,7 +496,10 @@ export class PublisherCatalogueCache {
         // A failed refresh leaves the current version in place: index it now if that was deferred. Queued from
         // inside this job so the prebuild is in the queue before the job counts as finished.
         const current = this.entries.get(publisherId);
-        if (current) this.schedulePrebuild(current, current.origin);
+        if (current) {
+          this.schedulePrebuild(current, current.origin);
+          this.scheduleLeads(current);
+        }
       }
     });
     this.inFlight.set(cacheKey, refresh);

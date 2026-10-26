@@ -7,6 +7,7 @@ import type { ContentImportDiagnostics, ContentSourceConfig } from '../publisher
 import { PublisherStoreError } from '../publishers/store';
 import type { PublisherRuntime, PublisherRuntimeCapabilities } from '../publishers/runtime';
 import { ContentSourceError } from '../publishers/content/security';
+import type { TextEnrichmentStatus } from '../reports/text-enrichment';
 import type { ReportGenerationService } from '../reports/generate';
 import { AdminAuth, adminOriginAllowed } from './admin-auth';
 import { readJsonBody, safeRouteId } from './request-validation';
@@ -21,6 +22,8 @@ interface AdminRoutesOptions {
   auth: AdminAuth;
   environment: 'development' | 'test' | 'production';
   logger?: StructuredLogger;
+  /** Full-text sync status for enriched publishers (counts, timestamps and error codes only). */
+  textEnrichmentStatus?: (publisherId: string) => Promise<TextEnrichmentStatus | undefined>;
 }
 
 interface ContentCheckResult {
@@ -259,10 +262,14 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
     const denied = requireAdmin(request);
     if (denied) return denied;
     if (url.pathname === '/api/admin/publishers' && request.method === 'GET') {
-      const publishers = (await options.publisherRuntime.list()).map((definition) => ({
-        ...safePublisherSummary(definition, lastContentChecks.get(definition.config.publisherId)),
-        environment: definition.manifest?.environment ?? 'development',
-        allowedOrigins: Array.isArray(definition.manifest?.allowedOrigins) ? [...definition.manifest.allowedOrigins] : [],
+      const publishers = await Promise.all((await options.publisherRuntime.list()).map(async (definition) => {
+        const textEnrichment = await options.textEnrichmentStatus?.(definition.config.publisherId).catch(() => undefined);
+        return {
+          ...safePublisherSummary(definition, lastContentChecks.get(definition.config.publisherId)),
+          environment: definition.manifest?.environment ?? 'development',
+          allowedOrigins: Array.isArray(definition.manifest?.allowedOrigins) ? [...definition.manifest.allowedOrigins] : [],
+          ...(textEnrichment ? { textEnrichment } : {}),
+        };
       }));
       const current = capabilities();
       return Response.json({ publishers, persistence: legacyPersistence(current), capabilities: current });

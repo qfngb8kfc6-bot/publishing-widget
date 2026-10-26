@@ -6,3 +6,4 @@ export * from './sections';
 export * from './catalogue-cache';
 export * from './catalogue-snapshot';
 export * from './generation-jobs';
+export * from './article-texts';

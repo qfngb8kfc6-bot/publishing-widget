@@ -41,7 +41,8 @@ qfngb8kfc6-bot/publishing-widget.
   (~600 ms), real stages, weighted creeping progress, Retry/Edit. `src/reports/generation-jobs.ts` — async job status.
 - `src/publishers/` — manifests, adapters (`content/adapters.ts`), runtime registry, per-publisher folders.
 - `db/migrations/` — numbered SQL migrations; `db/schema.sql`. Docs in `docs/` (DEPLOYMENT, SECURITY, …).
-- Scripts: `npm run rank:sample` (ranking samples), `npm run sample:briefings`, `npm run db:migrate`.
+- Scripts: `npm run rank:sample` (ranking samples), `npm run sample:briefings`, `npm run db:migrate`,
+  `npm run wvc:check` (read-only WVC last-page diagnostics; counts only).
 
 ## Report pipeline (generate.ts)
 1. Resolve company (name or URL) → company context.
@@ -69,21 +70,29 @@ qfngb8kfc6-bot/publishing-widget.
   section/slug/id paths (≤4 words), else the feed's `<category>`, else no label.
 - **IBI** (`src/publishers/ibi`): sitemap index `https://www.ibinews.com/GoogleSiteMapIndex.aspx`
   (`maxUrls` 100); see `docs/IBI-ONBOARDING.md`.
-- **WVC** (not implemented; findings from API testing): `GET /abaapi/storylistpagination/json`; auth header
-  `API_ACCESS_TOKEN` (underscores); `profilename=Editorial Finder` (with a space); `pagesize` must be ≥ 50;
-  `dataconstraint=4` returns STORYTEXT; pages come oldest-first. Full-text enrichment must live in Postgres,
-  not in process memory. Rotate keys before starting.
+- **SGI full text via WVC** (enrichment alongside RSS, `src/publishers/content/wvc.ts`,
+  `src/reports/text-enrichment.ts`, `article-texts.ts`): `GET /abaapi/storylistpagination/json`, header
+  `API_ACCESS_TOKEN`, `profilename=Editorial%20Finder`, `pagesize` ≥ 50, `dataconstraint=4` (STORYTEXT), pages
+  oldest-first, errors as HTTP 200 + `ErrorsFound`. Off unless `WVC_ENRICHMENT_ENABLED=true`; key only from
+  `SGI_WVC_API_KEY`. Cleaned plain text (≤20k chars) lives in Postgres (`publisher_article_texts`, migration 009),
+  joined on the numeric story code before `.article`. Backfill once (resumable), then the last 2 pages every
+  30 min, each page on the catalogue queue. Matching: 1,500-char lead → `LeadMatchIndex` (24-bit hashes, ~14 MB
+  for SGI); lead matches only reinforce title/metadata/body evidence. AI content call: 800-char lead per selected
+  article. Public reports expose only `subscriberOnly`; body text must never reach public JSON, UI, analytics,
+  logs or snapshots (`tests/full-text-privacy.test.ts`).
 
 ## Deployment
 - Render, 1 CPU / 2 GB RAM, `NODE_OPTIONS=--max-old-space-size=1536`. Supabase Postgres via `DATABASE_URL`.
 - `npm start` = build + `node server-entry.mjs`. Migrations are expected to run on start via Render's start
   command (`npm run db:migrate` is not part of `npm start` in this repo — keep that Render setting). Apply a
-  new migration before code that uses it (latest: `008_report_generations.sql`, required by asynchronous generation).
+  new migration before code that uses it (latest: `009_publisher_article_texts.sql`, required before enabling WVC full text).
 - Startup prewarms catalogues (snapshot hydrate → refresh if stale → index prebuild → snapshot save, one job at
   a time) and logs `heap_usage` every 60 s.
 
 ## Memory budget
 - Steady state ≈ 85 MB per SGI-sized publisher (11.5k articles): catalogue ~40 MB + match indexes ~43 MB.
+  With WVC full text enabled, lead indexes add ~14 MB (≈2 MB JS heap + ≈12 MB typed arrays, shown in
+  `externalMb`); they are carried across catalogue refreshes, so they add no refresh peak.
 - A refresh adds ~60–75 MB temporarily; refreshes, prebuilds and snapshot writes are serialized across all
   publishers, so only one transient peak at a time. Base process ~20 MB.
 - SGI alone peaks ~130–170 MB (survives a 145 MB heap limit). Keep per-publisher text compact; large
@@ -97,4 +106,5 @@ qfngb8kfc6-bot/publishing-widget.
   `ai_explanation_rejected` for the request); consider adding `part` to `ai_explanation_rejected`.
 - Theme results have no AI explanations yet (the "why" box is hidden for them).
 - Scorer's 5-character prefix match causes rare false positives ("investigation" ~ "invests").
-- WVC integration (after key rotation), with full text stored in Postgres.
+- WVC full text: run the backfill in production, confirm `heap_usage`, then compare real before/after top 8 with
+  `DATABASE_URL=… npm run rank:sample`.

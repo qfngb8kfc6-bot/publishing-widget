@@ -1,6 +1,6 @@
 import type { PublisherConfig } from '../../core';
 import type { PublisherManifest } from '../manifest';
-import type { FeedSourceConfig } from '../content';
+import type { FeedSourceConfig, WvcEnrichmentSourceConfig } from '../content';
 
 export const sgiEuropeFeedUrl = 'https://www.sgieurope.com/9871.rss?adredir=1';
 
@@ -13,6 +13,21 @@ export const sgiEuropeContentSource: FeedSourceConfig = {
   timeoutMs: 8000,
   maxBytes: 20 * 1024 * 1024,
   sourceName: 'SGI Europe RSS feed',
+};
+
+/**
+ * Subscriber-only body text, used behind the scenes for matching and AI grounding only (never displayed).
+ * Kept out of the manifest: it is server-side configuration and the key comes only from SGI_WVC_API_KEY.
+ */
+export const sgiEuropeEnrichmentSource: WvcEnrichmentSourceConfig = {
+  type: 'wvc',
+  baseUrl: 'https://www.sgieurope.com/abaapi/storylistpagination/json',
+  profileName: 'Editorial Finder',
+  pageSize: 50,
+  dataConstraint: 4,
+  secretRef: 'env:SGI_WVC_API_KEY',
+  allowedHostnames: ['www.sgieurope.com'],
+  timeoutMs: 20_000,
 };
 
 export const sgiEuropeConfig: PublisherConfig = {

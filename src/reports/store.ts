@@ -38,7 +38,7 @@ function reportWriteStatements(report: ReportRecord): Array<[string, unknown[]]>
       const base = index * REPORT_RECOMMENDATION_COLUMNS;
       return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7}::jsonb,$${base + 8}::jsonb,$${base + 9})`;
     });
-    const parameters = report.recommendations.flatMap((recommendation) => [report.id, recommendation.articleId, recommendation.rank, recommendation.rawScore, recommendation.displayScore, recommendation.explanation, JSON.stringify(recommendation.article), JSON.stringify(recommendation.rankingMetadata), report.createdAt]);
+    const parameters = report.recommendations.flatMap((recommendation) => [report.id, recommendation.articleId, recommendation.rank, recommendation.rawScore, recommendation.displayScore, recommendation.explanation, JSON.stringify(recommendation.article), JSON.stringify(recommendation.subscriberOnly === undefined ? recommendation.rankingMetadata : { ...recommendation.rankingMetadata, subscriberOnly: recommendation.subscriberOnly }), report.createdAt]);
     statements.push([`INSERT INTO report_recommendations (report_id, article_id, rank, raw_score, display_score, reason, article_json, ranking_metadata_json, created_at) VALUES ${placeholders.join(',')}`, parameters]);
   }
   return statements;
@@ -86,7 +86,11 @@ export class PostgresReportStore implements ReportStore {
     if (!row) return null;
     const recommendationRows = (typeof row.recommendations_json === 'string' ? JSON.parse(row.recommendations_json) : row.recommendations_json) as Array<Record<string, unknown>> | null;
     const recommendations = { rows: Array.isArray(recommendationRows) ? recommendationRows : [] };
-    const normalizedRecommendations = recommendations.rows.map((item) => ({ articleId: String(item.article_id), rank: Number(item.rank), rawScore: Number(item.raw_score), displayScore: Number(item.display_score), explanation: String(item.reason), article: item.article_json as ReportRecord['recommendations'][number]['article'], rankingMetadata: item.ranking_metadata_json as ReportRecord['recommendations'][number]['rankingMetadata'] }));
+    const normalizedRecommendations = recommendations.rows.map((item) => {
+      // subscriberOnly is stored inside ranking_metadata_json (no schema change) and lifted back to the top level.
+      const { subscriberOnly, ...rankingMetadata } = (item.ranking_metadata_json ?? {}) as ReportRecord['recommendations'][number]['rankingMetadata'] & { subscriberOnly?: unknown };
+      return { articleId: String(item.article_id), rank: Number(item.rank), rawScore: Number(item.raw_score), displayScore: Number(item.display_score), explanation: String(item.reason), article: item.article_json as ReportRecord['recommendations'][number]['article'], ...(typeof subscriberOnly === 'boolean' ? { subscriberOnly } : {}), rankingMetadata: rankingMetadata as ReportRecord['recommendations'][number]['rankingMetadata'] };
+    });
     return {
       id: String(row.id), publisherId: String(row.publisher_id), sessionId: String(row.session_id), companyUrl: String(row.company_url), companyDomain: String(row.company_domain), companyName: row.company_name ? String(row.company_name) : undefined, jobTitle: String(row.job_title),
       professionalProfile: row.professional_profile_json as ReportRecord['professionalProfile'], retrievalContext: row.retrieval_context_json as ReportRecord['retrievalContext'], overallMatchScore: Number(row.overall_match_score), generatedSummary: String(row.generated_summary), summarySource: row.summary_source === 'ai' || row.summary_source === 'deterministic' ? row.summary_source : undefined, summaryFallbackReason: typeof row.summary_fallback_reason === 'string' ? row.summary_fallback_reason : undefined,
