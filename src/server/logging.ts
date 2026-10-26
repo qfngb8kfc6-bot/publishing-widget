@@ -107,8 +107,8 @@ export interface ServerLogFields {
   aiRetryCount?: number;
   aiFallbackUsed?: boolean;
   aiErrorCode?: string;
-  /** Which part of a split report_content request: A (summary + first explanations) or B (remaining explanations). */
-  part?: 'A' | 'B';
+  /** Which call of a split report_content request: S (summary + theme lines) or E1, E2… (explanation batches). */
+  part?: string;
   /** Sanitized provider or validation error, at most 300 characters. */
   aiErrorMessage?: string;
   /** Article the rejected AI explanation was for (an ID, never explanation text). */

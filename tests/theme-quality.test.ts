@@ -68,7 +68,7 @@ describe('report themes', () => {
   });
 });
 
-describe('theme descriptions from content call A', () => {
+describe('theme descriptions from content call S', () => {
   const profile = buildProfessionalProfile(company('puma.com', 'Puma', 'sporting goods', []), 'Head of Sustainability');
   const request = { publisherId: 'sgi-europe', profile, themes: ['sustainability', 'emissions'], recommendations: [] };
 
@@ -83,7 +83,7 @@ describe('theme descriptions from content call A', () => {
     expect(validateReportContent({ summary: 'S.', themeDescriptions: [{ theme: 'emissions', description: 'Line.' }] }, { ...request, themes: undefined })!.themeDescriptions).toBeUndefined();
   });
 
-  it('asks part A for the report themes, stores the lines and falls back when AI fails', async () => {
+  it('asks part S for the report themes, stores the lines and falls back when AI fails', async () => {
     const AI_ENDPOINT = 'https://ai.example.test/v1/chat/completions';
     const items = Array.from({ length: 12 }, (_, index) => `<item><title>Brand sustainability report: carbon emissions cut ${index}</title><link>https://www.sgieurope.com/csr/e-${index}/1300${index}.article</link><guid>https://www.sgieurope.com/csr/e-${index}/1300${index}.article</guid><description>Sustainability report: emissions and recycled materials ${index}.</description><pubDate>Mon, 0${(index % 9) + 1} Sep 2026 10:00:00 GMT</pubDate></item>`).join('');
     const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>SGI</title>${items}</channel></rss>`;
@@ -111,7 +111,8 @@ describe('theme descriptions from content call A', () => {
     };
     const { report, contentPayloads } = await run(false);
     const themes = reportThemes(report);
-    expect(contentPayloads).toHaveLength(2);
+    // S (summary + theme lines) and two explanation batches of four; only S is given the themes.
+    expect(contentPayloads).toHaveLength(3);
     expect(contentPayloads.filter((payload) => payload.themes).map((payload) => payload.themes)).toEqual([themes]);
     expect(report.themeDescriptions).toEqual(Object.fromEntries(themes.map((theme) => [theme, `Brands cut ${theme} across 12 reports.`])));
     expect((await run(true)).report.themeDescriptions).toBeUndefined();

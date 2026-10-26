@@ -113,10 +113,12 @@ export interface AIProfessionalProfileEnhancement {
 
 export interface ReportContentRequest {
   publisherId: string;
-  /** The report's theme cards; the summary call (part A) writes one short description per theme. */
+  /** The report's theme cards; the summary call (part S) writes one short description per theme. */
   themes?: string[];
-  /** false for an explanations-only part of a split content request (no summary is written). Default true. */
+  /** false for an explanations-only batch of a split content request (no summary is written). Default true. */
   includeSummary?: boolean;
+  /** false for the summary-only call (part S): no explanations are written or expected. Default true. */
+  includeExplanations?: boolean;
   profile: ProfessionalProfile;
   recommendations: Array<{
     article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'> & Partial<Pick<NormalizedArticle, 'category' | 'summary'>>;

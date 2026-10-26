@@ -56,7 +56,7 @@ describe('AI explanation validation', () => {
 
   it('names the explanation field in the content prompt and accepts explanations that use it', async () => {
     let system = '';
-    const { instance, logs } = app((ids, prompt) => { system = prompt; return { summary: 'Nike is consolidating European suppliers.', explanations: ids.map((articleId) => ({ articleId, explanation: 'A sourcing benchmark for procurement.' })) }; });
+    const { instance, logs } = app((ids, prompt) => { if (prompt.includes('Do not write a summary')) system = prompt; return { summary: 'Nike is consolidating European suppliers.', explanations: ids.map((articleId) => ({ articleId, explanation: 'A sourcing benchmark for procurement.' })) }; });
     const report = await generate(instance);
     expect(system).toContain('{"articleId": "a1", "angle": "...", "explanation": "..."}');
     expect(system).toContain('you MUST return exactly one explanations entry for every supplied articleId');
@@ -65,10 +65,9 @@ describe('AI explanation validation', () => {
   });
 
   it('logs a reason code for each kind of rejected or missing explanation', async () => {
-    // Part B (explanations only) gets valid output so the malformed list is exercised once, by part A.
-    let partASize = 0;
-    const { instance, logs } = app((ids, system) => system.includes('Do not write a summary') ? { explanations: ids.map((articleId) => ({ articleId, explanation: 'Valid.' })) } : (partASize = ids.length, {
-      summary: 'Summary.',
+    // The first explanation batch gets the malformed list; later batches and the summary call get valid output.
+    let batchSize = 0;
+    const { instance, logs } = app((ids, system) => !system.includes('Do not write a summary') ? { summary: 'Summary.' } : batchSize ? { explanations: ids.map((articleId) => ({ articleId, explanation: 'Valid.' })) } : (batchSize = ids.length, {
       explanations: [
         { articleId: ids[0], explanation: 'Accepted.' },
         { articleId: ids[0], explanation: 'Duplicate.' },
@@ -81,7 +80,7 @@ describe('AI explanation validation', () => {
       ],
     }));
     const report = await generate(instance);
-    expect(partASize).toBe(7);
+    expect(batchSize).toBe(4);
     const reasons = logs.filter((entry) => entry.message === 'ai_explanation_rejected').map((entry) => [entry.fields.rejectReason, entry.fields.articleId]);
     expect(reasons).toEqual(expect.arrayContaining([
       ['duplicate_article_id', report.recommendations[0].articleId],
@@ -96,7 +95,7 @@ describe('AI explanation validation', () => {
     expect(textAsKey?.fields.presentFields).toBe('<other>,articleId');
     expect(JSON.stringify(logs)).not.toContain('Supplier consolidation');
     const notReturned = reasons.filter(([reason]) => reason === 'not_returned');
-    expect(notReturned).toHaveLength(partASize - 4);
+    expect(notReturned).toHaveLength(batchSize - 4);
   });
 
   it('logs when explanations are missing or not an array', async () => {

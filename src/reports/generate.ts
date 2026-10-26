@@ -51,8 +51,26 @@ function clockMs(): number { return typeof performance !== 'undefined' ? perform
 /** Any single generation span above this is logged individually so untimed stalls are visible in production. */
 const SLOW_SPAN_MS = 1_000;
 
-/** Recommendations explained by content call A (which also writes the summary); the rest go to call B. */
-const CONTENT_PART_A_SIZE = 7;
+/**
+ * Content calls are split so no single call writes more than ~350 output tokens: S writes the summary, cited IDs
+ * and theme lines; E1..En write explanations for at most four articles each. All run in parallel, so the report
+ * waits for the slowest call, not the sum. At most four E batches keep a report at five content calls.
+ */
+const EXPLANATION_BATCH_SIZE = 4;
+const MAX_EXPLANATION_BATCHES = 4;
+
+/** Contiguous, evenly sized batches of at most EXPLANATION_BATCH_SIZE (8 → 4+4, 7 → 4+3, 5 → 3+2). */
+export function explanationBatches<T>(items: T[]): T[][] {
+  const explained = items.slice(0, EXPLANATION_BATCH_SIZE * MAX_EXPLANATION_BATCHES);
+  const count = Math.ceil(explained.length / EXPLANATION_BATCH_SIZE);
+  const batches: T[][] = [];
+  for (let index = 0, start = 0; index < count; index += 1) {
+    const size = Math.ceil((explained.length - start) / (count - index));
+    batches.push(explained.slice(start, start + size));
+    start += size;
+  }
+  return batches;
+}
 
 /** "acme-sports.co.uk" → "Acme Sports": a display name when neither the resolver nor the site gave one. */
 function companyLabelFromDomain(domain: string): string {
@@ -414,7 +432,7 @@ export class ReportGenerationService {
    * Returns the not_returned article IDs when the response did carry explanation entries (the model skipped
    * them); a missing, malformed or empty list is a broken response, not a per-article skip, so it returns none.
    */
-  private logExplanationRejections(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, request: ReportContentRequest, accepted: Array<{ articleId: string }>, rejections: Array<ExplanationRejection | ExplanationShapeIssue>, part?: 'A' | 'B'): string[] {
+  private logExplanationRejections(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, request: ReportContentRequest, accepted: Array<{ articleId: string }>, rejections: Array<ExplanationRejection | ExplanationShapeIssue>, part?: string): string[] {
     const base = { requestId: input.requestId, publisherId: input.publisherId, part };
     const mentioned = new Set(accepted.map((item) => item.articleId));
     for (const rejection of rejections) {
@@ -996,7 +1014,7 @@ export class ReportGenerationService {
     let citedIds = new Set<string>();
     const contentWeakIds = new Set<string>();
     // Articles a successful content call skipped: treated as weak fits rather than shown with template text.
-    const notReturnedIds = new Map<string, 'A' | 'B'>();
+    const notReturnedIds = new Map<string, string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let themeDescriptions: Record<string, string> | undefined;
@@ -1005,17 +1023,17 @@ export class ReportGenerationService {
     // One query for the selected articles: leads for the AI content call and the subscriberOnly flag.
     const articleTexts = await this.articleLeads(input.publisherId, contentRanked.map((item) => item.article), AI_LEAD_CHARS, input.requestId);
     if (aiAvailable && ranked.length > 0) {
-      // Two batched calls in parallel keep each inside the AI time cap: A writes the summary and the first
-      // explanations, B (only when needed) the remaining explanations. Each falls back independently.
+      // Parallel calls, each under its own AI time cap and falling back independently: S (summary, cited IDs, theme
+      // lines) only affects the summary and theme cards; a failed E batch only affects its own articles.
       const explanationsEnabled = this.ai!.config.explanationsEnabled;
       // Lead excerpts ride only on the AI request objects, never on the recommendations that are persisted.
       const contentRecommendations = deterministicRecommendations.map((recommendation) => {
         const leadExcerpt = articleTexts.get(recommendation.article.id)?.lead;
         return leadExcerpt ? { ...recommendation, leadExcerpt } : recommendation;
       });
-      const parts: Array<{ part: 'A' | 'B'; request: ReportContentRequest }> = [
-        { part: 'A', request: { publisherId: input.publisherId, profile, themes, recommendations: contentRecommendations.slice(0, CONTENT_PART_A_SIZE) } },
-        ...(explanationsEnabled && contentRecommendations.length > CONTENT_PART_A_SIZE ? [{ part: 'B' as const, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: contentRecommendations.slice(CONTENT_PART_A_SIZE) } }] : []),
+      const parts: Array<{ part: string; request: ReportContentRequest }> = [
+        { part: 'S', request: { publisherId: input.publisherId, profile, themes, includeExplanations: false, recommendations: contentRecommendations } },
+        ...(explanationsEnabled ? explanationBatches(contentRecommendations).map((batch, index) => ({ part: `E${index + 1}`, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: batch } })) : []),
       ];
       const outcomes = await Promise.all(parts.map(async ({ part, request }) => {
         const rejections: Array<ExplanationRejection | ExplanationShapeIssue> = [];
@@ -1027,17 +1045,18 @@ export class ReportGenerationService {
         }, { publisherId: input.publisherId, requestId: input.requestId, part });
         return { part, request, rejections, ...outcome };
       }));
-      const partA = outcomes.find((outcome) => outcome.part === 'A')!;
-      if (partA.value?.summary) {
-        generatedSummary = partA.value.summary;
+      const summaryPart = outcomes.find((outcome) => outcome.part === 'S')!;
+      if (summaryPart.value?.summary) {
+        generatedSummary = summaryPart.value.summary;
         aiSummaryUsed = true;
-        citedIds = new Set(partA.value.citedArticleIds ?? []);
-        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(partA.value.summary, partA.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
-      } else summaryFallbackReason = partA.errorCode ?? 'summary_missing';
-      themeDescriptions = partA.value?.themeDescriptions;
-      for (const outcome of outcomes) for (const articleId of outcome.value?.weakArticleIds ?? []) contentWeakIds.add(articleId);
+        citedIds = new Set(summaryPart.value.citedArticleIds ?? []);
+        this.logQualityWarnings(input, 'summary', summaryQualityWarnings(summaryPart.value.summary, summaryPart.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }).map((code) => ({ code })));
+      } else summaryFallbackReason = summaryPart.errorCode ?? 'summary_missing';
+      themeDescriptions = summaryPart.value?.themeDescriptions;
+      const explanationOutcomes = outcomes.filter((outcome) => outcome.part !== 'S');
+      for (const outcome of explanationOutcomes) for (const articleId of outcome.value?.weakArticleIds ?? []) contentWeakIds.add(articleId);
       if (explanationsEnabled) {
-        const accepted = outcomes.flatMap((outcome) => {
+        const accepted = explanationOutcomes.flatMap((outcome) => {
           if (!outcome.value) return [];
           const skipped = this.logExplanationRejections(input, outcome.request, [...(outcome.value.explanations ?? []), ...(outcome.value.weakArticleIds ?? []).map((articleId) => ({ articleId }))], outcome.rejections, outcome.part);
           for (const articleId of skipped) notReturnedIds.set(articleId, outcome.part);

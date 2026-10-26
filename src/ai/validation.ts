@@ -187,6 +187,14 @@ export function validateReportContent(raw: unknown, request: ReportContentReques
   const value = record(raw);
   if (!value) return null;
   const candidateIds = new Set(request.recommendations.map((item) => item.article.id));
+  if (request.includeExplanations === false) {
+    // Summary-only call: any explanations the model added anyway are ignored, never applied or logged as missing.
+    const summary = optionalString(value.summary, 1200);
+    const themeDescriptions = validThemeDescriptions(value.themeDescriptions, request.themes ?? []);
+    if (!summary && !themeDescriptions) return null;
+    const citedArticleIds = summary && Array.isArray(value.citedArticleIds) ? [...new Set(value.citedArticleIds.filter((id): id is string => typeof id === 'string' && candidateIds.has(id)))] : [];
+    return { summary, explanations: [], ...(summary ? { citedArticleIds } : {}), ...(themeDescriptions ? { themeDescriptions } : {}) };
+  }
   // {"articleId", "fit": "weak"} is an honest "this does not help the reader", not a missing explanation.
   const isWeakFit = (item: unknown) => { const entry = record(item); return entry?.fit === 'weak' && typeof entry.articleId === 'string' && candidateIds.has(entry.articleId); };
   const weakArticleIds = Array.isArray(value.explanations) ? [...new Set(value.explanations.filter(isWeakFit).map((item) => record(item)!.articleId as string))] : [];

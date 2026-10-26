@@ -10,7 +10,7 @@ const items = Array.from({ length: 30 }, (_, index) => `<item><title>Nike expand
 const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>SGI</title>${items}</channel></rss>`;
 
 type Logged = { message: string; fields: Record<string, unknown> };
-type Call = { operation: string; ids: string[]; titles: string[]; part?: 'A' | 'B' };
+type Call = { operation: string; ids: string[]; titles: string[]; part?: 'S' | 'E' };
 
 function app(limit: number, respond: (call: Call) => unknown) {
   const logs: Logged[] = [];
@@ -25,7 +25,7 @@ function app(limit: number, respond: (call: Call) => unknown) {
       const body = JSON.parse(String(init?.body));
       const ref = JSON.parse(body.messages[1].content.replace('BEGIN_REFERENCE_JSON\n', '').replace('\nEND_REFERENCE_JSON', ''));
       const list = ref.payload.candidates ?? ref.payload.articles ?? [];
-      const call: Call = { operation: ref.operation, ids: list.map((item: { id: string }) => item.id), titles: list.map((item: { title: string }) => item.title), ...(ref.operation === 'report-content' ? { part: body.messages[0].content.includes('Do not write a summary') ? 'B' as const : 'A' as const } : {}) };
+      const call: Call = { operation: ref.operation, ids: list.map((item: { id: string }) => item.id), titles: list.map((item: { title: string }) => item.title), ...(ref.operation === 'report-content' ? { part: body.messages[0].content.includes('Do not write explanations') ? 'S' as const : 'E' as const } : {}) };
       calls.push(call);
       return Response.json({ choices: [{ message: { content: JSON.stringify(respond(call)) }, finish_reason: 'stop' }] });
     },
@@ -42,10 +42,10 @@ async function generate(target: ReturnType<typeof app>['instance']) {
   return (await target.reportStore.get(reportId, 'sgi-europe'))!;
 }
 
-/** Content reply: weak for the given positions, a grounded explanation for the rest. */
+/** Content reply: S writes the summary; an E batch is weak for the given positions and explains the rest. */
 function content(call: Call, weakPositions: number[]) {
+  if (call.part === 'S') return { summary: 'Nike is adding owned stores across Europe.', citedArticleIds: call.ids.slice(0, 2) };
   return {
-    ...(call.part === 'A' ? { summary: 'Nike is adding owned stores across Europe.', citedArticleIds: call.ids.slice(0, 2) } : {}),
     explanations: call.ids.map((articleId, index) => (weakPositions.includes(index) ? { articleId, fit: 'weak' } : { articleId, angle: 'channel shift', explanation: `Nike store expansion ${index}.` })),
   };
 }
@@ -72,9 +72,12 @@ describe('weak-fit validation', () => {
 
 describe('weak-fit removal', () => {
   it('drops rerank weak fits before the content call and content weak fits after it', async () => {
+    // The first three explanation entries across the E batches are marked weak.
+    let weakBudget = 3;
+    const takeWeak = (call: Call) => call.ids.flatMap((_, index) => (weakBudget > 0 ? (weakBudget -= 1, [index]) : []));
     const { instance, logs, calls } = app(15, (call) => (call.operation === 'semantic-reranking'
       ? { results: call.ids.map((id, index) => ({ id, score: 80 - index, ...(index === 1 || index === 4 ? { weak: true } : {}) })) }
-      : call.operation === 'report-content' ? content(call, call.part === 'A' ? [0, 2] : [1]) : {}));
+      : call.operation === 'report-content' ? content(call, call.part === 'E' ? takeWeak(call) : []) : {}));
     const report = await generate(instance);
     const rerank = calls.find((call) => call.operation === 'semantic-reranking')!;
     const rerankWeakTitles = [rerank.titles[1], rerank.titles[4]];
@@ -98,26 +101,32 @@ describe('weak-fit removal', () => {
   });
 
   it('treats articles a successful content call skipped as weak, logging not_returned_treated_as_weak', async () => {
-    // Part A explains only five of its seven articles and silently skips two (the production symptom).
-    const { instance, logs, calls } = app(15, (call) => {
+    // One explanation batch explains only two of its four articles and silently skips two (the production symptom).
+    let skippingCall: Call | undefined;
+    const { instance, logs } = app(15, (call) => {
       if (call.operation !== 'report-content') return {};
       const reply = content(call, []);
-      return call.part === 'A' ? { ...reply, explanations: reply.explanations.filter((_, index) => index !== 2 && index !== 5) } : reply;
+      if (call.part !== 'E' || skippingCall) return reply;
+      skippingCall = call;
+      return { ...reply, explanations: reply.explanations!.filter((_, index) => index !== 1 && index !== 2) };
     });
     const report = await generate(instance);
-    const partA = calls.find((call) => call.part === 'A')!;
-    const skippedTitles = [partA.titles[2], partA.titles[5]];
+    const skippedTitles = [skippingCall!.titles[1], skippingCall!.titles[2]];
     expect(report.recommendations.map((item) => item.article.title)).not.toEqual(expect.arrayContaining([skippedTitles[0]]));
     expect(report.recommendations.map((item) => item.article.title)).not.toEqual(expect.arrayContaining([skippedTitles[1]]));
     expect(report.recommendations.every((item) => item.rankingMetadata.explanationSource === 'ai')).toBe(true);
     const treated = logs.filter((entry) => entry.message === 'not_returned_treated_as_weak');
     expect(treated).toHaveLength(2);
-    expect(treated.every((entry) => entry.fields.part === 'A' && entry.fields.operation === 'removed')).toBe(true);
-    expect(logs.filter((entry) => entry.message === 'ai_explanation_rejected' && entry.fields.rejectReason === 'not_returned').every((entry) => entry.fields.part === 'A')).toBe(true);
+    const part = treated[0]?.fields.part;
+    expect(String(part)).toMatch(/^E\d$/);
+    expect(treated.every((entry) => entry.fields.part === part && entry.fields.operation === 'removed')).toBe(true);
+    const notReturned = logs.filter((entry) => entry.message === 'ai_explanation_rejected' && entry.fields.rejectReason === 'not_returned');
+    expect(notReturned).toHaveLength(2);
+    expect(notReturned.every((entry) => entry.fields.part === part)).toBe(true);
   });
 
   it('keeps a skipped article with lowerConfidence when removing it would leave fewer than three', async () => {
-    const { instance, logs } = app(3, (call) => (call.operation === 'report-content' ? { ...content(call, []), explanations: content(call, []).explanations.slice(1) } : {}));
+    const { instance, logs } = app(3, (call) => (call.operation === 'report-content' ? { ...content(call, []), explanations: (content(call, []).explanations ?? []).slice(1) } : {}));
     const report = await generate(instance);
     expect(report.recommendations.map((item) => [item.rank, Boolean(item.rankingMetadata.lowerConfidence)])).toEqual([[1, true], [2, false], [3, false]]);
     expect(logs.find((entry) => entry.message === 'not_returned_treated_as_weak')?.fields).toMatchObject({ operation: 'kept_lower_confidence' });
