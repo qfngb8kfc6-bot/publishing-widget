@@ -60,6 +60,7 @@ button:focus-visible,input:focus-visible { outline: 3px solid color-mix(in srgb,
 .briefing-pill { display:inline-flex; align-items:center; gap:10px; min-height:52px; padding:0 22px 0 8px; border:1px solid transparent; border-radius:999px; color:#24252b; background:linear-gradient(rgba(255,255,255,.97),rgba(250,251,252,.95)) padding-box,linear-gradient(105deg,rgba(103,81,217,.55),rgba(187,180,239,.3) 42%,rgba(7,156,167,.48)) border-box; box-shadow:0 0 0 1px rgba(255,255,255,.72),0 0 18px rgba(103,81,217,.1),var(--ss-shadow); backdrop-filter:blur(18px); font-size:15px; font-weight:700; line-height:1; white-space:nowrap; animation:briefing-enter 220ms cubic-bezier(.2,.8,.2,1) both; transition:transform var(--ss-duration) ease,box-shadow var(--ss-duration) ease; }
 .briefing-pill:hover { transform:translateY(-1px); box-shadow:0 0 0 1px rgba(255,255,255,.72),0 0 22px rgba(103,81,217,.14),0 12px 28px rgba(45,45,68,.16); }
 .briefing-pill-spark { display:grid; width:36px; height:36px; place-items:center; border-radius:50%; color:#fff; background:linear-gradient(105deg,#18156f,#28208b 42%,#079ca7); font-size:14px; }
+.pill-label-short { display:none; }
 
 @media (max-width:760px) and (min-width:640px) {
   .briefing-bar { grid-template-columns:auto minmax(135px,1fr) auto minmax(150px,1fr) auto minmax(165px,1fr); gap:6px; padding-left:11px; padding-right:7px; }
@@ -70,12 +71,20 @@ button:focus-visible,input:focus-visible { outline: 3px solid color-mix(in srgb,
 @media (max-width:639px) {
   /* Expanded on mobile: a bottom sheet across the full width, clear of the home indicator. */
   :host, :host([data-position="bottom-left"]) { right:0; left:0; bottom:0; transform:none; }
-  :host([data-state="minimised"]), :host([data-state="minimised"][data-position="bottom-left"]) { right:auto; left:50%; bottom:max(14px, calc(env(safe-area-inset-bottom) + 10px)); transform:translateX(-50%); }
+  /* Minimised on mobile: a compact chip in a corner (data-position, default bottom-right), clear of publisher CTAs. */
+  :host([data-state="minimised"]) { right:max(14px, env(safe-area-inset-right)); left:auto; bottom:max(14px, calc(env(safe-area-inset-bottom) + 10px)); transform:none; transition:opacity 200ms ease, translate 200ms ease, visibility 0s linear 0s; }
+  :host([data-state="minimised"][data-position="bottom-left"]) { right:auto; left:max(14px, env(safe-area-inset-left)); }
+  :host([data-state="minimised"][data-position="bottom-center"]) { right:auto; left:50%; transform:translateX(-50%); }
+  /* Stepped aside while the reader scrolls down; back on scroll up or once scrolling stops. */
+  :host([data-state="minimised"][data-scroll-hidden]) { opacity:0; visibility:hidden; translate:0 16px; pointer-events:none; transition:opacity 200ms ease, translate 200ms ease, visibility 0s linear 200ms; }
+  .briefing-pill { gap:8px; min-height:44px; padding:0 14px 0 6px; font-size:13px; }
+  .briefing-pill-spark { width:32px; height:32px; font-size:12px; }
+  .pill-label-full { display:none; }
+  .pill-label-short { display:inline; }
   .briefing-bar, .error-state { width:100%; border-radius:24px 24px 0 0; }
   .briefing-bar { grid-template-columns:1fr; gap:10px; min-height:0; padding:52px max(16px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
   .error-state { padding:52px 20px calc(20px + env(safe-area-inset-bottom)); }
   .close-control { top:10px; right:12px; width:40px; height:40px; border-radius:50%; color:#4b4c55; background:rgba(235,236,239,.9); font-size:20px; opacity:1; }
-  .briefing-pill { font-size:14px; }
   .icon-close { display:none; }
   .icon-minimise { display:block; }
   .briefing-field { min-height:50px; }
@@ -88,6 +97,7 @@ button:focus-visible,input:focus-visible { outline: 3px solid color-mix(in srgb,
 @keyframes ss-spin { to { transform:rotate(360deg); } }
 .ss-visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 @media (prefers-reduced-motion:reduce) {
+  :host { transition:none !important; }
   *,*::before,*::after { animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; }
 }
 `;

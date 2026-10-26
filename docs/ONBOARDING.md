@@ -55,7 +55,7 @@ The content check reports source files, detected source type and sanitized fixtu
 <script src="https://YOUR-WIDGET-HOST.example/widget.js" data-publisher="acme-media" data-position="bottom-right"></script>
 ```
 
-Supported attributes are `data-publisher`, `data-position="bottom-right|bottom-left"`, `data-generation-endpoint` and development-only `data-debug="true"`. The embed owns only company website + job role → hosted generation → persisted report navigation. The loader mounts one instance per page and the element exposes `destroy()` for host-controlled teardown. The widget may be mounted programmatically more than once when the host explicitly owns those instances.
+Supported attributes are `data-publisher`, `data-position="bottom-right|bottom-left|bottom-center"` (where the minimised chip sits on mobile; default bottom-right; desktop keeps its bottom-centre bar, or bottom-left), `data-generation-endpoint` and development-only `data-debug="true"`. The embed owns only company website + job role → hosted generation → persisted report navigation. The loader mounts one instance per page and the element exposes `destroy()` for host-controlled teardown. The widget may be mounted programmatically more than once when the host explicitly owns those instances.
 
 ## First-publisher checklist
 
