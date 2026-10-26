@@ -134,6 +134,9 @@ const GROUNDING_RULE = 'GROUNDING: use only facts stated in each article\'s titl
 const DATES_RULE = 'DATES: each article has published (its year) and older:true when it is more than 18 months old (today is reader.today). For an older article, anchor the fact in time ("In 2019, Decathlon ...") and present it as precedent or context, never as a current plan or current news.';
 const FIGURES_RULE = 'FIGURE PERIODS: an article\'s published year is when it was written, not the period its figures describe. A market report published in 2025 often gives 2024 data. State the period the article itself gives for each figure ("2024 sales rose 2.1%", "in the year to March"), and if it gives none, attribute the figure to the article without a year ("Acme reported sales up 4%"). Never relabel a figure with the published year. When two articles give figures for different periods, present them as different periods, newest last, and never let an older figure read as contradicting a newer one.';
 const SUMMARY_RULE = 'SUMMARY: 3-4 short sentences, at most 90 words in total, like an analyst\'s briefing note, addressed to the reader directly (you, your team), never in the third person ("for a retailer", "for a product manager"). Never make the reader\'s own company (reader.company) the subject of a sentence ("Nike is facing ...", "For Nike, ...", "Nike should ..."): say you or your team instead. The company may appear only as context ("your Nike stores", "brands competing with Nike"). Build the opening pattern primarily from articles that are not older; use older articles only as supporting context, dated. Open with the strongest pattern across the articles, backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. Keep each sentence short; cut adjectives before facts. citedArticleIds lists every article the summary draws on.';
+/** Summary rule when the publisher covers little that is directly about the reader's field. */
+const LIMITED_COVERAGE_SUMMARY_RULE = 'SUMMARY (LIMITED COVERAGE): this publication covers little that is directly about the reader\'s field, and these are only the closest stories. Write 2-3 short sentences, at most 60 words, addressed to the reader (you, your team). Say plainly in the first sentence that coverage of their field is limited. Then say what the closest stories show (which company did what). Never call them a pattern, trend or shift, never stitch unrelated stories into one narrative, and give no implication the articles do not directly support. citedArticleIds lists every article the summary draws on.';
+const LIMITED_COVERAGE_THEMES_RULE = 'THEMES (LIMITED COVERAGE): when themes are supplied, return themeDescriptions with one entry per theme, theme copied exactly as supplied. description is one plain line of at most 14 words saying which supplied article touches on that theme (for example "Garmin\'s connected fitness results touch on wearables"). Never claim the theme is a trend, important or strongly covered. Omit themeDescriptions when no themes are supplied.';
 const LEAD_RULE = 'LEAD: lead is subscriber-only reference text. Use it to pick specific facts; never copy more than five consecutive words from it and never reproduce or summarise it at length.';
 const EXPLANATION_RULE = `EXPLANATIONS: 1-2 sentences, 25-35 words, never more than 45. Start from one specific fact in that article (a company, number, place or action), then state what it means for the reader through one angle. angle is exactly one of: ${ALLOWED_ANGLES.join(', ')}. leadership move is only for a change of people (a hire, appointment or departure); a collaboration or product launch is never a leadership move (use partnership signal or product innovation). Vary the wording: no two explanations may start with the same three words.`;
 const BANNED_PHRASES_RULE = 'NEVER write "the most relevant articles", "focus on", "the profile", "this briefing", "This article", "This matters", "relevant because", "relevant to your work", "your role as", "maps to", "aligns with" or "directly relevant". Never restate the reader\'s job title and company, and never just list themes or topics.';
@@ -160,6 +163,14 @@ export const REPORT_SUMMARY_ONLY_INSTRUCTIONS = [
   'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "themeDescriptions": [{"theme": "...", "description": "..."}]}. Do not write explanations.',
   SUMMARY_FIT_RULE, GROUNDING_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
   THEMES_RULE,
+].join(' ');
+
+/** Part S when coverage of the reader's field is limited: a short, explicitly hedged summary and plain theme lines. */
+export const REPORT_SUMMARY_LIMITED_COVERAGE_INSTRUCTIONS = [
+  'You write a briefing note for one professional reader, using only the supplied articles.',
+  'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "themeDescriptions": [{"theme": "...", "description": "..."}]}. Do not write explanations.',
+  SUMMARY_FIT_RULE, GROUNDING_RULE, DATES_RULE, FIGURES_RULE, LIMITED_COVERAGE_SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
+  LIMITED_COVERAGE_THEMES_RULE,
 ].join(' ');
 
 /** Explanations only (parts E1..En of a split request): same rules, no summary. */
@@ -289,7 +300,7 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
         return { id: `a${index + 1}`, ...projection, relationship: recommendation.relationship, ...(lead ? { lead } : {}) };
       }),
       ...(input.includeSummary !== false && input.themes?.length ? { themes: input.themes } : {}),
-    }, input.includeSummary === false ? REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS : input.includeExplanations === false ? REPORT_SUMMARY_ONLY_INSTRUCTIONS : REPORT_CONTENT_INSTRUCTIONS);
+    }, input.includeSummary === false ? REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS : input.includeExplanations === false ? (input.coverage === 'limited' ? REPORT_SUMMARY_LIMITED_COVERAGE_INSTRUCTIONS : REPORT_SUMMARY_ONLY_INSTRUCTIONS) : REPORT_CONTENT_INSTRUCTIONS);
     return attachAIResponseDiagnostics(resolveContentAliases(raw, aliases), aiResponseDiagnostics(raw) ?? {});
   }
 

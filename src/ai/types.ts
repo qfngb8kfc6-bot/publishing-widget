@@ -123,6 +123,8 @@ export interface ReportContentRequest {
   includeSummary?: boolean;
   /** false for the summary-only call (part S): no explanations are written or expected. Default true. */
   includeExplanations?: boolean;
+  /** 'limited': the publisher covers little that is directly about the reader's field; the summary is hedged. */
+  coverage?: 'limited';
   profile: ProfessionalProfile;
   recommendations: Array<{
     article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'> & Partial<Pick<NormalizedArticle, 'category' | 'summary'>>;

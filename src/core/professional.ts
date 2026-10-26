@@ -99,6 +99,11 @@ export interface ProfessionalProfile {
   profileVersion: string;
   /** The report's theme cards, chosen once at generation from the subject vocabulary and the report's articles. */
   themes?: string[];
+  /**
+   * Set when the publisher's coverage for this reader is thin (best match below a strong fit, or fewer than three
+   * direct matches): the honest note shown at the top of the summary card.
+   */
+  coverage?: { limited: true; note: string };
   /** The job title exactly as entered, when the profile uses a corrected one ("Softere Enginer"). */
   submittedJobTitle?: string;
 }
