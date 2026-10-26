@@ -84,6 +84,8 @@ export interface ProfessionalProfileEnhancementInput {
 }
 
 export interface AIProfessionalProfileEnhancement {
+  /** The submitted job title with obvious spelling mistakes fixed; accepted only if acceptTitleCorrection agrees. */
+  correctedJobTitle?: string;
   company?: {
     industry?: string;
     description?: string;

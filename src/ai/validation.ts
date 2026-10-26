@@ -55,6 +55,7 @@ export function validateProfessionalProfileEnhancement(raw: unknown): AIProfessi
     themes: strings(personValue.themes, 16, 80),
   } : undefined;
   const result: AIProfessionalProfileEnhancement = {
+    correctedJobTitle: optionalString(value.correctedJobTitle, 160),
     company,
     person,
     professionalInterests: strings(value.professionalInterests, 24, 100),

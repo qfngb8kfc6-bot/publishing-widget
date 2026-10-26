@@ -1,4 +1,4 @@
-import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, roleSubjectLabel, roleSubjectTerms, subjectMatcher, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
+import { acceptTitleCorrection, displayCompanyName, calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, roleSubjectLabel, roleSubjectTerms, subjectMatcher, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { aiResponseDiagnostics, AIProviderError, type AIResponseDiagnostics } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
 import { mergeProfessionalProfileEnhancement, validateProfessionalProfileEnhancement, validateReportContent, validateSubjectVocabulary, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
@@ -499,7 +499,11 @@ export class ReportGenerationService {
     ]);
     const parts: EnrichmentParts = { main, vocabulary };
     const raw = { ...(main && typeof main === 'object' ? main : {}), ...(vocabulary ? { subjectVocabulary: vocabulary } : {}) };
-    const merged = main || vocabulary ? mergeProfessionalProfileEnhancement(profile, raw) : null;
+    // An obvious typo in the title ("Softere Enginer") is corrected by the main enrichment; the role is then
+    // analysed from the corrected title, and the submitted wording is kept on the profile.
+    const correctedTitle = acceptTitleCorrection(profile.jobTitle, validateProfessionalProfileEnhancement(main)?.correctedJobTitle);
+    const base = correctedTitle ? buildProfessionalProfile(company, correctedTitle, new Date(profile.generatedAt), profile.submittedJobTitle ?? profile.jobTitle) : profile;
+    const merged = main || vocabulary ? mergeProfessionalProfileEnhancement(base, raw) : null;
     return { profile: merged ?? undefined, complete: Boolean(main) && (!needsVocabulary || Boolean(vocabulary)), needsVocabulary, parts };
   }
 
@@ -939,7 +943,7 @@ export class ReportGenerationService {
     timing.companyContextMs = clockMs() - companyContextStartedAt;
     this.noteSpan(input, 'company-context', timing.companyContextMs);
     if (normalized.displayName) company = { ...company, name: normalized.displayName };
-    this.progress(input, { stage: 'company_resolved', details: { companyName: company.name || normalized.displayName || companyLabelFromDomain(normalized.domain), jobTitle } });
+    this.progress(input, { stage: 'company_resolved', details: { companyName: displayCompanyName(company.name || normalized.displayName) || companyLabelFromDomain(normalized.domain), jobTitle } });
     this.trackTimed(timing, 'company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
     let profile: ReturnType<typeof buildProfessionalProfile>;
     const profileStartedAt = clockMs();
@@ -965,7 +969,8 @@ export class ReportGenerationService {
     const professionalProfileMs = clockMs() - profileStartedAt;
     timing.profileMs = professionalProfileMs;
     this.markStage(input, 'profile_built');
-    this.progress(input, { stage: 'profile_built', details: { themes: loadingThemes(profile) } });
+    // The loading page shows the corrected title and display company name once the profile is built.
+    this.progress(input, { stage: 'profile_built', details: { themes: loadingThemes(profile), jobTitle: profile.jobTitle, ...(profile.companyName ? { companyName: profile.companyName } : {}) } });
     this.trackTimed(timing, 'role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
     this.trackTimed(timing, 'profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
     this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);

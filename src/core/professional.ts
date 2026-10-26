@@ -1,6 +1,6 @@
 import { normalizeToken, tokenize } from './intent';
 
-export const PROFESSIONAL_PROFILE_VERSION = '1.7';
+export const PROFESSIONAL_PROFILE_VERSION = '1.8';
 export const RANKING_VERSION = '1.5';
 
 export interface CompanyContext {
@@ -92,6 +92,8 @@ export interface ProfessionalProfile {
   profileVersion: string;
   /** The report's theme cards, chosen once at generation from the subject vocabulary and the report's articles. */
   themes?: string[];
+  /** The job title exactly as entered, when the profile uses a corrected one ("Softere Enginer"). */
+  submittedJobTitle?: string;
 }
 
 interface RoleRule {
@@ -285,7 +287,49 @@ function buildConcepts(role: RoleContext, company: CompanyContext, directInteres
   return [...roleConcepts, ...companyConceptsForProfile].filter((item, index, values) => !excluded.has(normalizeToken(item.concept)) && values.findIndex((candidate) => normalizeToken(candidate.concept) === normalizeToken(item.concept)) === index);
 }
 
-export function buildProfessionalProfile(company: CompanyContext, jobTitle: string, now = new Date()): ProfessionalProfile {
+/** "nike" → "Nike": an all-lowercase company name is shown title-cased; any other casing is the company's own. */
+export function displayCompanyName(name: string | undefined): string | undefined {
+  const trimmed = name?.replace(/\s+/g, ' ').trim();
+  if (!trimmed || /[A-Z]/.test(trimmed)) return trimmed || undefined;
+  return trimmed.replace(/(^|[\s-])([a-z])/g, (_match, separator: string, letter: string) => `${separator}${letter.toUpperCase()}`);
+}
+
+/** Optimal string alignment distance: insertions, deletions, substitutions and adjacent swaps ("Haed"). */
+function editDistance(left: string, right: string): number {
+  const rows = Array.from({ length: left.length + 1 }, (_, i) => Array.from({ length: right.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  for (let i = 1; i <= left.length; i += 1) {
+    for (let j = 1; j <= right.length; j += 1) {
+      rows[i][j] = Math.min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && left[i - 1] === right[j - 2] && left[i - 2] === right[j - 1]) rows[i][j] = Math.min(rows[i][j], rows[i - 2][j - 2] + 1);
+    }
+  }
+  return rows[left.length][right.length];
+}
+
+/**
+ * Accepts an AI spelling correction of a job title only when it is plainly the same title: the same number of
+ * words, each one equal or a near spelling of the original (same first letter, at most ~40% of its letters
+ * changed). "Softere Enginer" → "Software Engineer" passes; "Head of IT" → "Head of Information Technology" and
+ * "Dev" → "Developer Relations Lead" do not. When unsure, the user's wording stays.
+ */
+export function acceptTitleCorrection(submitted: string, corrected: string | undefined): string | undefined {
+  const original = normalizeJobTitle(submitted);
+  const candidate = corrected ? normalizeJobTitle(corrected) : '';
+  if (!candidate || candidate === original) return undefined;
+  const before = original.split(' ');
+  const after = candidate.split(' ');
+  if (before.length !== after.length) return undefined;
+  const sameWords = before.every((word, index) => {
+    const left = word.toLowerCase();
+    const right = after[index].toLowerCase();
+    if (left === right) return true;
+    if (!/^[a-z]+$/.test(left) || !/^[a-z]+$/.test(right) || left[0] !== right[0] || Math.min(left.length, right.length) < 4) return false;
+    return editDistance(left, right) <= Math.max(1, Math.floor(Math.max(left.length, right.length) * 0.4));
+  });
+  return sameWords ? candidate : undefined;
+}
+
+export function buildProfessionalProfile(company: CompanyContext, jobTitle: string, now = new Date(), submittedJobTitle?: string): ProfessionalProfile {
   const role = analyzeRole(jobTitle);
   const rule = ruleFor(role);
   const companySignals = companyConcepts(company, rule, role.rawTitle);
@@ -320,7 +364,7 @@ export function buildProfessionalProfile(company: CompanyContext, jobTitle: stri
   return {
     companyUrl: company.canonicalUrl,
     companyDomain: company.domain,
-    companyName: company.name,
+    companyName: displayCompanyName(company.name),
     jobTitle: role.rawTitle,
     company,
     role,
@@ -336,6 +380,7 @@ export function buildProfessionalProfile(company: CompanyContext, jobTitle: stri
     retrieval,
     generatedAt,
     profileVersion: PROFESSIONAL_PROFILE_VERSION,
+    ...(submittedJobTitle && normalizeJobTitle(submittedJobTitle) !== role.rawTitle ? { submittedJobTitle: normalizeJobTitle(submittedJobTitle) } : {}),
   };
 }
 
