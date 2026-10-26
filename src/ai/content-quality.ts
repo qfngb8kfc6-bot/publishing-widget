@@ -21,16 +21,18 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * The reader's company as the subject in the third person: a sentence opening "For Nike" / "At Nike", or
- * "Nike is/faces/should ..." anywhere. "your Nike stores", "Nike's rivals" and "brands competing with Nike" are
- * context, not subjects, and pass.
+ * The reader's company as the subject in the third person: a sentence opening "For Nike", "At Nike" or a
+ * possessive ("Nike's", "Adidas'", "Adidas's"), or "Nike is/faces/should ..." anywhere. "your Nike stores",
+ * "brands competing with Nike" and a possessive later in a sentence ("while Nike's rivals ...") are context.
  */
 function readerCompanyAsSubject(summary: string, companyName: string | undefined): boolean {
   const name = companyName?.trim();
   if (!name || name.length < 2) return false;
   const company = escapeRegExp(name);
   const verbs = '(?:is|are|was|has|have|faces?|facing|must|should|needs?|will|can|could|may|risks?|stands?)';
-  const opening = new RegExp(`^(?:for|at) ${company}\\b`, 'i');
+  // A sentence opening on the company's possessive ("Adidas' move into lifestyle ...", "Nike's stores ...") makes
+  // the company the subject too.
+  const opening = new RegExp(`^(?:(?:for|at) ${company}\\b|${company}(?:['’]s?)(?=\\s))`, 'i');
   const anywhere = new RegExp(`(?<!your |with |than |like |against |beyond |outside )\\b${company} ${verbs}\\b`, 'i');
   return summary.split(/(?<=[.!?;])\s+/).some((sentence) => opening.test(sentence.trim())) || anywhere.test(summary);
 }

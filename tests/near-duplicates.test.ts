@@ -68,3 +68,22 @@ describe('report generation', () => {
     expect(logs.find((entry) => entry.message === 'duplicates_collapsed')?.fields).toMatchObject({ duplicatesCollapsed: 1 });
   });
 });
+
+describe('production false positives', () => {
+  it('never collapses stories that name different partner companies', () => {
+    expect(isNearDuplicate('Nike and Syre partner on circular polyester', 'Nike and Loop Industries partner on circular polyester')).toBe(false);
+    expect(isNearDuplicate('Nike scales circular polyester with Syre', 'Nike scales circular polyester with Loop Industries')).toBe(false);
+    // Named in one title only: the counterparty must match when one is named.
+    expect(isNearDuplicate('Nike scales circular polyester with Syre', 'Nike scales circular polyester')).toBe(false);
+    // The same partner named in both is still one story.
+    expect(isNearDuplicate('Nike and Syre partner on circular polyester', 'Nike and Syre extend circular polyester partnership')).toBe(true);
+  });
+
+  it('collapses a market series only for the same market noun', () => {
+    expect(isNearDuplicate('Market Analysis: the global athletic footwear market', 'Market Analysis: athletic apparel market grows 7% in 2025')).toBe(false);
+    expect(isNearDuplicate('Market Analysis: the global athletic footwear market', 'Market Analysis: the global athletic apparel market')).toBe(false);
+    expect(isNearDuplicate('Market Analysis: the global athletic footwear market in 2024', 'Market Analysis: the global athletic footwear market in 2025')).toBe(true);
+    expect(isNearDuplicate('Market Analysis: the global sports apparel market', 'Market Analysis: athletic apparel market grows 7% in 2025')).toBe(false);
+    expect(isNearDuplicate('Market Analysis: the global athletic apparel market', 'Market Analysis: athletic apparel market grows 7% in 2025')).toBe(true);
+  });
+});
