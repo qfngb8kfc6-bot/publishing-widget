@@ -64,10 +64,11 @@ export { PostgresReportStore } from '../reports/store';
 export { PostgresPublisherStore } from '../publishers/store';
 export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 export { PostgresGenerationJobStore } from '../reports/generation-jobs';
-export { PostgresArticleTextStore } from '../reports/article-texts';
+export { MemoryArticleTextStore, PostgresArticleTextStore } from '../reports/article-texts';
 // Used by scripts/wvc-check.mjs (read-only diagnostics).
-export { inspectWvcLastPage, storyCodeFromUrl } from '../publishers/content/wvc';
-export { sgiEuropeEnrichmentSource, sgiEuropeFeedUrl } from '../publishers/sgi-europe/config';
+export { fetchWvcPage, inspectWvcLastPage, storyCodeFromUrl, wvcCatalogueFetchConfig, wvcCatalogueParseOptions } from '../publishers/content/wvc';
+export { sgiEuropeEnrichmentSource, sgiEuropeFeedUrl, sgiEuropeManifest } from '../publishers/sgi-europe/config';
+export { MemoryPublisherStore } from '../publishers/store';
 export { resolveCommitSha } from './health';
 export { explanationQualityWarnings, summaryQualityWarnings } from '../ai/content-quality';
 

@@ -20,4 +20,3 @@ export function story(code: number, overrides: Record<string, unknown> = {}) {
 export function page(stories: unknown[], totalPages = 1) {
   return { ErrorsFound: false, Messages: [], PagedData: { TotalNumberOfPages: totalPages, TotalNumberOfRecords: stories.length, Data: stories } };
 }
-
