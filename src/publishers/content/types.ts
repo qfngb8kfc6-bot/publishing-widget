@@ -3,7 +3,7 @@ import type { ContentSourceHealth, DebugSink, NormalizedArticle, PublisherConten
 export const DEFAULT_FEED_MAX_BYTES = 5_000_000;
 export const MAX_CONFIGURED_FEED_MAX_BYTES = 20 * 1024 * 1024;
 
-export type ContentSourceType = 'rest-json' | 'rss' | 'atom' | 'sitemap' | 'json' | 'csv' | 'static-demo';
+export type ContentSourceType = 'wvc' | 'rest-json' | 'rss' | 'atom' | 'sitemap' | 'json' | 'csv' | 'static-demo';
 
 export type FieldPath = string | string[];
 
@@ -117,7 +117,35 @@ export interface WvcEnrichmentSourceConfig {
   maxBytes?: number;
 }
 
-export type ContentSourceConfig = RestJsonSourceConfig | FeedSourceConfig | SitemapSourceConfig | StaticJsonSourceConfig | CsvSourceConfig | { type: 'static-demo'; sourceName?: string };
+/**
+ * The WVC story-list API as the catalogue itself (not only enrichment). A background sync stores each story's
+ * catalogue fields and cleaned text in Postgres (publisher_article_texts); the catalogue is built from those rows,
+ * so a refresh never downloads a feed. With `rss`, the feed is read too, but only for images and categories.
+ */
+export interface WvcCatalogueSourceConfig {
+  type: 'wvc';
+  /** Full story-list endpoint (GET only), e.g. https://www.sgieurope.com/abaapi/storylistpagination/json. */
+  baseUrl: string;
+  profileName: string;
+  /** At least 50 (the API rejects smaller pages). */
+  pageSize: number;
+  /** Must name an environment variable ending in _WVC_API_KEY, e.g. `env:ACME_WVC_API_KEY`. */
+  secretRef: string;
+  /** Hosts for the API and for story URLs. */
+  allowedHostnames: string[];
+  /** Hosts an image found in STORYTEXT may come from (default: allowedHostnames). */
+  imageHostnames?: string[];
+  /** API field names tried in order for the headline (default HEADLINE, TITLE, STORYTITLE, STORYHEADLINE, HEADING). */
+  titleFields?: string[];
+  /** WVC API + RSS: the feed supplies images and categories for stories it carries. */
+  rss?: { feedUrl: string; allowedHostnames?: string[]; timeoutMs?: number; maxBytes?: number };
+  timeoutMs?: number;
+  maxBytes?: number;
+  candidateLimit?: number;
+  sourceName?: string;
+}
+
+export type ContentSourceConfig = WvcCatalogueSourceConfig | RestJsonSourceConfig | FeedSourceConfig | SitemapSourceConfig | StaticJsonSourceConfig | CsvSourceConfig | { type: 'static-demo'; sourceName?: string };
 
 export interface ContentDiagnostic {
   status: 'accepted' | 'rejected' | 'duplicate' | 'warning';
@@ -173,6 +201,22 @@ export interface ContentAdapter<RawArticle = unknown> extends PublisherContentAd
   healthCheck(): Promise<ContentSourceHealth>;
 }
 
+/** One stored WVC story with its catalogue fields (no text). */
+export interface WvcCatalogueRecord {
+  storyCode: string;
+  title: string;
+  url: string;
+  publishedAt?: string;
+  lastModified?: string;
+  description?: string;
+  imageUrl?: string;
+  isPrivate: boolean;
+}
+
+export interface WvcCatalogueReader {
+  cataloguePage(publisherId: string, afterStoryCode: string, limit: number): Promise<WvcCatalogueRecord[]>;
+}
+
 export interface ContentFetchOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -185,6 +229,8 @@ export interface ContentFetchOptions {
 
 export interface ContentAdapterFactoryOptions {
   fetchImpl?: typeof fetch;
+  /** Reads the rows a WVC catalogue source builds its catalogue from (Postgres, migration 010). */
+  wvcCatalogueStore?: WvcCatalogueReader;
   resolveSecret?: (reference: string) => string | undefined;
   loadJson?: () => unknown | Promise<unknown>;
   loadCsv?: () => string | Promise<string>;

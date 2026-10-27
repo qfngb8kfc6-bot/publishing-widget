@@ -1,5 +1,5 @@
 import { ContentSourceError, fetchText, safeSourceFetch } from './security';
-import type { WvcEnrichmentSourceConfig } from './types';
+import type { WvcCatalogueSourceConfig, WvcEnrichmentSourceConfig } from './types';
 
 /** The API rejects smaller pages. */
 export const WVC_MIN_PAGE_SIZE = 50;
@@ -25,7 +25,32 @@ export interface WvcStory {
   lastModified?: string;
   /** Cleaned plain text, at most ARTICLE_TEXT_MAX_CHARS. */
   text: string;
+  /** Catalogue fields, parsed only for a WVC catalogue source (never for enrichment-only publishers). */
+  catalogue?: WvcCatalogueFields;
 }
+
+/** What a WVC catalogue row needs besides the text. A story without title or URL is stored but not listed. */
+export interface WvcCatalogueFields {
+  title?: string;
+  url?: string;
+  publishedAt?: string;
+  /** First one or two sentences of the cleaned STORYTEXT, at most ~300 characters. */
+  description?: string;
+  /** First <img> in STORYTEXT, only when it is an absolute https URL on an allowed image host. */
+  imageUrl?: string;
+}
+
+export interface WvcCatalogueParseOptions {
+  titleFields: readonly string[];
+  /** Hosts a story URL may use. */
+  articleHostnames: readonly string[];
+  imageHostnames: readonly string[];
+}
+
+export const DEFAULT_WVC_TITLE_FIELDS = ['HEADLINE', 'TITLE', 'STORYTITLE', 'STORYHEADLINE', 'HEADING'];
+export const WVC_DESCRIPTION_MAX_CHARS = 300;
+/** The secret behind a WVC source must be a dedicated WVC key, never another server secret (DATABASE_URL, AI keys). */
+export const WVC_SECRET_REF_PATTERN = /^env:[A-Z][A-Z0-9_]{0,60}_WVC_API_KEY$/;
 
 export interface WvcPage {
   page: number;
@@ -67,6 +92,76 @@ export function cleanStoryText(html: string, maxChars = ARTICLE_TEXT_MAX_CHARS):
   if (text.length <= maxChars) return text;
   const cut = text.lastIndexOf(' ', maxChars);
   return text.slice(0, cut > maxChars * 0.8 ? cut : maxChars);
+}
+
+/** The first one or two sentences, at most `maxChars` (a single long sentence is cut at a word with "…"). */
+export function firstSentences(text: string, maxChars = WVC_DESCRIPTION_MAX_CHARS): string | undefined {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!clean) return undefined;
+  const sentences = clean.match(/[^.!?]+(?:[.!?]+["'”’)]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) ?? [clean];
+  let result = sentences[0];
+  if (sentences[1] && `${result} ${sentences[1]}`.length <= maxChars) result = `${result} ${sentences[1]}`;
+  if (result.length <= maxChars) return result;
+  const cut = result.lastIndexOf(' ', maxChars - 1);
+  return `${result.slice(0, cut > maxChars * 0.6 ? cut : maxChars - 1).replace(/[\s,;:–—-]+$/, '')}…`;
+}
+
+function hostAllowed(hostname: string, allowed: readonly string[]): boolean {
+  const host = hostname.toLowerCase();
+  return allowed.some((entry) => host === entry.toLowerCase());
+}
+
+/** An absolute https URL on one of the allowed hosts, or undefined. */
+export function allowedHttpsUrl(value: string | undefined, allowed: readonly string[]): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(decodeEntities(value.trim()));
+    return url.protocol === 'https:' && !url.username && !url.password && hostAllowed(url.hostname, allowed) ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The first <img src> in the story HTML, only when it is an absolute https URL on an allowed host. */
+export function firstStoryImage(html: string, imageHostnames: readonly string[]): string | undefined {
+  const tag = html.match(/<img\b[^>]*>/i)?.[0];
+  const src = tag?.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+  return allowedHttpsUrl(src?.[1] ?? src?.[2], imageHostnames);
+}
+
+function catalogueFields(story: Record<string, unknown>, html: string, cleaned: string, options: WvcCatalogueParseOptions): WvcCatalogueFields {
+  const rawTitle = options.titleFields.map((name) => text(field(story, name.toUpperCase()))).find((value) => value?.trim());
+  const title = rawTitle ? decodeEntities(rawTitle.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 300) : undefined;
+  const url = allowedHttpsUrl(text(field(story, 'STORYURL')), options.articleHostnames);
+  const publishedAt = parseWvcDate(field(story, 'DATEPUBLISHED')) ?? parseWvcDate(field(story, 'LASTMODIFIED'));
+  const description = firstSentences(cleaned);
+  const imageUrl = firstStoryImage(html, options.imageHostnames);
+  return { ...(title ? { title } : {}), ...(url ? { url } : {}), ...(publishedAt ? { publishedAt } : {}), ...(description ? { description } : {}), ...(imageUrl ? { imageUrl } : {}) };
+}
+
+/** Parse options for a WVC catalogue source. */
+export function wvcCatalogueParseOptions(config: WvcCatalogueSourceConfig): WvcCatalogueParseOptions {
+  return { titleFields: config.titleFields?.length ? config.titleFields : DEFAULT_WVC_TITLE_FIELDS, articleHostnames: config.allowedHostnames, imageHostnames: config.imageHostnames?.length ? config.imageHostnames : config.allowedHostnames };
+}
+
+/** The fetch settings of a catalogue source: always with STORYTEXT (dataconstraint 4). */
+export function wvcCatalogueFetchConfig(config: WvcCatalogueSourceConfig): WvcEnrichmentSourceConfig {
+  return { type: 'wvc', baseUrl: config.baseUrl, profileName: config.profileName, pageSize: config.pageSize, dataConstraint: 4, secretRef: config.secretRef, allowedHostnames: config.allowedHostnames, ...(config.timeoutMs ? { timeoutMs: config.timeoutMs } : {}), ...(config.maxBytes ? { maxBytes: config.maxBytes } : {}) };
+}
+
+/** Configuration problems of a WVC catalogue source, as safe codes (empty when valid). */
+export function wvcCatalogueConfigErrors(config: Partial<WvcCatalogueSourceConfig>): string[] {
+  const errors: string[] = [];
+  let base: URL | undefined;
+  try { base = new URL(String(config.baseUrl)); } catch { errors.push('wvc_base_url_invalid'); }
+  const hosts = Array.isArray(config.allowedHostnames) ? config.allowedHostnames.filter((host) => typeof host === 'string' && host.trim()) : [];
+  if (!hosts.length) errors.push('wvc_allowed_hostnames_required');
+  if (base && (base.protocol !== 'https:' || !hostAllowed(base.hostname, hosts))) errors.push('wvc_base_url_not_allowed');
+  if (!config.profileName || typeof config.profileName !== 'string') errors.push('wvc_profile_name_required');
+  if (!Number.isFinite(config.pageSize) || Number(config.pageSize) < WVC_MIN_PAGE_SIZE) errors.push('wvc_page_size_too_small');
+  if (typeof config.secretRef !== 'string' || !WVC_SECRET_REF_PATTERN.test(config.secretRef)) errors.push('wvc_secret_ref_invalid');
+  if (config.rss && (typeof config.rss.feedUrl !== 'string' || !/^https:\/\//.test(config.rss.feedUrl))) errors.push('wvc_rss_feed_url_invalid');
+  return errors;
 }
 
 function field(record: Record<string, unknown>, name: string): unknown {
@@ -122,7 +217,7 @@ function count(value: unknown): number | undefined {
 }
 
 /** Parses one story-list response. Exported for tests; HTTP-200 error payloads become a WvcError code. */
-export function parseWvcPage(body: unknown, page: number): WvcPage {
+export function parseWvcPage(body: unknown, page: number, catalogue?: WvcCatalogueParseOptions): WvcPage {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new WvcError('wvc_invalid_response');
   const record = body as Record<string, unknown>;
   const errorsFound = field(record, 'ERRORSFOUND');
@@ -147,7 +242,7 @@ export function parseWvcPage(body: unknown, page: number): WvcPage {
     if (!cleaned) continue;
     const isPrivate = String(field(story, 'PRIVATE')).toLowerCase() === 'true';
     const lastModified = parseWvcDate(field(story, 'LASTMODIFIED')) ?? parseWvcDate(field(story, 'DATEPUBLISHED'));
-    stories.push({ storyCode, isPrivate, ...(lastModified ? { lastModified } : {}), text: cleaned });
+    stories.push({ storyCode, isPrivate, ...(lastModified ? { lastModified } : {}), text: cleaned, ...(catalogue ? { catalogue: catalogueFields(story, body, cleaned, catalogue) } : {}) });
   }
   return { page, totalPages, totalRecords: count(field(pagedRecord, 'TOTALNUMBEROFRECORDS')) ?? count(field(record, 'TOTALNUMBEROFRECORDS')) ?? 0, stories };
 }
@@ -166,6 +261,8 @@ export function wvcPageUrl(config: WvcEnrichmentSourceConfig, page: number): str
 export interface WvcFetchOptions {
   fetchImpl?: typeof fetch;
   resolveSecret: (reference: string) => string | undefined;
+  /** Parse catalogue fields too (WVC catalogue sources only). */
+  catalogue?: WvcCatalogueParseOptions;
 }
 
 /** Fetches one page (GET, key in the API_ACCESS_TOKEN header, allowlisted host, no redirects, size-capped). */
@@ -187,7 +284,7 @@ export async function fetchWvcPage(config: WvcEnrichmentSourceConfig, page: numb
   }
   let body: unknown;
   try { body = JSON.parse(raw); } catch { throw new WvcError('wvc_invalid_response'); }
-  return parseWvcPage(body, page);
+  return parseWvcPage(body, page, options.catalogue);
 }
 
 /** Diagnostics for one page: counts, dates and lengths only. Never text, URLs or the key. */

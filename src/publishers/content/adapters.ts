@@ -3,7 +3,8 @@ import { getField, normalizeMappedArticle, normalizeRecords, type CanonicalNorma
 import { csvRecords } from './csv';
 import { assertSafePublicUrl, ContentSourceError, fetchText, safeSourceFetch } from './security';
 import { xmlAttribute, xmlBlocks, xmlFirstText, xmlText } from './xml';
-import { DEFAULT_FEED_MAX_BYTES } from './types';
+import { DEFAULT_FEED_MAX_BYTES, type WvcCatalogueReader, type WvcCatalogueRecord, type WvcCatalogueSourceConfig } from './types';
+import { storyCodeFromUrl, wvcCatalogueConfigErrors } from './wvc';
 import type { ArticleFieldMappings, ContentAdapter, ContentAdapterFactoryOptions, ContentImportDiagnostics, ContentTimingDiagnostics, FeedSourceConfig, PaginationConfig, RestJsonSourceConfig, SitemapSourceConfig, StaticJsonSourceConfig, CsvSourceConfig, ContentSourceConfig } from './types';
 
 type FetchLike = typeof fetch;
@@ -620,7 +621,102 @@ export class CsvContentAdapter implements ContentAdapter<unknown> {
   async healthCheck(): Promise<ContentSourceHealth> { try { const records = await this.search(emptyIntent, { limit: 1 }); return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: true, recordsChecked: records.length, normalized: records.length, warnings: [] }; } catch (error) { return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: false, recordsChecked: 0, normalized: 0, warnings: [error instanceof Error ? error.message : 'Import check failed.'] }; } }
 }
 
+/** Rows read per catalogue query: ~2,000 rows of catalogue fields is well under 2 MB. */
+const WVC_CATALOGUE_PAGE_ROWS = 2_000;
+
+/**
+ * The WVC API as the catalogue. The background sync (text-enrichment.ts) stores each story's catalogue fields and
+ * text in Postgres; this adapter builds the catalogue from those rows, so a refresh downloads nothing. Records use
+ * the feed shape, so normalisation, the URL-section category rule and preselection are the same as for RSS. With
+ * `rss` set, the feed is read too and supplies images and categories for the stories it carries.
+ */
+export class WvcCatalogueContentAdapter implements ContentAdapter<unknown> {
+  readonly sourceType = 'wvc' as const;
+  readonly supportsPagination = false;
+  lastDiagnostics?: ContentImportDiagnostics;
+  sourceTimings?: ContentTimingDiagnostics;
+  private readonly feed?: FeedContentAdapter;
+
+  constructor(readonly publisherId: string, private readonly config: WvcCatalogueSourceConfig, private readonly store: WvcCatalogueReader | undefined, fetchImpl?: FetchLike) {
+    const errors = wvcCatalogueConfigErrors(config);
+    if (errors.length) throw new ContentSourceError('unsafe-url', `WVC source is not valid: ${errors.join(', ')}.`);
+    if (config.rss) this.feed = new FeedContentAdapter(publisherId, { type: 'rss', feedUrl: config.rss.feedUrl, allowedHostnames: config.rss.allowedHostnames ?? config.allowedHostnames, deriveCategoryFromUrl: true, timeoutMs: config.rss.timeoutMs, maxBytes: config.rss.maxBytes }, fetchImpl);
+  }
+
+  private options(): CanonicalNormalizationOptions {
+    return sourceOptions(this.publisherId, 'wvc', this.config.baseUrl, this.config.baseUrl, this.config.sourceName ?? 'WVC story-list API', undefined, this.config.baseUrl);
+  }
+
+  async loadCatalogue(options: { limit?: number; onDebug?: import('../../core').DebugSink } = {}): Promise<unknown[]> {
+    if (!this.store) throw new ContentSourceError('unavailable', 'WVC catalogue needs the Postgres article store.');
+    const startedAt = clockMs();
+    const rows: WvcCatalogueRecord[] = [];
+    let after = '';
+    for (;;) {
+      const page = await this.store.cataloguePage(this.publisherId, after, WVC_CATALOGUE_PAGE_ROWS);
+      rows.push(...page);
+      if (page.length < WVC_CATALOGUE_PAGE_ROWS) break;
+      after = page[page.length - 1].storyCode;
+    }
+    const sourceReadMs = clockMs() - startedAt;
+    if (!rows.length) throw new ContentSourceError('empty-source', 'WVC catalogue has no synced stories yet.');
+    // WVC API + RSS: the feed's image and categories win for the stories it carries; the API stays the catalogue.
+    const feedByCode = new Map<string, RawRecord>();
+    if (this.feed) {
+      try {
+        for (const record of await this.feed.loadCatalogue() as RawRecord[]) {
+          const code = storyCodeFromUrl(typeof record.url === 'string' ? record.url : undefined);
+          if (code && !feedByCode.has(code)) feedByCode.set(code, record);
+        }
+      } catch { /* the feed only adds images and categories; the API catalogue stands without it */ }
+    }
+    const records = await mapInSlices(rows, (row): RawRecord => {
+      const fromFeed = feedByCode.get(row.storyCode);
+      const section = feedSection(row.url);
+      const feedCategories = Array.isArray(fromFeed?.categories) ? (fromFeed!.categories as string[]) : undefined;
+      return {
+        id: row.url,
+        guid: row.url,
+        title: row.title,
+        url: row.url,
+        description: row.description,
+        publishedAt: row.publishedAt ?? row.lastModified,
+        categories: feedCategories?.length ? feedCategories : section ? [section] : [],
+        imageUrl: (typeof fromFeed?.image === 'string' ? fromFeed.image : undefined) ?? row.imageUrl,
+      };
+    });
+    this.sourceTimings = { sourceFetchMs: 0, sourceReadMs, sourceParseMs: 0, cataloguePreparationMs: clockMs() - startedAt };
+    options.onDebug?.({ type: 'candidate_retrieval', publisherId: this.publisherId, count: records.length });
+    return records;
+  }
+
+  async search(intent: Intent, options: SearchOptions): Promise<unknown[]> {
+    const records = await this.loadCatalogue({ onDebug: options.onDebug });
+    const result = normalizeRecords(records, this.options());
+    this.lastDiagnostics = result.diagnostics;
+    return options.archiveWide ? result.articles : archiveAwareFeedPreselection(result.articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100));
+  }
+
+  selectCatalogue(articles: NormalizedArticle[], intent: Intent, options: { limit: number; archiveWide?: boolean; preselectionFields?: FeedPreselectionFieldSource }): NormalizedArticle[] {
+    return options.archiveWide ? articles : archiveAwareFeedPreselection(articles, intent, boundedLimit(options, this.config.candidateLimit ?? 100), options.preselectionFields);
+  }
+
+  fetch(intent: Intent, options: SearchOptions): Promise<unknown[]> { return this.search(intent, options); }
+
+  normalizeArticle(raw: unknown): PublisherArticle | null { return normalizeCanonicalOrMapped(raw, this.options()); }
+
+  async healthCheck(): Promise<ContentSourceHealth> {
+    try {
+      const records = await this.loadCatalogue();
+      const normalized = records.filter((record) => this.normalizeArticle(record)).length;
+      return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: true, recordsChecked: records.length, normalized, warnings: [] };
+    } catch (error) {
+      return { publisherId: this.publisherId, sourceType: this.sourceType, reachable: false, recordsChecked: 0, normalized: 0, warnings: [error instanceof ContentSourceError ? error.code : 'unavailable'] };
+    }
+  }}
+
 export function createContentAdapter(publisherId: string, config: ContentSourceConfig, options: ContentAdapterFactoryOptions = {}): ContentAdapter<unknown> {
+  if (config.type === 'wvc') return new WvcCatalogueContentAdapter(publisherId, config, options.wvcCatalogueStore, options.fetchImpl);
   if (config.type === 'rest-json') return new RestJsonContentAdapter(publisherId, config, options.fetchImpl, options.resolveSecret);
   if (config.type === 'rss' || config.type === 'atom') return new FeedContentAdapter(publisherId, config, options.fetchImpl);
   if (config.type === 'sitemap') return new SitemapContentAdapter(publisherId, config, options.fetchImpl);

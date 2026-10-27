@@ -1,4 +1,4 @@
-import type { WvcStory } from '../publishers/content';
+import type { WvcCatalogueFields, WvcStory } from '../publishers/content';
 
 /**
  * Full-text enrichment store (migration 009). Body text lives only here, in Postgres: never in the catalogue,
@@ -34,6 +34,26 @@ export interface ArticleTextStore {
   saveSyncState(publisherId: string, state: TextSyncState): Promise<void>;
 }
 
+/** One listed story of a WVC catalogue source: catalogue fields only, never the text (migration 010). */
+export interface WvcCatalogueRow extends WvcCatalogueFields {
+  storyCode: string;
+  title: string;
+  url: string;
+  isPrivate: boolean;
+  lastModified?: string;
+}
+
+/**
+ * Catalogue rows for publishers whose content source is the WVC API. Kept apart from ArticleTextStore.upsert so
+ * enrichment-only publishers (SGI) write exactly what they wrote before migration 010.
+ */
+export interface WvcCatalogueStore {
+  /** Like upsert, and also writes each story's catalogue fields. Returns the story codes written. */
+  upsertCatalogue(publisherId: string, stories: readonly WvcStory[], fetchedAt: string): Promise<string[]>;
+  /** Keyset-paged rows with a title and URL, in story-code order. */
+  cataloguePage(publisherId: string, afterStoryCode: string, limit: number): Promise<WvcCatalogueRow[]>;
+}
+
 /** The first `maxChars` characters, cut back to a word boundary. */
 export function leadExcerpt(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
@@ -41,9 +61,15 @@ export function leadExcerpt(text: string, maxChars: number): string {
   return text.slice(0, cut > maxChars * 0.7 ? cut : maxChars);
 }
 
-interface StoredText { text: string; isPrivate: boolean; lastModified?: string }
+interface StoredText { text: string; isPrivate: boolean; lastModified?: string; catalogue?: WvcCatalogueFields }
 
-export class MemoryArticleTextStore implements ArticleTextStore {
+function catalogueRow(storyCode: string, stored: StoredText): WvcCatalogueRow | undefined {
+  const fields = stored.catalogue;
+  if (!fields?.title || !fields.url) return undefined;
+  return { storyCode, ...fields, title: fields.title, url: fields.url, isPrivate: stored.isPrivate, ...(stored.lastModified ? { lastModified: stored.lastModified } : {}) };
+}
+
+export class MemoryArticleTextStore implements ArticleTextStore, WvcCatalogueStore {
   private readonly texts = new Map<string, Map<string, StoredText>>();
   private readonly states = new Map<string, TextSyncState>();
 
@@ -63,6 +89,28 @@ export class MemoryArticleTextStore implements ArticleTextStore {
       written.push(story.storyCode);
     }
     return written;
+  }
+
+  async upsertCatalogue(publisherId: string, stories: readonly WvcStory[], fetchedAt: string): Promise<string[]> {
+    const written = await this.upsert(publisherId, stories, fetchedAt);
+    const texts = this.publisher(publisherId);
+    const byCode = new Map(stories.map((story) => [story.storyCode, story]));
+    for (const code of written) {
+      const stored = texts.get(code);
+      if (stored) stored.catalogue = byCode.get(code)?.catalogue;
+    }
+    return written;
+  }
+
+  async cataloguePage(publisherId: string, afterStoryCode: string, limit: number): Promise<WvcCatalogueRow[]> {
+    const texts = this.publisher(publisherId);
+    const rows: WvcCatalogueRow[] = [];
+    for (const code of [...texts.keys()].filter((key) => key > afterStoryCode).sort()) {
+      const row = catalogueRow(code, texts.get(code)!);
+      if (row) rows.push(row);
+      if (rows.length >= limit) break;
+    }
+    return rows;
   }
 
   async leads(publisherId: string, storyCodes: readonly string[], maxChars: number): Promise<ArticleLead[]> {
@@ -98,7 +146,7 @@ export interface ArticleTextSqlClient {
 
 const isoOrUndefined = (value: unknown): string | undefined => (value === null || value === undefined ? undefined : new Date(String(value)).toISOString());
 
-export class PostgresArticleTextStore implements ArticleTextStore {
+export class PostgresArticleTextStore implements ArticleTextStore, WvcCatalogueStore {
   constructor(private readonly client: ArticleTextSqlClient) {}
 
   async upsert(publisherId: string, stories: readonly WvcStory[], fetchedAt: string): Promise<string[]> {
@@ -115,6 +163,42 @@ export class PostgresArticleTextStore implements ArticleTextStore {
       [publisherId, unique.map((story) => story.storyCode), unique.map((story) => story.text), unique.map((story) => story.isPrivate), unique.map((story) => story.lastModified ?? null), fetchedAt],
     );
     return result.rows.map((row) => String(row.story_code));
+  }
+
+  /** Needs migration 010. Same write rule as upsert: only new stories or a newer LASTMODIFIED. */
+  async upsertCatalogue(publisherId: string, stories: readonly WvcStory[], fetchedAt: string): Promise<string[]> {
+    if (!stories.length) return [];
+    const unique = [...new Map(stories.map((story) => [story.storyCode, story])).values()];
+    const field = (key: keyof WvcCatalogueFields) => unique.map((story) => story.catalogue?.[key] ?? null);
+    const result = await this.client.query<{ story_code: string }>(
+      `INSERT INTO publisher_article_texts (publisher_id, story_code, plain_text, text_length, is_private, last_modified, fetched_at, title, url, published_at, description, image_url)
+       SELECT $1, story_code, plain_text, char_length(plain_text), is_private, last_modified, $6::timestamptz, title, url, published_at, description, image_url
+       FROM unnest($2::text[], $3::text[], $4::boolean[], $5::timestamptz[], $7::text[], $8::text[], $9::timestamptz[], $10::text[], $11::text[]) AS input(story_code, plain_text, is_private, last_modified, title, url, published_at, description, image_url)
+       ON CONFLICT (publisher_id, story_code) DO UPDATE SET plain_text = EXCLUDED.plain_text, text_length = EXCLUDED.text_length, is_private = EXCLUDED.is_private, last_modified = EXCLUDED.last_modified, fetched_at = EXCLUDED.fetched_at, title = EXCLUDED.title, url = EXCLUDED.url, published_at = EXCLUDED.published_at, description = EXCLUDED.description, image_url = EXCLUDED.image_url
+       WHERE EXCLUDED.last_modified IS NULL OR publisher_article_texts.last_modified IS NULL OR EXCLUDED.last_modified > publisher_article_texts.last_modified
+       RETURNING story_code`,
+      [publisherId, unique.map((story) => story.storyCode), unique.map((story) => story.text), unique.map((story) => story.isPrivate), unique.map((story) => story.lastModified ?? null), fetchedAt, field('title'), field('url'), field('publishedAt'), field('description'), field('imageUrl')],
+    );
+    return result.rows.map((row) => String(row.story_code));
+  }
+
+  /** Catalogue fields only: the text column is never read here. */
+  async cataloguePage(publisherId: string, afterStoryCode: string, limit: number): Promise<WvcCatalogueRow[]> {
+    const result = await this.client.query<Record<string, unknown>>(
+      `SELECT story_code, title, url, published_at, description, image_url, is_private, last_modified FROM publisher_article_texts
+       WHERE publisher_id = $1 AND story_code > $2 AND title IS NOT NULL AND url IS NOT NULL ORDER BY story_code LIMIT $3`,
+      [publisherId, afterStoryCode, limit],
+    );
+    return result.rows.map((row) => ({
+      storyCode: String(row.story_code),
+      title: String(row.title),
+      url: String(row.url),
+      isPrivate: row.is_private === true,
+      ...(row.published_at ? { publishedAt: isoOrUndefined(row.published_at) } : {}),
+      ...(row.last_modified ? { lastModified: isoOrUndefined(row.last_modified) } : {}),
+      ...(row.description ? { description: String(row.description) } : {}),
+      ...(row.image_url ? { imageUrl: String(row.image_url) } : {}),
+    }));
   }
 
   async leads(publisherId: string, storyCodes: readonly string[], maxChars: number): Promise<ArticleLead[]> {
