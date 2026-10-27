@@ -1,4 +1,4 @@
-import { calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, roleSubjectLabel, roleSubjectTerms, subjectMatcher, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
+import { acceptTitleCorrection, displayCompanyName, calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, roleSubjectLabel, roleSubjectTerms, subjectMatcher, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, RELEVANCE_THRESHOLDS, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { aiResponseDiagnostics, AIProviderError, type AIResponseDiagnostics } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
 import { mergeProfessionalProfileEnhancement, validateProfessionalProfileEnhancement, validateReportContent, validateSubjectVocabulary, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
@@ -21,6 +21,7 @@ import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
 import { MAX_GENERATION_THEMES, type GenerationProgress } from './generation-jobs';
 import { storyCodeFromUrl } from '../publishers/content/wvc';
+import { publisherDomain } from '../publishers/manifest';
 import type { ArticleLead } from './article-texts';
 
 /**
@@ -200,20 +201,42 @@ export function factualLine(article: Pick<NormalizedArticle, 'title' | 'descript
   return `${clipped.slice(0, Math.max(clipped.lastIndexOf(' '), 160)).trim()}…`;
 }
 
-function explanation(profile: ReturnType<typeof buildProfessionalProfile>, relevance: Pick<RelevanceResult, 'relevanceSignals' | 'relevanceType' | 'directMatches' | 'adjacentMatches'>): string {
-  const matches = relevance.relevanceType === 'direct' ? relevance.directMatches : relevance.adjacentMatches;
-  if (matches?.length) {
-    const lead = relevance.relevanceType === 'direct' ? 'Directly matches' : 'Connects with adjacent themes';
-    return `${lead} ${matches.slice(0, 2).join(' and ')}, relevant to your work as ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}.`;
-  }
-  const relevanceSignals = relevance.relevanceSignals;
-  const signal = relevanceSignals[0] ?? 'comes from the publisher’s coverage';
-  return `${signal.charAt(0).toUpperCase()}${signal.slice(1)}, with a focus on developments relevant to ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}.`;
-}
-
 function reportSummary(profile: ReturnType<typeof buildProfessionalProfile>, selectedCount: number): string {
   const focus = profile.directInterests.slice(0, 4).join(', ') || profile.professionalInterests.slice(0, 4).join(', ');
   return `Based on your role in ${profile.role.rawTitle} at ${profile.companyName ?? profile.companyDomain}, this briefing focuses on ${focus} and includes ${selectedCount} selected ${selectedCount === 1 ? 'story' : 'stories'} with a clear connection to your work.`;
+}
+
+/** A main-report match at or above this display score is a strong fit (featured stories start at 55). */
+export const STRONG_FIT_SCORE = 45;
+const MIN_DIRECT_FOR_FULL_COVERAGE = 3;
+
+/** True when the best match is below a strong fit or fewer than three direct matches exist. */
+function hasLimitedCoverage(items: ReadonlyArray<Pick<RankedCandidate, 'finalScore' | 'relevanceType'>>): boolean {
+  if (!items.length) return true;
+  const best = Math.max(...items.map((item) => displayRelevanceScore(item.finalScore)));
+  return best < STRONG_FIT_SCORE || items.filter((item) => item.relevanceType === 'direct').length < MIN_DIRECT_FOR_FULL_COVERAGE;
+}
+
+/** The reader's field in plain words: "software engineering", "sustainability", or the role title. */
+function readerField(profile: ReturnType<typeof buildProfessionalProfile>): string {
+  return roleSubjectLabel(profile.role) ?? profile.role.subjectLabel ?? (profile.role.roleSource === 'dedicated' ? profile.role.function.toLowerCase() : profile.jobTitle);
+}
+
+/** "SGI Europe's coverage for software engineering is limited. These are the closest stories on wearables and AI." */
+export function limitedCoverageNote(publisherName: string, profile: ReturnType<typeof buildProfessionalProfile>, themes: readonly string[]): string {
+  const closest = themes.slice(0, 2);
+  return `${publisherName}’s coverage for ${readerField(profile)} is limited. These are the closest stories${closest.length ? ` on ${closest.join(' and ')}` : ''}.`;
+}
+
+/** Lowest main-report display score, between the relevance threshold and a strong fit. */
+export function themeResultFloor(report: Pick<ReportRecord, 'recommendations'>): number {
+  const scores = report.recommendations.map((recommendation) => recommendation.displayScore).filter((score) => Number.isFinite(score));
+  const weakest = scores.length ? Math.min(...scores) : RELEVANCE_THRESHOLDS.candidate;
+  return Math.min(STRONG_FIT_SCORE, Math.max(RELEVANCE_THRESHOLDS.candidate, weakest));
+}
+
+function limitedCoverageSummary(profile: ReturnType<typeof buildProfessionalProfile>): string {
+  return `These are the closest stories in the current coverage; read them as context rather than a direct briefing on ${readerField(profile)}.`;
 }
 
 type GenerationFailure = Error & { generationStage?: string };
@@ -482,24 +505,30 @@ export class ReportGenerationService {
    */
   private async runEnrichment(publisherId: string, normalized: ResolvedCompanyInput, company: Awaited<ReturnType<CompanyContextProvider['getContext']>>, profile: ReturnType<typeof buildProfessionalProfile>, requestId?: string, reuse: EnrichmentParts = {}, retryCount = 0): Promise<EnrichmentResult> {
     const provider = this.ai!.provider as ProfessionalAIProvider;
-    const titleTopics = roleSubjectTerms(profile.role) ? profile.role.titleTopics ?? [] : [];
+    // Out-of-domain roles (software, IT, data, finance, HR) need vocabulary for this publisher's industry too.
+    const titleTopics = roleSubjectTerms(profile.role) ? profile.role.titleTopics ?? [] : profile.role.outsideDomain && profile.role.subjectLabel ? [profile.role.subjectLabel] : [];
     const needsVocabulary = titleTopics.length > 0 && typeof provider.generateSubjectVocabulary === 'function';
+    const domain = publisherDomain(this.registry.get(publisherId)?.manifest);
     const context = { publisherId, requestId, aiRetryCount: retryCount };
     const [main, vocabulary] = await Promise.all([
       reuse.main ? Promise.resolve(reuse.main) : this.runAI('professional_profile_enrichment', async (observe) => {
-        const raw = observe(await provider.enhanceProfessionalProfile({ publisherId, submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile }));
+        const raw = observe(await provider.enhanceProfessionalProfile({ publisherId, ...(domain ? { publisherDomain: domain } : {}), submittedCompanyUrl: normalized.canonicalUrl, submittedJobTitle: profile.jobTitle, company, role: profile.role, profile }));
         if (!validateProfessionalProfileEnhancement(raw)) throw new Error('invalid_profile_enrichment');
         return raw;
       }, context).then((outcome) => outcome.value),
       !needsVocabulary || reuse.vocabulary ? Promise.resolve(reuse.vocabulary) : this.runAI('subject_vocabulary', async (observe) => {
-        const terms = validateSubjectVocabulary(observe(await provider.generateSubjectVocabulary!({ publisherId, jobTitle: profile.jobTitle, titleTopics, industry: company.industry, companyName: profile.companyName ?? company.name })));
+        const terms = validateSubjectVocabulary(observe(await provider.generateSubjectVocabulary!({ publisherId, ...(domain ? { publisherDomain: domain } : {}), jobTitle: profile.jobTitle, titleTopics, industry: company.industry, companyName: profile.companyName ?? company.name })));
         if (!terms.length) throw new Error('invalid_subject_vocabulary');
         return terms;
       }, context).then((outcome) => outcome.value),
     ]);
     const parts: EnrichmentParts = { main, vocabulary };
     const raw = { ...(main && typeof main === 'object' ? main : {}), ...(vocabulary ? { subjectVocabulary: vocabulary } : {}) };
-    const merged = main || vocabulary ? mergeProfessionalProfileEnhancement(profile, raw) : null;
+    // An obvious typo in the title ("Softere Enginer") is corrected by the main enrichment; the role is then
+    // analysed from the corrected title, and the submitted wording is kept on the profile.
+    const correctedTitle = acceptTitleCorrection(profile.jobTitle, validateProfessionalProfileEnhancement(main)?.correctedJobTitle);
+    const base = correctedTitle ? buildProfessionalProfile(company, correctedTitle, new Date(profile.generatedAt), profile.submittedJobTitle ?? profile.jobTitle) : profile;
+    const merged = main || vocabulary ? mergeProfessionalProfileEnhancement(base, raw) : null;
     return { profile: merged ?? undefined, complete: Boolean(main) && (!needsVocabulary || Boolean(vocabulary)), needsVocabulary, parts };
   }
 
@@ -832,7 +861,7 @@ export class ReportGenerationService {
     return byId;
   }
 
-  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set(), lowerConfidenceIds: ReadonlySet<string> = new Set(), fallbackExplanation: (item: RankedCandidate) => string = (item) => explanation(profile, item)): ReportRecommendation[] {
+  private recommendationsFromRanked(profile: ReturnType<typeof buildProfessionalProfile>, ranked: RankedCandidate[], explanationById = new Map<string, { explanation: string; angle?: string }>(), citedIds: ReadonlySet<string> = new Set(), lowerConfidenceIds: ReadonlySet<string> = new Set(), fallbackExplanation: (item: RankedCandidate) => string = (item) => factualLine(item.article)): ReportRecommendation[] {
     return ranked.map((item, index) => ({
       articleId: item.article.id,
       rank: index + 1,
@@ -874,7 +903,10 @@ export class ReportGenerationService {
     const profile = profileForTheme(report.professionalProfile, theme);
     const excluded = new Set([...report.recommendations.flatMap((recommendation) => articleIdentityKeys(recommendation.article)), ...shownArticleIds.slice(0, MAX_SHOWN_THEME_ARTICLE_IDS).map((id) => `id:${id}`)]);
     const ranking = await this.rankProfile(definition, report.publisherId, profile, excluded, requestId, true);
-    const { ranked } = ranking;
+    // Theme results meet the same bar as the report's own stories: never weaker than its weakest recommendation
+    // (bounded to the relevance threshold and a strong fit), so fewer results beat a list of 24-28% matches.
+    const floor = themeResultFloor(report);
+    const ranked = ranking.ranked.filter((item) => displayRelevanceScore(item.finalScore) >= floor);
     const failureStage = ranked.length > 0 ? 'complete' : ranking.aiFilteredCount > 0 && ranking.deterministicEligible > 0 ? 'ai_filtered_all' : ranking.deterministicEligible > 0 ? 'final_filter' : 'deterministic_threshold';
     const finalFormattingStartedAt = clockMs();
     const privacy = await this.articleLeads(report.publisherId, ranked.map((item) => item.article), 1, requestId);
@@ -939,7 +971,7 @@ export class ReportGenerationService {
     timing.companyContextMs = clockMs() - companyContextStartedAt;
     this.noteSpan(input, 'company-context', timing.companyContextMs);
     if (normalized.displayName) company = { ...company, name: normalized.displayName };
-    this.progress(input, { stage: 'company_resolved', details: { companyName: company.name || normalized.displayName || companyLabelFromDomain(normalized.domain), jobTitle } });
+    this.progress(input, { stage: 'company_resolved', details: { companyName: displayCompanyName(company.name || normalized.displayName) || companyLabelFromDomain(normalized.domain), jobTitle } });
     this.trackTimed(timing, 'company_analysis_completed', input.publisherId, activeSession, { industry: company.industry ?? 'unknown' });
     let profile: ReturnType<typeof buildProfessionalProfile>;
     const profileStartedAt = clockMs();
@@ -965,7 +997,8 @@ export class ReportGenerationService {
     const professionalProfileMs = clockMs() - profileStartedAt;
     timing.profileMs = professionalProfileMs;
     this.markStage(input, 'profile_built');
-    this.progress(input, { stage: 'profile_built', details: { themes: loadingThemes(profile) } });
+    // The loading page shows the corrected title and display company name once the profile is built.
+    this.progress(input, { stage: 'profile_built', details: { themes: loadingThemes(profile), jobTitle: profile.jobTitle, ...(profile.companyName ? { companyName: profile.companyName } : {}) } });
     this.trackTimed(timing, 'role_analysis_completed', input.publisherId, activeSession, { roleFunction: profile.role.function });
     this.trackTimed(timing, 'profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
     this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);
@@ -1012,7 +1045,7 @@ export class ReportGenerationService {
     const contentRanked = afterRerank.kept;
     const deterministicRecommendations = contentRanked.map((item) => ({
       article: item.article,
-      deterministicExplanation: explanation(profile, item),
+      deterministicExplanation: factualLine(item.article),
       relevanceSignals: item.relevanceSignals,
       semanticSignals: item.semanticSignals,
       matchedConcepts: [...item.directMatches, ...item.adjacentMatches],
@@ -1020,12 +1053,17 @@ export class ReportGenerationService {
       relationship: articleRelationship(item.article, profile),
     }));
     const themes = selectReportThemes(profile, contentRanked.map((item) => item.article));
+    // Thin coverage for this reader (best match below a strong fit, or fewer than three direct matches): the summary
+    // call is told so and writes a short, hedged note instead of building a pattern out of weak matches.
+    const coverageLimited = hasLimitedCoverage(contentRanked);
     let generatedSummary = reportSummary(profile, ranked.length);
     const explanationById = new Map<string, { explanation: string; angle?: string }>();
     let citedIds = new Set<string>();
     const contentWeakIds = new Set<string>();
     // Articles a successful content call skipped: treated as weak fits rather than shown with template text.
     const notReturnedIds = new Map<string, string>();
+    // Articles whose explanation batch failed or timed out, by part (E1...).
+    const failedBatchIds = new Map<string, string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let themeDescriptions: Record<string, string> | undefined;
@@ -1043,7 +1081,7 @@ export class ReportGenerationService {
         return leadExcerpt ? { ...recommendation, leadExcerpt } : recommendation;
       });
       const parts: Array<{ part: string; request: ReportContentRequest }> = [
-        { part: 'S', request: { publisherId: input.publisherId, profile, themes, includeExplanations: false, recommendations: contentRecommendations } },
+        { part: 'S', request: { publisherId: input.publisherId, profile, themes, includeExplanations: false, ...(coverageLimited ? { coverage: 'limited' as const } : {}), recommendations: contentRecommendations } },
         ...(explanationsEnabled ? explanationBatches(contentRecommendations).map((batch, index) => ({ part: `E${index + 1}`, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: batch } })) : []),
       ];
       // What each article's figures can be dated from (title, description, lead): only for the year check, never logged.
@@ -1071,6 +1109,7 @@ export class ReportGenerationService {
       } else summaryFallbackReason = summaryPart.errorCode ?? 'summary_missing';
       themeDescriptions = summaryPart.value?.themeDescriptions;
       const explanationOutcomes = outcomes.filter((outcome) => outcome.part !== 'S');
+      for (const outcome of explanationOutcomes) if (!outcome.value) for (const recommendation of outcome.request.recommendations) failedBatchIds.set(recommendation.article.id, outcome.part);
       for (const outcome of explanationOutcomes) for (const articleId of outcome.value?.weakArticleIds ?? []) contentWeakIds.add(articleId);
       if (explanationsEnabled) {
         const accepted = explanationOutcomes.flatMap((outcome) => {
@@ -1098,7 +1137,9 @@ export class ReportGenerationService {
       for (const [articleId, part] of notReturnedIds) this.logger?.info('not_returned_treated_as_weak', { requestId: input.requestId, publisherId: input.publisherId, part, articleId: safeLogText(articleId, 200), operation: removedIds.has(articleId) ? 'removed' : 'kept_lower_confidence' });
     }
     const weakFit = { kept: afterContent.kept, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
-    if (!aiSummaryUsed) generatedSummary = reportSummary(profile, weakFit.kept.length);
+    const finalCoverageLimited = coverageLimited || hasLimitedCoverage(weakFit.kept);
+    const coverageNote = finalCoverageLimited ? limitedCoverageNote(definition.manifest?.name ?? definition.config.publisherName, profile, themes) : undefined;
+    if (!aiSummaryUsed) generatedSummary = finalCoverageLimited ? limitedCoverageSummary(profile) : reportSummary(profile, weakFit.kept.length);
     if (rerankWeakIds.size || contentWeakIds.size || notReturnedIds.size) this.logger?.info('weak_fit_removed', { requestId: input.requestId, publisherId: input.publisherId, weakFlagged: new Set([...rerankWeakIds, ...contentWeakIds, ...notReturnedIds.keys()]).size, weakFromRerank: rerankWeakIds.size, weakFromContent: contentWeakIds.size, weakRemoved: afterRerank.removed.length + afterContent.removed.length, weakKeptLowerConfidence: weakFit.lowerConfidenceIds.size, finalRecommendationCount: weakFit.kept.length });
     timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
@@ -1120,6 +1161,15 @@ export class ReportGenerationService {
     timing.briefingSummaryMs = aiExplanationMs;
     this.markStage(input, 'ai_complete');
     this.progress(input, { stage: 'ai_complete' });
+    // A shown story without an AI explanation gets its own first sentence; say why, per article (IDs only).
+    if (aiAvailable && this.ai!.config.explanationsEnabled) {
+      for (const item of weakFit.kept) {
+        const articleId = item.article.id;
+        if (explanationById.has(articleId)) continue;
+        const reason = contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
+        this.logger?.info('explanation_fallback', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: notReturnedIds.get(articleId) ?? failedBatchIds.get(articleId), rejectReason: reason });
+      }
+    }
     const rawRecommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds), articleTexts).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
@@ -1135,7 +1185,7 @@ export class ReportGenerationService {
     const ownCompanyCount = recommendations.filter((recommendation) => articleRelationship(recommendation.article, profile) === 'own_company').length;
     this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ranking.ownCompanyDeferred });
     const report: ReportRecord = {
-      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: { ...profile, themes }, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: { ...profile, themes, ...(coverageNote ? { coverage: { limited: true as const, note: coverageNote } } : {}) }, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
     const persistenceStartedAt = clockMs();
     try { await this.reports.save(report); } catch (error) { annotateGenerationFailure(error, 'report_persistence'); this.logIbiError(input, 'report_persistence', error); throw error; }

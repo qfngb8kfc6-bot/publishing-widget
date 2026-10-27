@@ -82,7 +82,8 @@ describe('server-side company input resolution', () => {
       const payload = await response.json() as { reportId: string };
       const report = await app.reportStore.get(payload.reportId, 'demo');
       expect(report?.companyName).not.toBe('nike.com');
-      if (!companyUrl.includes('.') && !companyUrl.includes('://')) expect(report?.companyName).toBe(companyUrl);
+      // A bare name is kept as typed, except that an all-lowercase one is title-cased for display ("nike" → "Nike").
+      if (!companyUrl.includes('.') && !companyUrl.includes('://')) expect(report?.companyName).toBe(/[A-Z]/.test(companyUrl) ? companyUrl : companyUrl.replace(/(^|[\s-])([a-z])/g, (_match, separator: string, letter: string) => `${separator}${letter.toUpperCase()}`));
     }
   });
 

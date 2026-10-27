@@ -49,6 +49,8 @@ describe('hosted professional experience', () => {
     const payload = await generated.json() as { reportId: string };
     const reportResponse = await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}?publisherId=demo`));
     const report = await reportResponse.json();
+    // The small demo archive has one direct match, so its report is flagged limited; this test covers the full page.
+    delete report.professionalProfile.coverage;
     window.history.replaceState({}, '', `/p/demo/${payload.reportId}`);
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
 
@@ -135,6 +137,7 @@ describe('hosted professional experience', () => {
     }));
     const { reportId } = await generated.json() as { reportId: string };
     const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json();
+    delete report.professionalProfile.coverage;
     report.themeDescriptions = { [report.professionalProfile.professionalInterests[0]]: 'Two platform teams <b>cut</b> release times by half.' };
     const requests: Array<{ input: string; init?: RequestInit }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -191,6 +194,7 @@ describe('hosted professional experience', () => {
     }));
     const { reportId } = await generated.json() as { reportId: string };
     const source = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    delete source.professionalProfile.coverage;
     const seed = source.recommendations[0];
     const report = {
       ...source,
@@ -219,6 +223,7 @@ describe('hosted professional experience', () => {
     }));
     const { reportId } = await generated.json() as { reportId: string };
     const source = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    delete source.professionalProfile.coverage;
     const seed = source.recommendations[0];
     const report = { ...source, sections: undefined, recommendations: [0, 1, 2].map((index) => ({ ...seed, articleId: `story-${index}`, rank: index + 1, article: { ...seed.article, id: `story-${index}`, url: `${seed.article.url}?story=${index}`, imageUrl: index === 1 ? undefined : 'https://images.example/story.jpg' } })) };
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));

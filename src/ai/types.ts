@@ -76,6 +76,8 @@ export type ArticleRelationship = 'own_company' | 'likely_competitor' | 'supplie
 
 export interface ProfessionalProfileEnhancementInput {
   publisherId: string;
+  /** What the publication covers ("the sporting goods industry"). */
+  publisherDomain?: string;
   submittedCompanyUrl: string;
   submittedJobTitle: string;
   company: CompanyContext;
@@ -84,6 +86,8 @@ export interface ProfessionalProfileEnhancementInput {
 }
 
 export interface AIProfessionalProfileEnhancement {
+  /** The submitted job title with obvious spelling mistakes fixed; accepted only if acceptTitleCorrection agrees. */
+  correctedJobTitle?: string;
   company?: {
     industry?: string;
     description?: string;
@@ -119,6 +123,8 @@ export interface ReportContentRequest {
   includeSummary?: boolean;
   /** false for the summary-only call (part S): no explanations are written or expected. Default true. */
   includeExplanations?: boolean;
+  /** 'limited': the publisher covers little that is directly about the reader's field; the summary is hedged. */
+  coverage?: 'limited';
   profile: ProfessionalProfile;
   recommendations: Array<{
     article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'> & Partial<Pick<NormalizedArticle, 'category' | 'summary'>>;
@@ -164,6 +170,8 @@ export interface AIProvider extends IntentEnhancer, RerankingProvider, AIExplana
 
 export interface SubjectVocabularyInput {
   publisherId: string;
+  /** What the publication covers: the vocabulary is for this industry's news. */
+  publisherDomain?: string;
   jobTitle: string;
   titleTopics: string[];
   industry?: string;

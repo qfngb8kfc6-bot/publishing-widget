@@ -296,7 +296,8 @@ describe('hosted report flow', () => {
     ['rerank failure', 'rerank', (report: any) => expect(report.recommendations.every((item: any) => item.rankingMetadata.rankingMode === 'deterministic')).toBe(true)],
     ['invalid rerank output', 'invalid-rerank', (report: any) => expect(report.recommendations.every((item: any) => item.rankingMetadata.rankingMode === 'deterministic')).toBe(true)],
     ['rate-limited rerank', 'rate-limit-rerank', (report: any) => expect(report.recommendations.every((item: any) => item.rankingMetadata.rankingMode === 'deterministic')).toBe(true)],
-    ['content failure', 'content', (report: any) => { expect(report.generatedSummary).toContain('Based on your role'); expect(report.recommendations.every((item: any) => !item.explanation.startsWith('This story matters'))).toBe(true); }],
+    // The demo archive gives this role one direct match (limited coverage), so the fallback is the hedged summary.
+    ['content failure', 'content', (report: any) => { expect(report.professionalProfile.coverage?.limited).toBe(true); expect(report.generatedSummary).toContain('closest stories in the current coverage'); expect(report.generatedSummary).not.toContain('clear connection to your work'); expect(report.recommendations.every((item: any) => !item.explanation.startsWith('This story matters'))).toBe(true); }],
     ['invalid content output', 'invalid-content', (report: any) => { expect(report.generatedSummary).toBe('Safe bounded summary'); expect(report.recommendations.every((item: any) => !item.explanation.includes('Invented article'))).toBe(true); }],
   ] as const)('falls back safely on %s', async (_label, failure, assertion) => {
     const { response, report } = await generateWithAI(new ConfigurableReportAIProvider(failure));
