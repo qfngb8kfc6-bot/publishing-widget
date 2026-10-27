@@ -365,3 +365,72 @@ export async function inspectWvcLastPage(config: WvcEnrichmentSourceConfig, opti
   const last: WvcPageSummary = { page: probe.totalPages, httpStatus: lastResult.httpStatus, ...(lastResult.body !== undefined ? summarizeWvcBody(lastResult.body, options.catalogueCodes) : { errorsFound: false, storyCount: 0, privateCount: 0 }), ...(lastResult.errorCode ? { errorCode: lastResult.errorCode } : {}) };
   return { probe, last };
 }
+
+/** Setup "Test" result for a WVC catalogue source: counts, dates, lengths and coverage only (never text or the key). */
+export interface WvcCatalogueInspection {
+  sourceType: 'wvc';
+  reachable: boolean;
+  errorCode?: string;
+  totalPages?: number;
+  totalRecords?: number;
+  /** The newest (last) page, read with STORYTEXT. */
+  lastPage?: {
+    page: number;
+    stories: number;
+    newestDatePublished?: string;
+    privateCount: number;
+    textLength?: { min: number; median: number; max: number };
+    /** Percent of stories with each catalogue field (a story without title and URL is not listed). */
+    coverage: { title: number; url: number; publishedAt: number; description: number; image: number };
+    /** API field that supplied the headlines, e.g. HEADLINE; undefined when none of the title fields was present. */
+    titleField?: string;
+    sampleTitles: string[];
+  };
+}
+
+/**
+ * The setup Test step: a metadata-only probe of page 1 for the page count, then the newest page with STORYTEXT,
+ * parsed exactly as the sync would. Read-only; nothing is stored. The key is used only in the request header.
+ */
+export async function inspectWvcCatalogue(config: WvcCatalogueSourceConfig, options: Omit<WvcFetchOptions, 'catalogue'>): Promise<WvcCatalogueInspection> {
+  const errors = wvcCatalogueConfigErrors(config);
+  if (errors.length) return { sourceType: 'wvc', reachable: false, errorCode: errors[0] };
+  const fetchConfig = wvcCatalogueFetchConfig(config);
+  const probe = await fetchWvcBody({ ...fetchConfig, dataConstraint: 0 }, 1, options);
+  if (probe.errorCode || probe.body === undefined) return { sourceType: 'wvc', reachable: false, errorCode: probe.errorCode ?? 'wvc_invalid_response' };
+  const probeSummary = summarizeWvcBody(probe.body);
+  if (probeSummary.errorCode || probeSummary.errorsFound) return { sourceType: 'wvc', reachable: false, errorCode: probeSummary.errorCode ?? 'wvc_api_error' };
+  const totalPages = probeSummary.totalPages ?? 0;
+  const result: WvcCatalogueInspection = { sourceType: 'wvc', reachable: true, totalPages, totalRecords: probeSummary.totalRecords };
+  if (!totalPages) return result;
+  const last = await fetchWvcBody(fetchConfig, totalPages, options);
+  if (last.errorCode || last.body === undefined) return { ...result, reachable: false, errorCode: last.errorCode ?? 'wvc_invalid_response' };
+  const parseOptions = wvcCatalogueParseOptions(config);
+  let parsed: WvcPage;
+  try { parsed = parseWvcPage(last.body, totalPages, parseOptions); } catch (error) { return { ...result, reachable: false, errorCode: error instanceof WvcError ? error.code : 'wvc_invalid_response' }; }
+  const stories = parsed.stories;
+  const percent = (count: number) => (stories.length ? Math.round((count / stories.length) * 100) : 0);
+  const lengths = stories.map((story) => story.text.length).sort((left, right) => left - right);
+  const dates = stories.map((story) => story.catalogue?.publishedAt).filter((date): date is string => Boolean(date)).sort();
+  const rawStories = (storyArray(asRecord(last.body) ?? {}) ?? []).map(asRecord).filter((story): story is Record<string, unknown> => Boolean(story));
+  const titleField = parseOptions.titleFields.find((name) => rawStories.some((story) => text(field(story, name.toUpperCase()))?.trim()));
+  return {
+    ...result,
+    lastPage: {
+      page: totalPages,
+      stories: stories.length,
+      ...(dates.length ? { newestDatePublished: dates[dates.length - 1] } : {}),
+      privateCount: stories.filter((story) => story.isPrivate).length,
+      ...(lengths.length ? { textLength: { min: lengths[0], median: lengths[Math.floor((lengths.length - 1) / 2)], max: lengths[lengths.length - 1] } } : {}),
+      coverage: {
+        title: percent(stories.filter((story) => story.catalogue?.title).length),
+        url: percent(stories.filter((story) => story.catalogue?.url).length),
+        publishedAt: percent(dates.length),
+        description: percent(stories.filter((story) => story.catalogue?.description).length),
+        image: percent(stories.filter((story) => story.catalogue?.imageUrl).length),
+      },
+      ...(titleField ? { titleField } : {}),
+      sampleTitles: stories.map((story) => story.catalogue?.title).filter((title): title is string => Boolean(title)).slice(0, 5),
+    },
+  };
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createContentAdapter, firstSentences, parseWvcPage, wvcCatalogueConfigErrors, wvcCatalogueFetchConfig, wvcCatalogueParseOptions, type WvcCatalogueSourceConfig } from '../src/publishers/content';
+import { createContentAdapter, firstSentences, parseWvcPage, wvcCatalogueConfigErrors, wvcCatalogueFetchConfig, wvcCatalogueParseOptions } from '../src/publishers/content';
 import { MemoryArticleTextStore, PostgresArticleTextStore } from '../src/reports/article-texts';
 import { TextEnrichmentSync } from '../src/reports/text-enrichment';
 import { MemoryPublisherStore } from '../src/publishers/store';
@@ -7,26 +7,9 @@ import { createProductionApp } from '../src/server/production';
 import { sgiEuropeEnrichmentSource, sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import type { PublisherManifest } from '../src/publishers/manifest';
 
+import { acmeSource, BODY_MARKER, page, story } from './wvc-fixtures';
+
 const KEY = 'wvc-catalogue-test-key';
-const BODY_MARKER = 'confidential-third-sentence-marker';
-export const acmeSource: WvcCatalogueSourceConfig = { type: 'wvc', baseUrl: 'https://news.acme.example/abaapi/storylistpagination/json', profileName: 'Editorial Finder', pageSize: 50, secretRef: 'env:ACME_WVC_API_KEY', allowedHostnames: ['news.acme.example'], imageHostnames: ['news.acme.example', 'img.acme.example'] };
-
-export function story(code: number, overrides: Record<string, unknown> = {}) {
-  return {
-    STORYCODE: String(code),
-    STORYURL: `https://news.acme.example/retail/store-openings/${code}.article`,
-    HEADLINE: `Acme &amp; Partners open ${code} stores`,
-    DATEPUBLISHED: '2026-10-0' + ((code % 9) + 1) + 'T09:00:00Z',
-    LASTMODIFIED: '2026-10-10T09:00:00Z',
-    PRIVATE: code % 2 ? 'true' : 'false',
-    STORYTEXT: `<p><img src="https://img.acme.example/photos/${code}.jpg" alt=""></p><p>Acme opened ${code} stores in Europe this quarter. Its omnichannel retail sales rose 4%.</p><p>${BODY_MARKER} about margins and suppliers.</p>`,
-    ...overrides,
-  };
-}
-
-export function page(stories: unknown[], totalPages = 1) {
-  return { ErrorsFound: false, Messages: [], PagedData: { TotalNumberOfPages: totalPages, TotalNumberOfRecords: stories.length, Data: stories } };
-}
 
 describe('WVC catalogue parsing', () => {
   const options = wvcCatalogueParseOptions(acmeSource);

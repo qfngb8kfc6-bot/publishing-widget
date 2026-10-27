@@ -94,8 +94,91 @@ async function runHealthCheck(publisherId: string): Promise<void> { const value 
 async function runCheck(publisherId: string): Promise<void> { const output = document.querySelector('#check-output')!; output.innerHTML = '<p class="muted">Checking the configured adapter…</p>'; try { const result = await request<ContentCheck>(`/api/admin/publishers/${encodeURIComponent(publisherId)}/content-check`, { method: 'POST' }); output.innerHTML = result.data && typeof result.data.reachable === 'boolean' ? renderCheck(result.data) : checkFailureMarkup(result.response); } catch { output.innerHTML = '<p class="form-message" role="alert">Content check could not be completed.</p>'; } }
 async function runTestReport(event: SubmitEvent, publisherId: string): Promise<void> { event.preventDefault(); const form = new FormData(event.currentTarget as HTMLFormElement); const message = document.querySelector('#report-message')!; message.textContent = 'Generating with the production report service…'; const result = await request<{ reportUrl?: string; generationUrl?: string; error?: string }>(`/api/admin/publishers/${encodeURIComponent(publisherId)}/test-report`, { method: 'POST', body: JSON.stringify({ companyUrl: form.get('companyUrl'), jobTitle: form.get('jobTitle') }) }); if (result.response.ok && result.data.reportUrl) { message.innerHTML = `Complete: <a href="${escapeHtml(result.data.reportUrl)}" target="_blank" rel="noreferrer">open report</a>`; } else if (result.data.error === 'generation_unavailable') message.textContent = 'Generation is unavailable: the saved publisher source is not reachable or is not configured for this server.'; else message.textContent = result.data.error ?? 'Generation failed.'; }
 
-function newPublisherManifest(): Record<string, any> { const form = new FormData(document.querySelector('#new-publisher-form') as HTMLFormElement); const publisherId = String(form.get('publisherId') ?? '').trim(); const name = String(form.get('name') ?? '').trim(); let source: any = { type: 'rest-json', baseUrl: String(form.get('baseUrl') ?? '').trim(), endpoint: String(form.get('endpoint') ?? '').trim(), searchQueryParameter: 'q', pagination: { style: 'page', pageParameter: 'page', limitParameter: 'limit', firstPage: 1, pageSize: 30, maxPages: 1 }, candidateLimit: 30 }; const sourceText = String(form.get('source') ?? '').trim(); if (sourceText) source = JSON.parse(sourceText); const accent = String(form.get('accent') ?? '').trim() || '#36566c'; return { publisherId, name, enabled: true, environment: 'production', publisherConfigVersion: '1', branding: { primaryAccent: accent, widgetTitle: `Build your ${name} briefing`, introductoryCopy: `Tell us where you work and what you do. We’ll build a briefing from ${name} coverage.` }, content: { adapterId: source.type === 'static-demo' ? 'demo' : source.type, resultLimit: 8, candidateRetrievalLimit: 30, searchBehavior: 'keywords' }, contentSource: source, results: { heading: 'Stories selected for you', description: 'A few relevant places to begin, chosen from the publisher’s coverage.', maximumRecommendations: 8, openArticleInNewTab: true }, ranking: { mode: 'deterministic', deterministicWeight: 1, semanticWeight: 0 }, features: { aiEnabled: false, explanationsEnabled: true, analyticsEnabled: true }, allowedOrigins: String(form.get('origins') ?? '').split('\n').map((value) => value.trim()).filter(Boolean) }; }
-async function renderCreatePublisher(): Promise<void> { shell(`<div class="page-heading"><div><a class="back" href="#publishers" id="back">← Publishers</a><p class="eyebrow">Publisher onboarding</p><h2>Add publisher</h2><p class="muted">Create a persistent publisher configuration. Secrets are referenced by name and remain in the server environment.</p></div></div><div class="card"><form id="new-publisher-form"><label for="new-publisher-id">Publisher ID</label><input id="new-publisher-id" name="publisherId" pattern="[a-z][a-z0-9]*(?:-[a-z0-9]+)*" required /><label for="new-publisher-name">Publisher name</label><input id="new-publisher-name" name="name" required /><label for="new-publisher-base">Content API base URL</label><input id="new-publisher-base" name="baseUrl" type="url" placeholder="https://publisher.example" required /><label for="new-publisher-endpoint">Search endpoint</label><input id="new-publisher-endpoint" name="endpoint" value="/search" required /><label for="new-publisher-accent">Primary accent</label><input id="new-publisher-accent" name="accent" value="#36566c" /><label for="new-publisher-origins">Allowed origins</label><textarea id="new-publisher-origins" name="origins" rows="3" placeholder="https://publisher.example"></textarea><label for="new-publisher-source">Optional source JSON override</label><textarea id="new-publisher-source" name="source" rows="10" placeholder='{"type":"rest-json",...}'></textarea><div class="form-actions"><button class="primary" type="submit">Create publisher</button></div><p class="form-message" id="new-publisher-message" role="status"></p></form></div>`); document.querySelector('#back')?.addEventListener('click', (event) => { event.preventDefault(); void renderDashboard(); }); document.querySelector<HTMLFormElement>('#new-publisher-form')!.addEventListener('submit', async (event) => { event.preventDefault(); const message = document.querySelector('#new-publisher-message')!; try { const result = await request<{ publisher?: { publisherId: string }; error?: string }>('/api/admin/publishers', { method: 'POST', body: JSON.stringify(newPublisherManifest()) }); if (result.response.ok && result.data.publisher?.publisherId) await renderPublisher(result.data.publisher.publisherId); else message.textContent = result.data.error ?? 'Publisher could not be created.'; } catch { message.textContent = 'Publisher configuration is not valid JSON.'; } }); }
+/** Guided setup source choices, recommended first. */
+const SOURCE_KINDS = [
+  { id: 'wvc', label: 'WVC API (recommended)', hint: 'The publisher’s story-list API is the catalogue; full text stays server-side.' },
+  { id: 'wvc-rss', label: 'WVC API + RSS', hint: 'The API is the catalogue; the RSS feed adds images and categories.' },
+  { id: 'rss', label: 'RSS', hint: 'A public RSS or Atom feed.' },
+  { id: 'sitemap', label: 'Sitemap', hint: 'A sitemap index plus article pages.' },
+] as const;
+
+function hostOf(value: string): string { try { return new URL(value).hostname; } catch { return ''; } }
+
+function sourceFromForm(form: FormData): Record<string, any> {
+  const overrideText = String(form.get('source') ?? '').trim();
+  if (overrideText) return JSON.parse(overrideText);
+  const kind = String(form.get('sourceKind') ?? 'wvc');
+  const value = (name: string) => String(form.get(name) ?? '').trim();
+  if (kind === 'wvc' || kind === 'wvc-rss') {
+    const baseUrl = value('wvcBaseUrl');
+    const imageHosts = value('wvcImageHosts').split(/[\s,]+/).filter(Boolean);
+    return { type: 'wvc', baseUrl, profileName: value('wvcProfile'), pageSize: Number(value('wvcPageSize') || 50), secretRef: `env:${value('wvcSecretEnv')}`, allowedHostnames: [hostOf(baseUrl)].filter(Boolean), ...(imageHosts.length ? { imageHostnames: [hostOf(baseUrl), ...imageHosts].filter(Boolean) } : {}), ...(kind === 'wvc-rss' ? { rss: { feedUrl: value('feedUrl') } } : {}) };
+  }
+  if (kind === 'rss') return { type: 'rss', feedUrl: value('feedUrl'), allowedHostnames: [hostOf(value('feedUrl'))].filter(Boolean), deriveCategoryFromUrl: true };
+  return { type: 'sitemap', sitemapUrl: value('sitemapUrl'), allowedHostnames: [hostOf(value('sitemapUrl'))].filter(Boolean) };
+}
+
+function newPublisherManifest(): Record<string, any> { const form = new FormData(document.querySelector('#new-publisher-form') as HTMLFormElement); const publisherId = String(form.get('publisherId') ?? '').trim(); const name = String(form.get('name') ?? '').trim(); const source = sourceFromForm(form); const accent = String(form.get('accent') ?? '').trim() || '#36566c'; return { publisherId, name, enabled: true, environment: 'production', publisherConfigVersion: '1', branding: { primaryAccent: accent, widgetTitle: `Build your ${name} briefing`, introductoryCopy: `Tell us where you work and what you do. We’ll build a briefing from ${name} coverage.` }, content: { adapterId: source.type === 'static-demo' ? 'demo' : source.type, resultLimit: 8, candidateRetrievalLimit: 30, searchBehavior: 'keywords' }, contentSource: source, results: { heading: 'Stories selected for you', description: 'A few relevant places to begin, chosen from the publisher’s coverage.', maximumRecommendations: 8, openArticleInNewTab: true }, ranking: { mode: 'deterministic', deterministicWeight: 1, semanticWeight: 0 }, features: { aiEnabled: false, explanationsEnabled: true, analyticsEnabled: true }, allowedOrigins: String(form.get('origins') ?? '').split('\n').map((value) => value.trim()).filter(Boolean) }; }
+
+interface WvcInspection { reachable: boolean; errorCode?: string; totalPages?: number; totalRecords?: number; lastPage?: { page: number; stories: number; newestDatePublished?: string; privateCount: number; textLength?: { min: number; median: number; max: number }; coverage: { title: number; url: number; publishedAt: number; description: number; image: number }; titleField?: string; sampleTitles: string[] } }
+
+/** Test step output: counts, dates, lengths and coverage only. */
+function renderSourceTest(data: { wvc?: WvcInspection; rss?: ContentCheck; content?: ContentCheck; error?: string }): string {
+  if (data.error) return `<p class="form-message" role="alert">${escapeHtml(data.error)}</p>`;
+  if (data.content) return renderCheck(data.content);
+  const wvc = data.wvc;
+  if (!wvc) return '<p class="form-message" role="alert">The source could not be tested.</p>';
+  if (!wvc.reachable) return `<div class="check-summary is-bad"><strong>WVC API not usable</strong><span>${escapeHtml(wvc.errorCode ?? 'unknown error')}</span></div>`;
+  const last = wvc.lastPage;
+  const row = (label: string, value: string) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
+  const rows = [
+    row('Pages', String(wvc.totalPages ?? 'n/a')), row('Stories', String(wvc.totalRecords ?? 'n/a')),
+    ...(last ? [
+      row('Newest story', last.newestDatePublished ? new Date(last.newestDatePublished).toLocaleDateString() : 'n/a'),
+      row(`Newest page (${last.page})`, `${last.stories} stories · ${last.privateCount} subscriber-only`),
+      row('Text length', last.textLength ? `min ${last.textLength.min} · median ${last.textLength.median} · max ${last.textLength.max} chars` : 'n/a'),
+      row('Titles', `${last.coverage.title}%${last.titleField ? ` (${last.titleField})` : ' (no title field found: set titleFields)'}`),
+      row('Story URLs', `${last.coverage.url}%`), row('Dates', `${last.coverage.publishedAt}%`), row('Descriptions', `${last.coverage.description}%`), row('Images in text', `${last.coverage.image}%`),
+    ] : []),
+  ];
+  const titles = last?.sampleTitles.length ? `<h4>Sample titles</h4><ul class="sample-list">${last.sampleTitles.map((title) => `<li>${escapeHtml(title)}</li>`).join('')}</ul>` : '';
+  const rss = data.rss ? `<h4>RSS supplement</h4>${renderCheck(data.rss)}` : '';
+  return `<div class="check-summary is-good"><strong>WVC API reachable</strong><span>Key read from the server environment; it is never shown.</span></div><dl class="coverage">${rows.join('')}</dl>${titles}${rss}`;
+}
+
+async function runSourceTest(): Promise<void> {
+  const output = document.querySelector('#source-test-output')!;
+  output.innerHTML = '<p class="muted">Testing the source…</p>';
+  try {
+    const result = await request<{ wvc?: WvcInspection; rss?: ContentCheck; content?: ContentCheck; error?: string }>('/api/admin/source-test', { method: 'POST', body: JSON.stringify(newPublisherManifest()) });
+    output.innerHTML = renderSourceTest(result.data ?? { error: `Source test failed (HTTP ${result.response.status}).` });
+  } catch {
+    output.innerHTML = '<p class="form-message" role="alert">Source configuration is not valid JSON.</p>';
+  }
+}
+
+function showSourceFields(): void {
+  const kind = (document.querySelector<HTMLInputElement>('input[name="sourceKind"]:checked')?.value) ?? 'wvc';
+  document.querySelectorAll<HTMLElement>('[data-source-kinds]').forEach((group) => {
+    const visible = group.dataset.sourceKinds!.split(' ').includes(kind);
+    group.hidden = !visible;
+    group.querySelectorAll<HTMLInputElement>('input[data-required]').forEach((input) => { input.required = visible; });
+  });
+}
+
+async function renderCreatePublisher(): Promise<void> {
+  const kinds = SOURCE_KINDS.map((kind, index) => `<label class="source-kind"><input type="radio" name="sourceKind" value="${kind.id}"${index === 0 ? ' checked' : ''} /> <strong>${index + 1}. ${escapeHtml(kind.label)}</strong><small>${escapeHtml(kind.hint)}</small></label>`).join('');
+  shell(`<div class="page-heading"><div><a class="back" href="#publishers" id="back">← Publishers</a><p class="eyebrow">Publisher onboarding</p><h2>Add publisher</h2><p class="muted">Create a persistent publisher configuration. Secrets are referenced by name and remain in the server environment.</p></div></div><div class="card"><form id="new-publisher-form"><label for="new-publisher-id">Publisher ID</label><input id="new-publisher-id" name="publisherId" pattern="[a-z][a-z0-9]*(?:-[a-z0-9]+)*" required /><label for="new-publisher-name">Publisher name</label><input id="new-publisher-name" name="name" required /><fieldset class="source-kinds"><legend>Content source</legend>${kinds}</fieldset>`
+    + `<div data-source-kinds="wvc wvc-rss"><label for="wvc-base">WVC API base URL</label><input id="wvc-base" name="wvcBaseUrl" type="url" data-required placeholder="https://www.publisher.example/abaapi/storylistpagination/json" /><label for="wvc-profile">Profile name</label><input id="wvc-profile" name="wvcProfile" value="Editorial Finder" data-required /><label for="wvc-page-size">Page size</label><input id="wvc-page-size" name="wvcPageSize" type="number" min="50" max="200" value="50" data-required /><label for="wvc-secret">Key environment variable</label><input id="wvc-secret" name="wvcSecretEnv" pattern="[A-Z][A-Z0-9_]*_WVC_API_KEY" placeholder="ACME_WVC_API_KEY" data-required /><small class="muted">Set this variable on the server. The key itself is never entered here.</small><label for="wvc-image-hosts">Extra image hosts (optional)</label><input id="wvc-image-hosts" name="wvcImageHosts" placeholder="images.publisher.example" /></div>`
+    + `<div data-source-kinds="wvc-rss rss" hidden><label for="feed-url">RSS feed URL</label><input id="feed-url" name="feedUrl" type="url" data-required placeholder="https://www.publisher.example/feed.rss" /></div>`
+    + `<div data-source-kinds="sitemap" hidden><label for="sitemap-url">Sitemap URL</label><input id="sitemap-url" name="sitemapUrl" type="url" data-required placeholder="https://www.publisher.example/sitemap.xml" /></div>`
+    + `<label for="new-publisher-accent">Primary accent</label><input id="new-publisher-accent" name="accent" value="#36566c" /><label for="new-publisher-origins">Allowed origins</label><textarea id="new-publisher-origins" name="origins" rows="3" placeholder="https://publisher.example"></textarea><label for="new-publisher-source">Optional source JSON override</label><textarea id="new-publisher-source" name="source" rows="6" placeholder='{"type":"wvc",...}'></textarea><div class="form-actions"><button class="secondary" type="button" id="test-source">Test</button><button class="primary" type="submit">Create publisher</button></div><div id="source-test-output" aria-live="polite"></div><p class="form-message" id="new-publisher-message" role="status"></p></form></div>`);
+  document.querySelector('#back')?.addEventListener('click', (event) => { event.preventDefault(); void renderDashboard(); });
+  document.querySelectorAll<HTMLInputElement>('input[name="sourceKind"]').forEach((input) => input.addEventListener('change', showSourceFields));
+  showSourceFields();
+  document.querySelector<HTMLButtonElement>('#test-source')!.addEventListener('click', () => void runSourceTest());
+  document.querySelector<HTMLFormElement>('#new-publisher-form')!.addEventListener('submit', async (event) => { event.preventDefault(); const message = document.querySelector('#new-publisher-message')!; try { const result = await request<{ publisher?: { publisherId: string }; error?: string }>('/api/admin/publishers', { method: 'POST', body: JSON.stringify(newPublisherManifest()) }); if (result.response.ok && result.data.publisher?.publisherId) await renderPublisher(result.data.publisher.publisherId); else message.textContent = result.data.error ?? 'Publisher could not be created.'; } catch { message.textContent = 'Publisher configuration is not valid JSON.'; } });
+}
 
 async function start(): Promise<void> { const session = await request<{ authenticated: boolean; configured: boolean }>('/api/admin/session'); if (!session.data.authenticated) return renderLogin(session.data.configured ? '' : 'Admin access is not configured on this server.'); await renderDashboard(); }
 void start();

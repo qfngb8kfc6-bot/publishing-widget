@@ -3,7 +3,7 @@ import type { AnalyticsStore } from '../analytics/types';
 import { validateAllowedOrigins, validatePublisherManifest } from '../core/config';
 import type { PublisherRegistry } from '../core';
 import type { PublisherManifest } from '../publishers/manifest';
-import type { ContentImportDiagnostics, ContentSourceConfig } from '../publishers/content';
+import type { ContentImportDiagnostics, ContentSourceConfig, WvcCatalogueInspection, WvcCatalogueSourceConfig } from '../publishers/content';
 import { PublisherStoreError } from '../publishers/store';
 import type { PublisherRuntime, PublisherRuntimeCapabilities } from '../publishers/runtime';
 import { ContentSourceError } from '../publishers/content/security';
@@ -22,6 +22,8 @@ interface AdminRoutesOptions {
   auth: AdminAuth;
   environment: 'development' | 'test' | 'production';
   logger?: StructuredLogger;
+  /** Setup Test step for a WVC catalogue source (key resolved server-side; counts and coverage only). */
+  inspectWvcSource?: (source: WvcCatalogueSourceConfig) => Promise<WvcCatalogueInspection>;
   /** Full-text sync status for enriched publishers (counts, timestamps and error codes only). */
   textEnrichmentStatus?: (publisherId: string) => Promise<TextEnrichmentStatus | undefined>;
 }
@@ -287,6 +289,25 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
         if (error instanceof Error && ['invalid_json', 'payload_too_large'].includes(error.message)) return Response.json({ error: error.message }, { status: 400 });
         if (error instanceof Error && !(error instanceof PublisherStoreError)) return Response.json({ error: safeText(error.message) ?? 'invalid_publisher' }, { status: 400 });
         return mutationError(error);
+      }
+    }
+    // Guided setup "Test": checks a draft source before the publisher exists. WVC sources run the equivalent of
+    // wvc:check (page count, newest date, text lengths, field coverage); feeds and sitemaps run the content check.
+    if (url.pathname === '/api/admin/source-test' && request.method === 'POST') {
+      try {
+        const draft = manifestBody(await readJsonBody(request, 64_000) as Record<string, unknown>);
+        validatePublisherManifest(draft, { allowDisabled: true });
+        const source = draft.contentSource;
+        if (source?.type === 'wvc') {
+          if (!options.inspectWvcSource) return Response.json({ error: 'wvc_test_unavailable' }, { status: 503 });
+          const wvc = await options.inspectWvcSource(source);
+          const feed = source.rss ? await runContentCheck(options.publisherRuntime.draft({ ...draft, contentSource: { type: 'rss', feedUrl: source.rss.feedUrl, allowedHostnames: source.rss.allowedHostnames ?? source.allowedHostnames, deriveCategoryFromUrl: true } }), options.logger) : undefined;
+          return Response.json({ wvc, ...(feed ? { rss: feed } : {}) }, { status: wvc.reachable ? 200 : 502 });
+        }
+        const result = await runContentCheck(options.publisherRuntime.draft(draft), options.logger);
+        return Response.json({ content: result }, { status: result.reachable ? 200 : 502 });
+      } catch (error) {
+        return Response.json({ error: error instanceof Error ? safeText(error.message) ?? 'invalid_source_test' : 'invalid_source_test' }, { status: 400 });
       }
     }
     const match = url.pathname.match(/^\/api\/admin\/publishers\/([^/]+)(?:\/(content-check|test-report|validate|export|config))?$/);

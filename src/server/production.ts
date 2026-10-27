@@ -29,7 +29,7 @@ import { createAdminRoutes } from './admin-routes';
 import { PublisherCatalogueCache } from '../reports/catalogue-cache';
 import { GenerationJobs, MemoryGenerationJobStore, type GenerationJobStore } from '../reports/generation-jobs';
 import type { ArticleTextStore, WvcCatalogueStore } from '../reports/article-texts';
-import { wvcCatalogueConfigErrors, wvcCatalogueFetchConfig, wvcCatalogueParseOptions, type WvcCatalogueSourceConfig } from '../publishers/content';
+import { inspectWvcCatalogue, wvcCatalogueConfigErrors, wvcCatalogueFetchConfig, wvcCatalogueParseOptions, type WvcCatalogueSourceConfig } from '../publishers/content';
 import { TextEnrichmentSync } from '../reports/text-enrichment';
 import { enrichedPublisherIds, enrichmentSourceFor } from '../publishers/enrichment';
 
@@ -222,7 +222,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     onPersistError: (error) => logger.error('generation_status_write_failed', { errorName: error instanceof Error ? error.name : 'unknown', errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation status write failed.', 240) }),
   });
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore, generationJobs);
-  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger, textEnrichmentStatus });
+  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger, textEnrichmentStatus, inspectWvcSource: (source) => inspectWvcCatalogue(source, { fetchImpl: options.fetchImpl, resolveSecret }) });
 
   const trustedProxy = options.trustedProxy ?? false;
   const handle = async (request: Request): Promise<Response> => {

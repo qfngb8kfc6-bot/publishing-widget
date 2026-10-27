@@ -16,3 +16,9 @@ label { display: block; margin: 17px 0 7px; color: #3f4860; font-size: .77rem; f
 .check-label { display: flex; align-items: center; gap: 8px; }.check-label input { width: auto; }.login-shell { display: grid; place-items: center; min-height: 100vh; padding: 24px; }.login-card { width: min(440px, 100%); padding: 34px; border: 1px solid #e0e4eb; border-radius: 20px; background: #fff; box-shadow: 0 25px 80px rgba(21,26,58,.12); }.login-card h1 { margin-bottom: 12px; font-size: 2rem; }.login-card .primary { width: 100%; margin-top: 20px; }
 @media (max-width: 900px) { .admin-layout { grid-template-columns: 1fr; gap: 15px; padding-top: 25px; }.sidebar { padding: 0; }.sidebar nav { display: flex; margin-top: 18px; }.detail-grid { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .topbar { padding: 16px; }.wordmark span { display: none; }.admin-layout { width: min(100% - 28px, 1320px); }.page-heading { display: block; }.heading-actions { margin-top: 15px; }.card { padding: 18px; }.coverage { gap: 5px; }.coverage div { padding: 8px; } }
+.source-kinds{display:grid;gap:8px;margin:18px 0 6px;padding:12px 14px;border:1px solid #d8e0e6;border-radius:12px}
+.source-kinds legend{padding:0 6px;font-weight:700}
+.source-kind{display:grid;grid-template-columns:auto 1fr;gap:2px 8px;align-items:baseline;margin:0;font-weight:500;cursor:pointer}
+.source-kind small{grid-column:2;color:#66737f}
+[data-source-kinds][hidden]{display:none}
+#source-test-output{margin-top:16px}

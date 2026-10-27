@@ -82,11 +82,17 @@ qfngb8kfc6-bot/publishing-widget.
   article. Public reports expose only `subscriberOnly`; body text must never reach public JSON, UI, analytics,
   logs or snapshots (`tests/full-text-privacy.test.ts`).
 
+- **WVC API as the catalogue** (source type `wvc`, most new publishers; `src/publishers/content/wvc.ts`,
+  `WvcCatalogueContentAdapter` in `content/adapters.ts`): the sync also stores title/URL/date/description (first 1–2
+  sentences, ≤300 chars)/first allowed https image per story (migration 010); the catalogue is built from those rows.
+  Optional `rss` supplement for images and categories. `secretRef` must be `env:*_WVC_API_KEY`. Guided setup and the
+  Test step (`POST /api/admin/source-test`) are in the admin; see `docs/ONBOARDING.md`. SGI stays RSS + enrichment.
+
 ## Deployment
 - Render, 1 CPU / 2 GB RAM, `NODE_OPTIONS=--max-old-space-size=1536`. Supabase Postgres via `DATABASE_URL`.
 - `npm start` = build + `node server-entry.mjs`. Migrations are expected to run on start via Render's start
   command (`npm run db:migrate` is not part of `npm start` in this repo — keep that Render setting). Apply a
-  new migration before code that uses it (latest: `009_publisher_article_texts.sql`, required before enabling WVC full text).
+  new migration before code that uses it (latest: `010_publisher_article_catalogue.sql`, required before creating a WVC-catalogue publisher; `009` before enabling WVC full text).
 - Startup prewarms catalogues (snapshot hydrate → refresh if stale → index prebuild → snapshot save, one job at
   a time) and logs `heap_usage` every 60 s.
 
