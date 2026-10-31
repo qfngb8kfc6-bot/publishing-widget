@@ -173,13 +173,42 @@ describe('report from a WVC-only publisher', () => {
     const publicReport = await (await app.handle(new Request(`https://discovery.ldsystems.uk/api/reports/${reportId}?publisherId=acme`))).text();
     const report = JSON.parse(publicReport) as { recommendations: Array<{ article: { title: string; description?: string; imageUrl?: string; categories: string[] }; subscriberOnly?: boolean }> };
     expect(report.recommendations.length).toBeGreaterThan(0);
-    expect(report.recommendations[0].article).toMatchObject({ title: expect.stringMatching(/^Acme & Partners open 5\d stores$/), description: expect.stringMatching(/stores in Europe this quarter\. Its omnichannel retail sales rose 4%\.$/), imageUrl: expect.stringMatching(/^https:\/\/img\.acme\.example\/photos\/5\d\.jpg$/), categories: ['Retail'] });
+    expect(report.recommendations[0].article).toMatchObject({ title: expect.stringMatching(/^Acme & Partners open 5\d stores$/), imageUrl: expect.stringMatching(/^https:\/\/img\.acme\.example\/photos\/5\d\.jpg$/), categories: ['Retail'] });
     expect(publicReport).not.toContain(BODY_MARKER);
+    // Default: subscriber-only stories (odd codes) carry no description in the public report; free ones do.
+    const byPrivacy = (isPrivate: boolean) => report.recommendations.filter((item) => (Number(item.article.title.match(/open (\d+) stores/)![1]) % 2 === 1) === isPrivate);
+    expect(byPrivacy(true).length).toBeGreaterThan(0);
+    for (const item of byPrivacy(true)) expect(item.article.description).toBeUndefined();
+    for (const item of byPrivacy(false)) expect(item.article.description).toMatch(/this quarter\./);
     await app.catalogueIdle();
     expect(saved.length).toBeGreaterThan(0);
     for (const snapshot of saved) { expect(snapshot).toContain('Acme & Partners open 51 stores'); expect(snapshot).not.toContain(BODY_MARKER); }
     expect(await app.ensureCatalogueSyncs()).toEqual(['acme']);
     app.stopTextEnrichment();
+  });
+});
+
+describe('subscriber-only descriptions', () => {
+  async function articles(showPrivateExcerpts?: boolean) {
+    const store = new MemoryArticleTextStore();
+    // story(61) is PRIVATE=true, story(62) is free.
+    await store.upsertCatalogue('acme', parseWvcPage(page([story(61), story(62)]), 1, wvcCatalogueParseOptions(acmeSource)).stories, '2026-10-20T00:00:00Z');
+    const adapter = createContentAdapter('acme', { ...acmeSource, ...(showPrivateExcerpts === undefined ? {} : { showPrivateExcerpts }) }, { wvcCatalogueStore: store });
+    return Object.fromEntries((await adapter.loadCatalogue!()).map((record) => adapter.normalizeArticle(record)!).map((article) => [article.url.match(/(\d+)\.article$/)![1], article]));
+  }
+
+  it('is off by default: a PRIVATE=true story keeps headline, category and date but no description', async () => {
+    const byCode = await articles();
+    expect(byCode['61']).toMatchObject({ title: 'Acme & Partners open 61 stores', categories: ['Retail'], publishedAt: expect.any(String) });
+    expect(byCode['61'].description).toBeUndefined();
+    expect(byCode['61'].summary ?? byCode['61'].contentSnippet).toBeUndefined();
+    expect(byCode['62'].description).toBe('Acme opened 62 stores in Europe this quarter. Its omnichannel retail sales rose 4%.');
+  });
+
+  it('shows the 1-2 sentence excerpt for subscriber-only stories only when the publisher opts in', async () => {
+    const byCode = await articles(true);
+    expect(byCode['61'].description).toBe('Acme opened 61 stores in Europe this quarter. Its omnichannel retail sales rose 4%.');
+    expect((await articles(false))['61'].description).toBeUndefined();
   });
 });
 

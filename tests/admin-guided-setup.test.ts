@@ -43,6 +43,13 @@ describe('guided publisher setup', () => {
     expect(bodies[0].contentSource).toEqual({ type: 'wvc', baseUrl: 'https://news.acme.example/abaapi/storylistpagination/json', profileName: 'Editorial Finder', pageSize: 50, secretRef: 'env:ACME_WVC_API_KEY', allowedHostnames: ['news.acme.example'], rss: { feedUrl: 'https://news.acme.example/feed.rss' } });
     expect(bodies[0].content.adapterId).toBe('wvc');
     const output = document.querySelector('#source-test-output')!.textContent!;
+    // The subscriber-only excerpt setting is off unless ticked.
+    expect(bodies[0].contentSource).not.toHaveProperty('showPrivateExcerpts');
+    expect(document.querySelector('label[for="wvc-private-excerpts"], #wvc-private-excerpts')?.closest('label')?.textContent).toContain('Show text excerpt as description for subscriber-only stories');
+    document.querySelector<HTMLInputElement>('#wvc-private-excerpts')!.checked = true;
+    document.querySelector<HTMLButtonElement>('#test-source')!.click();
+    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1].contentSource.showPrivateExcerpts).toBe(true);
     for (const expected of ['230', '11480', '31 subscriber-only', 'median 3100', '100% (HEADLINE)', 'Images in text64%', 'Acme opens stores']) expect(output.replace(/[ ,]/g, (match) => (match === ',' ? '' : ' '))).toContain(expected);
   });
 });

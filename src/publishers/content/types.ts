@@ -136,6 +136,11 @@ export interface WvcCatalogueSourceConfig {
   /** Hosts an image found in STORYTEXT may come from (default: allowedHostnames). */
   imageHostnames?: string[];
   /**
+   * "Show text excerpt as description for subscriber-only stories". Off by default: a PRIVATE=true story then has
+   * no description (its card shows headline, category and date); free stories keep their 1-2 sentence excerpt.
+   */
+  showPrivateExcerpts?: boolean;
+  /**
    * API field names tried in order for the headline. Default HEADLINE first (confirmed on SGI responses; present
    * at dataconstraint 1-4, absent at 0), then TITLE, STORYTITLE, STORYHEADLINE, HEADING.
    */

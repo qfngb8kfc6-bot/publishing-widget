@@ -44,13 +44,19 @@ describe('guided setup Test step', () => {
     expect(text).not.toContain(KEY);
     expect(text).not.toContain('confidential');
     const { wvc } = JSON.parse(text);
-    expect(wvc).toMatchObject({ reachable: true, totalPages: 7, totalRecords: 340, lastPage: { page: 7, stories: 2, privateCount: 1, coverage: { title: 100, url: 100, publishedAt: 100, description: 100, image: 50 }, titleField: 'HEADLINE' } });
+    expect(wvc).toMatchObject({ reachable: true, totalPages: 7, totalRecords: 340, lastPage: { page: 7, stories: 2, privateCount: 1, coverage: { title: 100, url: 100, publishedAt: 100, description: 50, image: 50 }, titleField: 'HEADLINE' } });
     expect(wvc.lastPage.textLength.min).toBeGreaterThan(0);
     expect(wvc.lastPage.sampleTitles).toEqual(['Acme & Partners open 71 stores', 'Acme & Partners open 72 stores']);
     expect(requested.map((entry) => new URL(entry.url).searchParams.get('pagenumber'))).toEqual(['1', '7']);
     // dataconstraint 0 only for the page-count probe; the story fetch asks for HEADLINE and STORYTEXT (4).
     expect(requested.map((entry) => new URL(entry.url).searchParams.get('dataconstraint'))).toEqual(['0', '4']);
     expect(requested.every((entry) => entry.key === KEY)).toBe(true);
+  });
+
+  it('counts subscriber-only descriptions only when the publisher shows private excerpts', async () => {
+    const { app, cookie } = await setup();
+    const response = await app.handle(request('/api/admin/source-test', { method: 'POST', body: JSON.stringify(draft({ ...acmeSource, showPrivateExcerpts: true })) }, cookie));
+    expect((await response.json()).wvc.lastPage.coverage.description).toBe(100);
   });
 
   it('never sends another server secret: a secretRef outside *_WVC_API_KEY is refused before any request', async () => {

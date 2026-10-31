@@ -21,6 +21,10 @@ field is `HEADLINE` (confirmed on SGI; present at dataconstraint 1–4, absent a
 another field, set `titleFields` in the source JSON (default `HEADLINE, TITLE, STORYTITLE, STORYHEADLINE, HEADING`).
 Story fetches (sync, Test, wvc:compare) always use dataconstraint 4; dataconstraint 0 is used only to count pages.
 
+**Show text excerpt as description for subscriber-only stories** (guided setup and publisher settings; default
+off; stored as `showPrivateExcerpts` on the source). Off: a `PRIVATE=true` story has no description, so its card
+shows headline, category and date. Free stories always show their first one or two sentences.
+
 How a WVC catalogue works: migration `010_publisher_article_catalogue.sql` must be applied first. A background sync
 backfills every page once, then reads the last two pages every 30 minutes, storing each story's title, URL, date,
 description (first 1–2 sentences of the text, ≤ 300 characters), first in-text image (absolute https on an allowed

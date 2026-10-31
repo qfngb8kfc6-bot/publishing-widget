@@ -442,7 +442,8 @@ export async function inspectWvcCatalogue(config: WvcCatalogueSourceConfig, opti
         title: percent(stories.filter((story) => story.catalogue?.title).length),
         url: percent(stories.filter((story) => story.catalogue?.url).length),
         publishedAt: percent(dates.length),
-        description: percent(stories.filter((story) => story.catalogue?.description).length),
+        // As shown: with showPrivateExcerpts off, subscriber-only stories have no description.
+        description: percent(stories.filter((story) => story.catalogue?.description && (!story.isPrivate || config.showPrivateExcerpts)).length),
         image: percent(stories.filter((story) => story.catalogue?.imageUrl).length),
       },
       ...(titleField ? { titleField } : {}),

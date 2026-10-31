@@ -679,7 +679,8 @@ export class WvcCatalogueContentAdapter implements ContentAdapter<unknown> {
         guid: row.url,
         title: row.title,
         url: row.url,
-        description: row.description,
+        // Subscriber-only text is shown as a description only when the publisher opted in (default off).
+        description: row.isPrivate && !this.config.showPrivateExcerpts ? undefined : row.description,
         publishedAt: row.publishedAt ?? row.lastModified,
         categories: feedCategories?.length ? feedCategories : section ? [section] : [],
         imageUrl: (typeof fromFeed?.image === 'string' ? fromFeed.image : undefined) ?? row.imageUrl,
