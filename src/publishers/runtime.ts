@@ -1,6 +1,6 @@
 import { DeterministicExplanationProvider, type PublisherDefinition, type PublisherRegistry } from '../core';
 import { createContentAdapter } from './content';
-import type { ContentSourceConfig } from './content';
+import type { ContentSourceConfig, WvcCatalogueReader } from './content';
 import type { PublisherManifest } from './manifest';
 import { manifestToPublisherConfig } from './manifest';
 import { PublisherStoreError, type PublisherRecord, type PublisherStore } from './store';
@@ -10,6 +10,8 @@ export interface PublisherRuntimeOptions {
   fetchImpl?: typeof fetch;
   resolveSecret?: (reference: string) => string | undefined;
   cacheTtlMs?: number;
+  /** Rows for WVC catalogue sources (Postgres article store). */
+  wvcCatalogueStore?: WvcCatalogueReader;
 }
 
 export interface PublisherRuntimeCapabilities {
@@ -175,7 +177,7 @@ export class PublisherRuntime {
     const adapter = keepBaseAdapter
       ? base!.adapter
       : source && source.type !== 'static-demo'
-      ? createContentAdapter(runtimeManifest.publisherId, source as ContentSourceConfig, { fetchImpl: this.options.fetchImpl, resolveSecret: this.options.resolveSecret })
+      ? createContentAdapter(runtimeManifest.publisherId, source as ContentSourceConfig, { fetchImpl: this.options.fetchImpl, resolveSecret: this.options.resolveSecret, wvcCatalogueStore: this.options.wvcCatalogueStore })
       : base?.adapter;
     if (!adapter) throw new PublisherStoreError('invalid_record', `Publisher ${runtimeManifest.publisherId} has no compatible content adapter.`);
     return {

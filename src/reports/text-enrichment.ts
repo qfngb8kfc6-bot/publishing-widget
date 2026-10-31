@@ -1,6 +1,6 @@
-import { fetchWvcPage, WvcError, type WvcEnrichmentSourceConfig, type WvcPage } from '../publishers/content';
+import { fetchWvcPage, WvcError, type WvcCatalogueParseOptions, type WvcEnrichmentSourceConfig, type WvcPage } from '../publishers/content';
 import type { StructuredLogger } from '../server/logging';
-import type { ArticleTextStore, TextSyncState } from './article-texts';
+import type { ArticleTextStore, TextSyncState, WvcCatalogueStore } from './article-texts';
 
 /** What the admin Content Health view shows. Codes and counts only: never text, URLs or keys. */
 export interface TextEnrichmentStatus {
@@ -18,7 +18,12 @@ export interface TextEnrichmentStatus {
 export interface TextEnrichmentSyncOptions {
   publisherId: string;
   source: WvcEnrichmentSourceConfig;
-  store: ArticleTextStore;
+  store: ArticleTextStore & Partial<WvcCatalogueStore>;
+  /**
+   * Set for a WVC catalogue source: each story's catalogue fields (title, URL, date, description, image) are parsed
+   * and written with its text. Enrichment-only publishers (SGI) leave it unset and write exactly what they did.
+   */
+  catalogue?: WvcCatalogueParseOptions;
   resolveSecret: (reference: string) => string | undefined;
   /** Runs one job on the catalogue cache's background queue, so a page never overlaps a refresh, prebuild or snapshot save. */
   runExclusive: <T>(job: () => Promise<T>) => Promise<T>;
@@ -148,8 +153,9 @@ export class TextEnrichmentSync {
   private async fetchAndStore(page: number): Promise<{ result: WvcPage; written: number }> {
     const { publisherId, source, store, resolveSecret, fetchImpl, runExclusive, onTextsChanged } = this.options;
     const outcome = await runExclusive(async () => {
-      const result = await fetchWvcPage(source, page, { fetchImpl, resolveSecret });
-      const codes = await store.upsert(publisherId, result.stories, this.iso());
+      const catalogue = this.options.catalogue;
+      const result = await fetchWvcPage(source, page, { fetchImpl, resolveSecret, ...(catalogue ? { catalogue } : {}) });
+      const codes = catalogue && store.upsertCatalogue ? await store.upsertCatalogue(publisherId, result.stories, this.iso()) : await store.upsert(publisherId, result.stories, this.iso());
       // Only counts leave this job: the page's text is released as soon as it is written.
       return { result: { ...result, stories: [] }, codes };
     });

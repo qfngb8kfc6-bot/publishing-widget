@@ -2,6 +2,37 @@
 
 Adding a publisher is intentionally an adapter/configuration task. The universal widget, normalized article model, deterministic ranking, explanations and UI do not change.
 
+## Admin guided setup (most publishers)
+
+Admin → Publishers → **Create publisher** lists the content sources in this order:
+
+1. **WVC API (recommended)** — the publisher's story-list API is the catalogue. Fields: API base URL, profile
+   name (usually `Editorial Finder`), page size (≥ 50), the name of the server environment variable holding the
+   key (must end in `_WVC_API_KEY`, e.g. `ACME_WVC_API_KEY`), optional extra image hosts. The key itself is never
+   entered in the admin; set the variable on the server.
+2. **WVC API + RSS** — as above, plus an RSS feed used only for images and categories.
+3. **RSS** — a public feed (the catalogue is the feed).
+4. **Sitemap** — a sitemap index plus article pages.
+
+**Test** checks the draft before it is saved. For WVC it runs the equivalent of `npm run wvc:check`: page count,
+total stories, newest story date, subscriber-only count, text length (min/median/max) and how many stories on the
+newest page have a title (and which API field supplied it), story URL, date, description and image. The headline
+field is `HEADLINE` (confirmed on SGI; present at dataconstraint 1–4, absent at 0), tried first; if a publisher uses
+another field, set `titleFields` in the source JSON (default `HEADLINE, TITLE, STORYTITLE, STORYHEADLINE, HEADING`).
+Story fetches (sync, Test, wvc:compare) always use dataconstraint 4; dataconstraint 0 is used only to count pages.
+
+**Show text excerpt as description for subscriber-only stories** (guided setup and publisher settings; default
+off; stored as `showPrivateExcerpts` on the source). Off: a `PRIVATE=true` story has no description, so its card
+shows headline, category and date. Free stories always show their first one or two sentences.
+
+How a WVC catalogue works: migration `010_publisher_article_catalogue.sql` must be applied first. A background sync
+backfills every page once, then reads the last two pages every 30 minutes, storing each story's title, URL, date,
+description (first 1–2 sentences of the text, ≤ 300 characters), first in-text image (absolute https on an allowed
+host only) and the cleaned text in `publisher_article_texts`. The catalogue is rebuilt from those rows (no feed
+download); the category comes from the URL section rule; stories without an image use the compact fallback. The
+catalogue is empty until the first backfill pages are stored. SGI Europe keeps its RSS catalogue with WVC
+enrichment.
+
 ## 1. Scaffold
 
 ```bash

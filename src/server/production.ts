@@ -28,7 +28,8 @@ import { AdminAuth } from './admin-auth';
 import { createAdminRoutes } from './admin-routes';
 import { PublisherCatalogueCache } from '../reports/catalogue-cache';
 import { GenerationJobs, MemoryGenerationJobStore, type GenerationJobStore } from '../reports/generation-jobs';
-import type { ArticleTextStore } from '../reports/article-texts';
+import type { ArticleTextStore, WvcCatalogueStore } from '../reports/article-texts';
+import { inspectWvcCatalogue, wvcCatalogueConfigErrors, wvcCatalogueFetchConfig, wvcCatalogueParseOptions, type WvcCatalogueSourceConfig } from '../publishers/content';
 import { TextEnrichmentSync } from '../reports/text-enrichment';
 import { enrichedPublisherIds, enrichmentSourceFor } from '../publishers/enrichment';
 
@@ -54,7 +55,8 @@ export interface ProductionServerOptions {
   /** Where asynchronous generation status is persisted; in memory when absent. */
   generationJobStore?: GenerationJobStore;
   /** Full-text enrichment store (Postgres). Text is used only when WVC_ENRICHMENT_ENABLED=true. */
-  articleTextStore?: ArticleTextStore;
+  /** Postgres in production; a WVC catalogue source also needs its catalogue methods (migration 010). */
+  articleTextStore?: ArticleTextStore & Partial<WvcCatalogueStore>;
 }
 
 export { PostgresAnalyticsStore } from '../analytics/postgres-store';
@@ -62,10 +64,11 @@ export { PostgresReportStore } from '../reports/store';
 export { PostgresPublisherStore } from '../publishers/store';
 export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 export { PostgresGenerationJobStore } from '../reports/generation-jobs';
-export { PostgresArticleTextStore } from '../reports/article-texts';
+export { MemoryArticleTextStore, PostgresArticleTextStore } from '../reports/article-texts';
 // Used by scripts/wvc-check.mjs (read-only diagnostics).
-export { inspectWvcLastPage, storyCodeFromUrl } from '../publishers/content/wvc';
-export { sgiEuropeEnrichmentSource, sgiEuropeFeedUrl } from '../publishers/sgi-europe/config';
+export { fetchWvcPage, fetchWvcPageCount, inspectWvcLastPage, storyCodeFromUrl, wvcCatalogueFetchConfig, wvcCatalogueParseOptions } from '../publishers/content/wvc';
+export { sgiEuropeEnrichmentSource, sgiEuropeFeedUrl, sgiEuropeManifest } from '../publishers/sgi-europe/config';
+export { MemoryPublisherStore } from '../publishers/store';
 export { resolveCommitSha } from './health';
 export { explanationQualityWarnings, summaryQualityWarnings } from '../ai/content-quality';
 
@@ -107,11 +110,17 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     const key = reference.replace(/^env:/, '');
     return /^[A-Z][A-Z0-9_]{1,100}$/.test(key) ? serverEnvironment[key] : undefined;
   };
+  /** The publisher's WVC catalogue source, when its content source is the WVC API. */
+  const wvcCatalogueSource = (publisherId: string): WvcCatalogueSourceConfig | undefined => {
+    const source = registry.get(publisherId)?.manifest?.contentSource;
+    return source?.type === 'wvc' ? source : undefined;
+  };
   const publisherRuntime = new PublisherRuntime(registry, {
     store: publisherStore,
     fetchImpl: options.fetchImpl,
     cacheTtlMs: options.publisherCacheTtlMs ?? Number(serverEnvironment.PUBLISHER_CACHE_TTL_MS ?? 5000),
     resolveSecret,
+    ...(options.articleTextStore?.cataloguePage ? { wvcCatalogueStore: options.articleTextStore as WvcCatalogueStore } : {}),
   });
   const analyticsStore = options.analyticsStore ?? new MemoryAnalyticsStore();
   const analyticsStoreMode: 'memory' | 'postgres' = options.analyticsStoreMode ?? (options.analyticsStore ? 'postgres' : 'memory');
@@ -150,7 +159,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     onStage: (publisherId, stage) => logHeapUsage(logger, stage, publisherId),
     // Lead excerpts of the full text join the match indexes as hashes; the text stays in Postgres.
     leadExcerpts: textEnrichmentEnabled && articleTextStore ? {
-      covers: (publisherId) => Boolean(enrichmentSourceFor(publisherId)),
+      covers: (publisherId) => Boolean(enrichmentSourceFor(publisherId) ?? wvcCatalogueSource(publisherId)),
       page: (publisherId, after, limit) => articleTextStore.leadPage(publisherId, after, limit, LEAD_MATCH_CHARS),
       forStoryCodes: (publisherId, storyCodes) => articleTextStore.leads(publisherId, storyCodes, LEAD_MATCH_CHARS),
     } : undefined,
@@ -185,14 +194,36 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       textSyncs.set(publisherId, new TextEnrichmentSync({ publisherId, source, store: articleTextStore, resolveSecret, fetchImpl: options.fetchImpl, logger, runExclusive: (job) => catalogueCache.runExclusive(job), onTextsChanged: (id, storyCodes) => { if (textEnrichmentEnabled) void catalogueCache.updateLeads(id, storyCodes); } }));
     }
   }
-  const textEnrichmentStatus = async (publisherId: string) => textSyncs.get(publisherId)?.status(textEnrichmentEnabled);
+  // WVC catalogue sources: the API is the catalogue, so their sync runs whenever a Postgres store exists (the
+  // WVC_ENRICHMENT_ENABLED switch still governs using full text for matching and AI). Publishers can be added in
+  // the admin, so the registry is rescanned periodically.
+  const catalogueSyncs = new Map<string, TextEnrichmentSync>();
+  const ensureCatalogueSyncs = async (): Promise<string[]> => {
+    if (!articleTextStore?.upsertCatalogue) return [];
+    await publisherRuntime.ensureLoaded();
+    const started: string[] = [];
+    for (const definition of registry.list()) {
+      const publisherId = definition.config.publisherId;
+      const source = wvcCatalogueSource(publisherId);
+      if (!source || catalogueSyncs.has(publisherId) || wvcCatalogueConfigErrors(source).length) continue;
+      const sync = new TextEnrichmentSync({ publisherId, source: wvcCatalogueFetchConfig(source), catalogue: wvcCatalogueParseOptions(source), store: articleTextStore, resolveSecret, fetchImpl: options.fetchImpl, logger, runExclusive: (job) => catalogueCache.runExclusive(job), onTextsChanged: (id, storyCodes) => { if (textEnrichmentEnabled) void catalogueCache.updateLeads(id, storyCodes); } });
+      catalogueSyncs.set(publisherId, sync);
+      textSyncs.set(publisherId, sync);
+      sync.start();
+      started.push(publisherId);
+    }
+    if (started.length) logger.info('wvc_catalogue_sync_started', { operation: started.join(',') });
+    return started;
+  };
+  let catalogueRescan: ReturnType<typeof setInterval> | undefined;
+  const textEnrichmentStatus = async (publisherId: string) => textSyncs.get(publisherId)?.status(catalogueSyncs.has(publisherId) || textEnrichmentEnabled);
   const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache, textEnrichmentEnabled && articleTextStore ? { covers: (publisherId) => Boolean(enrichmentSourceFor(publisherId)), leads: (publisherId, storyCodes, maxChars) => articleTextStore.leads(publisherId, storyCodes, maxChars) } : undefined);
   const generationJobs = new GenerationJobs({
     store: options.generationJobStore ?? new MemoryGenerationJobStore(),
     onPersistError: (error) => logger.error('generation_status_write_failed', { errorName: error instanceof Error ? error.name : 'unknown', errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation status write failed.', 240) }),
   });
   const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore, generationJobs);
-  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger, textEnrichmentStatus });
+  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger, textEnrichmentStatus, inspectWvcSource: (source) => inspectWvcCatalogue(source, { fetchImpl: options.fetchImpl, resolveSecret }) });
 
   const trustedProxy = options.trustedProxy ?? false;
   const handle = async (request: Request): Promise<Response> => {
@@ -329,10 +360,13 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     }
   };
   return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, generationJobs, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); }, startTextEnrichment: (): string[] => {
+    void ensureCatalogueSyncs().catch((error) => logger.error('wvc_catalogue_sync_failed', { errorName: error instanceof Error ? error.name : 'unknown' }));
+    if (!catalogueRescan) { catalogueRescan = setInterval(() => { void ensureCatalogueSyncs().catch(() => undefined); }, 5 * 60 * 1000); (catalogueRescan as { unref?: () => void }).unref?.(); }
     if (!textEnrichmentEnabled) return [];
-    for (const sync of textSyncs.values()) sync.start();
-    return [...textSyncs.keys()];
-  }, stopTextEnrichment: () => { for (const sync of textSyncs.values()) sync.stop(); }, textEnrichmentStatus };
+    const enrichment = [...textSyncs.entries()].filter(([publisherId]) => !catalogueSyncs.has(publisherId));
+    for (const [, sync] of enrichment) sync.start();
+    return enrichment.map(([publisherId]) => publisherId);
+  }, stopTextEnrichment: () => { if (catalogueRescan) clearInterval(catalogueRescan); catalogueRescan = undefined; for (const sync of textSyncs.values()) sync.stop(); }, ensureCatalogueSyncs, textEnrichmentStatus };
 }
 
 export async function runConfiguredAIHealthCheck(serverEnvironment: Record<string, string | undefined> = {}, fetchImpl: typeof fetch = fetch): Promise<{ status: 'disabled' | 'ok'; provider?: string }> {

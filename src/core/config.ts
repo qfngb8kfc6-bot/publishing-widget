@@ -75,6 +75,7 @@ export function validatePublisherManifest(manifest: PublisherManifest, options: 
     validatePublicHeaders(source.headers);
   }
   if (source?.type === 'sitemap' && !source.sitemapUrl.trim()) throw new Error('Sitemap content source requires sitemapUrl.');
+  if (source?.type === 'wvc' && (!source.baseUrl?.trim() || !source.profileName?.trim() || !source.secretRef?.trim() || !source.allowedHostnames?.length)) throw new Error('WVC content source requires baseUrl, profileName, secretRef and allowedHostnames.');
   if (manifest.ranking) {
     const deterministic = manifest.ranking.deterministicWeight ?? 0.7;
     const semantic = manifest.ranking.semanticWeight ?? 0.3;

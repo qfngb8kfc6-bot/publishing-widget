@@ -1,4 +1,6 @@
 import type { PublisherManifest } from './manifest';
+import { wvcCatalogueConfigErrors } from './content/wvc';
+import type { WvcCatalogueSourceConfig } from './content/types';
 
 export interface PublisherRecord {
   manifest: PublisherManifest;
@@ -43,6 +45,11 @@ function storageManifest(manifest: PublisherManifest): PublisherManifest {
   if (!source) return copy;
   const headers = source.headers;
   if (headers && typeof headers === 'object' && Object.keys(headers as object).some((name) => sensitiveHeader.test(name))) throw new PublisherStoreError('invalid_record', 'Publisher source headers must not contain credentials.');
+  // A WVC source sends its key to baseUrl: only a dedicated *_WVC_API_KEY variable, over https, to an allowed host.
+  if (source.type === 'wvc') {
+    const errors = wvcCatalogueConfigErrors(source as unknown as WvcCatalogueSourceConfig);
+    if (errors.length) throw new PublisherStoreError('invalid_record', `WVC source is not valid: ${errors.join(', ')}.`);
+  }
   const authentication = source.authentication;
   if (authentication && typeof authentication === 'object' && 'secret' in authentication) throw new PublisherStoreError('invalid_record', 'Publisher source credentials must use secretRef.');
   return copy;
