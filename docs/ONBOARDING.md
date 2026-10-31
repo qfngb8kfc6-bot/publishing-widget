@@ -16,8 +16,10 @@ Admin → Publishers → **Create publisher** lists the content sources in this 
 
 **Test** checks the draft before it is saved. For WVC it runs the equivalent of `npm run wvc:check`: page count,
 total stories, newest story date, subscriber-only count, text length (min/median/max) and how many stories on the
-newest page have a title (and which API field supplied it), story URL, date, description and image. If no title
-field is found, set `titleFields` in the source JSON (default `HEADLINE, TITLE, STORYTITLE, STORYHEADLINE, HEADING`).
+newest page have a title (and which API field supplied it), story URL, date, description and image. The headline
+field is `HEADLINE` (confirmed on SGI; present at dataconstraint 1–4, absent at 0), tried first; if a publisher uses
+another field, set `titleFields` in the source JSON (default `HEADLINE, TITLE, STORYTITLE, STORYHEADLINE, HEADING`).
+Story fetches (sync, Test, wvc:compare) always use dataconstraint 4; dataconstraint 0 is used only to count pages.
 
 How a WVC catalogue works: migration `010_publisher_article_catalogue.sql` must be applied first. A background sync
 backfills every page once, then reads the last two pages every 30 minutes, storing each story's title, URL, date,

@@ -182,3 +182,34 @@ describe('report from a WVC-only publisher', () => {
     app.stopTextEnrichment();
   });
 });
+
+describe('dataconstraint for catalogue story fetches', () => {
+  it('always fetches stories at 4; 0 (no HEADLINE, no STORYTEXT) is only for the page-count probe', async () => {
+    const { fetchWvcPage, fetchWvcPageCount } = await import('../src/publishers/content');
+    const requested: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const target = new URL(String(input));
+      requested.push(String(target.searchParams.get('dataconstraint')));
+      // At dataconstraint 0 the API returns no HEADLINE and no STORYTEXT.
+      if (target.searchParams.get('dataconstraint') === '0') return Response.json(page([{ STORYCODE: '71', STORYURL: 'https://news.acme.example/retail/x/71.article' }], 3));
+      return Response.json(page([story(71)], 3));
+    }) as typeof fetch;
+    const resolveSecret = (reference: string) => (reference === 'env:ACME_WVC_API_KEY' ? KEY : undefined);
+    expect(await fetchWvcPageCount(wvcCatalogueFetchConfig(acmeSource), { fetchImpl, resolveSecret })).toEqual({ totalPages: 3, totalRecords: 1 });
+    await expect(fetchWvcPage({ ...wvcCatalogueFetchConfig(acmeSource), dataConstraint: 0 }, 3, { fetchImpl, resolveSecret, catalogue: wvcCatalogueParseOptions(acmeSource) })).rejects.toMatchObject({ code: 'wvc_catalogue_needs_storytext' });
+    await expect(fetchWvcPage({ ...wvcCatalogueFetchConfig(acmeSource), dataConstraint: 1 }, 3, { fetchImpl, resolveSecret, catalogue: wvcCatalogueParseOptions(acmeSource) })).rejects.toMatchObject({ code: 'wvc_catalogue_needs_storytext' });
+    const fetched = await fetchWvcPage(wvcCatalogueFetchConfig(acmeSource), 3, { fetchImpl, resolveSecret, catalogue: wvcCatalogueParseOptions(acmeSource) });
+    expect(fetched.stories[0].catalogue?.title).toBe('Acme & Partners open 71 stores');
+    expect(requested).toEqual(['0', '4']);
+  });
+
+  it('the catalogue sync asks for dataconstraint 4 on every page, incremental passes included', async () => {
+    const requested: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => { requested.push(String(new URL(String(input)).searchParams.get('dataconstraint'))); return Response.json(page([story(81)], 2)); }) as typeof fetch;
+    const sync = new TextEnrichmentSync({ publisherId: 'acme', source: wvcCatalogueFetchConfig(acmeSource), catalogue: wvcCatalogueParseOptions(acmeSource), store: new MemoryArticleTextStore(), fetchImpl, resolveSecret: () => KEY, runExclusive: (job) => job(), sleep: async () => undefined });
+    await sync.runCycle();
+    await sync.runCycle();
+    expect(requested.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(requested)).toEqual(new Set(['4']));
+  });
+});

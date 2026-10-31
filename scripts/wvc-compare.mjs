@@ -22,7 +22,7 @@ const percent = (count, total) => (total ? `${Math.round((count / total) * 100)}
 
 /** Builds both apps, ranks every scenario on each and returns { html, summary }. */
 export async function compare({ server, fetchImpl = fetch, resolveSecret, pages = 20, imageHosts = [], environment = process.env, scenarios = SCENARIOS, companyContextProvider }) {
-  const { createProductionApp, MemoryArticleTextStore, MemoryPublisherStore, fetchWvcPage, sgiEuropeEnrichmentSource, sgiEuropeManifest, wvcCatalogueFetchConfig, wvcCatalogueParseOptions } = server;
+  const { createProductionApp, MemoryArticleTextStore, MemoryPublisherStore, fetchWvcPage, fetchWvcPageCount, sgiEuropeEnrichmentSource, sgiEuropeManifest, wvcCatalogueFetchConfig, wvcCatalogueParseOptions } = server;
   const wvcSource = {
     type: 'wvc', baseUrl: sgiEuropeEnrichmentSource.baseUrl, profileName: sgiEuropeEnrichmentSource.profileName, pageSize: sgiEuropeEnrichmentSource.pageSize,
     secretRef: sgiEuropeEnrichmentSource.secretRef, allowedHostnames: sgiEuropeEnrichmentSource.allowedHostnames, imageHostnames: [...sgiEuropeEnrichmentSource.allowedHostnames, ...imageHosts],
@@ -30,7 +30,8 @@ export async function compare({ server, fetchImpl = fetch, resolveSecret, pages 
   const fetchConfig = wvcCatalogueFetchConfig(wvcSource);
   const catalogue = wvcCatalogueParseOptions(wvcSource);
   const store = new MemoryArticleTextStore();
-  const probe = await fetchWvcPage({ ...fetchConfig, dataConstraint: 0 }, 1, { fetchImpl, resolveSecret });
+  // dataconstraint 0 only for the page count; every story fetch below uses 4 (HEADLINE and STORYTEXT).
+  const probe = await fetchWvcPageCount(fetchConfig, { fetchImpl, resolveSecret });
   const first = pages > 0 ? Math.max(1, probe.totalPages - pages + 1) : 1;
   let stored = 0;
   for (let page = first; page <= probe.totalPages; page += 1) {

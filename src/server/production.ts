@@ -66,7 +66,7 @@ export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 export { PostgresGenerationJobStore } from '../reports/generation-jobs';
 export { MemoryArticleTextStore, PostgresArticleTextStore } from '../reports/article-texts';
 // Used by scripts/wvc-check.mjs (read-only diagnostics).
-export { fetchWvcPage, inspectWvcLastPage, storyCodeFromUrl, wvcCatalogueFetchConfig, wvcCatalogueParseOptions } from '../publishers/content/wvc';
+export { fetchWvcPage, fetchWvcPageCount, inspectWvcLastPage, storyCodeFromUrl, wvcCatalogueFetchConfig, wvcCatalogueParseOptions } from '../publishers/content/wvc';
 export { sgiEuropeEnrichmentSource, sgiEuropeFeedUrl, sgiEuropeManifest } from '../publishers/sgi-europe/config';
 export { MemoryPublisherStore } from '../publishers/store';
 export { resolveCommitSha } from './health';

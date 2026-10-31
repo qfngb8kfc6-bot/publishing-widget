@@ -47,7 +47,10 @@ export interface WvcCatalogueParseOptions {
   imageHostnames: readonly string[];
 }
 
+/** HEADLINE is confirmed on real SGI responses at dataconstraint 1-4; it is absent at dataconstraint 0. */
 export const DEFAULT_WVC_TITLE_FIELDS = ['HEADLINE', 'TITLE', 'STORYTITLE', 'STORYHEADLINE', 'HEADING'];
+/** Story fetches for a catalogue need HEADLINE (>= 1) and STORYTEXT (4); 0 is only for the page-count probe. */
+export const WVC_CATALOGUE_DATA_CONSTRAINT = 4;
 export const WVC_DESCRIPTION_MAX_CHARS = 300;
 /** The secret behind a WVC source must be a dedicated WVC key, never another server secret (DATABASE_URL, AI keys). */
 export const WVC_SECRET_REF_PATTERN = /^env:[A-Z][A-Z0-9_]{0,60}_WVC_API_KEY$/;
@@ -146,7 +149,7 @@ export function wvcCatalogueParseOptions(config: WvcCatalogueSourceConfig): WvcC
 
 /** The fetch settings of a catalogue source: always with STORYTEXT (dataconstraint 4). */
 export function wvcCatalogueFetchConfig(config: WvcCatalogueSourceConfig): WvcEnrichmentSourceConfig {
-  return { type: 'wvc', baseUrl: config.baseUrl, profileName: config.profileName, pageSize: config.pageSize, dataConstraint: 4, secretRef: config.secretRef, allowedHostnames: config.allowedHostnames, ...(config.timeoutMs ? { timeoutMs: config.timeoutMs } : {}), ...(config.maxBytes ? { maxBytes: config.maxBytes } : {}) };
+  return { type: 'wvc', baseUrl: config.baseUrl, profileName: config.profileName, pageSize: config.pageSize, dataConstraint: WVC_CATALOGUE_DATA_CONSTRAINT, secretRef: config.secretRef, allowedHostnames: config.allowedHostnames, ...(config.timeoutMs ? { timeoutMs: config.timeoutMs } : {}), ...(config.maxBytes ? { maxBytes: config.maxBytes } : {}) };
 }
 
 /** Configuration problems of a WVC catalogue source, as safe codes (empty when valid). */
@@ -267,6 +270,8 @@ export interface WvcFetchOptions {
 
 /** Fetches one page (GET, key in the API_ACCESS_TOKEN header, allowlisted host, no redirects, size-capped). */
 export async function fetchWvcPage(config: WvcEnrichmentSourceConfig, page: number, options: WvcFetchOptions): Promise<WvcPage> {
+  // A catalogue story fetch without STORYTEXT (and below 1, without HEADLINE) would store nothing usable.
+  if (options.catalogue && config.dataConstraint < WVC_CATALOGUE_DATA_CONSTRAINT) throw new WvcError('wvc_catalogue_needs_storytext');
   const key = options.resolveSecret(config.secretRef)?.trim();
   if (!key) throw new WvcError('wvc_not_configured');
   let raw: string;
@@ -285,6 +290,19 @@ export async function fetchWvcPage(config: WvcEnrichmentSourceConfig, page: numb
   let body: unknown;
   try { body = JSON.parse(raw); } catch { throw new WvcError('wvc_invalid_response'); }
   return parseWvcPage(body, page, options.catalogue);
+}
+
+/**
+ * Page and record counts only, from a metadata probe of page 1 at dataconstraint 0 (no HEADLINE, no STORYTEXT).
+ * The only place dataconstraint 0 is used; story fetches always ask for 4.
+ */
+export async function fetchWvcPageCount(config: WvcEnrichmentSourceConfig, options: Omit<WvcFetchOptions, 'catalogue'>): Promise<{ totalPages: number; totalRecords: number }> {
+  const probe = await fetchWvcBody({ ...config, dataConstraint: 0 }, 1, options);
+  if (probe.errorCode || probe.body === undefined) throw new WvcError((probe.errorCode as WvcErrorCode | undefined) ?? 'wvc_invalid_response');
+  const summary = summarizeWvcBody(probe.body);
+  if (summary.errorCode || summary.errorsFound) throw new WvcError((summary.errorCode as WvcErrorCode | undefined) ?? 'wvc_api_error');
+  if (summary.totalPages === undefined) throw new WvcError('wvc_invalid_response');
+  return { totalPages: summary.totalPages, totalRecords: summary.totalRecords ?? 0 };
 }
 
 /** Diagnostics for one page: counts, dates and lengths only. Never text, URLs or the key. */
@@ -396,12 +414,10 @@ export async function inspectWvcCatalogue(config: WvcCatalogueSourceConfig, opti
   const errors = wvcCatalogueConfigErrors(config);
   if (errors.length) return { sourceType: 'wvc', reachable: false, errorCode: errors[0] };
   const fetchConfig = wvcCatalogueFetchConfig(config);
-  const probe = await fetchWvcBody({ ...fetchConfig, dataConstraint: 0 }, 1, options);
-  if (probe.errorCode || probe.body === undefined) return { sourceType: 'wvc', reachable: false, errorCode: probe.errorCode ?? 'wvc_invalid_response' };
-  const probeSummary = summarizeWvcBody(probe.body);
-  if (probeSummary.errorCode || probeSummary.errorsFound) return { sourceType: 'wvc', reachable: false, errorCode: probeSummary.errorCode ?? 'wvc_api_error' };
-  const totalPages = probeSummary.totalPages ?? 0;
-  const result: WvcCatalogueInspection = { sourceType: 'wvc', reachable: true, totalPages, totalRecords: probeSummary.totalRecords };
+  let counts: { totalPages: number; totalRecords: number };
+  try { counts = await fetchWvcPageCount(fetchConfig, options); } catch (error) { return { sourceType: 'wvc', reachable: false, errorCode: error instanceof WvcError ? error.code : 'wvc_invalid_response' }; }
+  const { totalPages } = counts;
+  const result: WvcCatalogueInspection = { sourceType: 'wvc', reachable: true, totalPages, totalRecords: counts.totalRecords };
   if (!totalPages) return result;
   const last = await fetchWvcBody(fetchConfig, totalPages, options);
   if (last.errorCode || last.body === undefined) return { ...result, reachable: false, errorCode: last.errorCode ?? 'wvc_invalid_response' };

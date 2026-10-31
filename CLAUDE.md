@@ -85,7 +85,8 @@ qfngb8kfc6-bot/publishing-widget.
 - **WVC API as the catalogue** (source type `wvc`, most new publishers; `src/publishers/content/wvc.ts`,
   `WvcCatalogueContentAdapter` in `content/adapters.ts`): the sync also stores title/URL/date/description (first 1–2
   sentences, ≤300 chars)/first allowed https image per story (migration 010); the catalogue is built from those rows.
-  Optional `rss` supplement for images and categories. `secretRef` must be `env:*_WVC_API_KEY`. Guided setup and the
+  Optional `rss` supplement for images and categories. `secretRef` must be `env:*_WVC_API_KEY`. Headline field
+  `HEADLINE` (absent at dataconstraint 0: story fetches always use 4, 0 only for the page-count probe). Guided setup and the
   Test step (`POST /api/admin/source-test`) are in the admin; see `docs/ONBOARDING.md`. SGI stays RSS + enrichment.
 
 ## Deployment

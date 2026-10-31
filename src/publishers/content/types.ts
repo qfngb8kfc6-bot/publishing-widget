@@ -135,7 +135,10 @@ export interface WvcCatalogueSourceConfig {
   allowedHostnames: string[];
   /** Hosts an image found in STORYTEXT may come from (default: allowedHostnames). */
   imageHostnames?: string[];
-  /** API field names tried in order for the headline (default HEADLINE, TITLE, STORYTITLE, STORYHEADLINE, HEADING). */
+  /**
+   * API field names tried in order for the headline. Default HEADLINE first (confirmed on SGI responses; present
+   * at dataconstraint 1-4, absent at 0), then TITLE, STORYTITLE, STORYHEADLINE, HEADING.
+   */
   titleFields?: string[];
   /** WVC API + RSS: the feed supplies images and categories for stories it carries. */
   rss?: { feedUrl: string; allowedHostnames?: string[]; timeoutMs?: number; maxBytes?: number };

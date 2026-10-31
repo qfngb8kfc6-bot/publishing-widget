@@ -48,6 +48,8 @@ describe('guided setup Test step', () => {
     expect(wvc.lastPage.textLength.min).toBeGreaterThan(0);
     expect(wvc.lastPage.sampleTitles).toEqual(['Acme & Partners open 71 stores', 'Acme & Partners open 72 stores']);
     expect(requested.map((entry) => new URL(entry.url).searchParams.get('pagenumber'))).toEqual(['1', '7']);
+    // dataconstraint 0 only for the page-count probe; the story fetch asks for HEADLINE and STORYTEXT (4).
+    expect(requested.map((entry) => new URL(entry.url).searchParams.get('dataconstraint'))).toEqual(['0', '4']);
     expect(requested.every((entry) => entry.key === KEY)).toBe(true);
   });
 
