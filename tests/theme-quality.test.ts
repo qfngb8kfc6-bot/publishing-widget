@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildProfessionalProfile } from '../src/core';
 import { mergeProfessionalProfileEnhancement, validateReportContent } from '../src/ai/validation';
 import { factualLine } from '../src/reports/generate';
-import { reportThemes, selectReportThemes } from '../src/reports/themes';
+import { consolidateThemes, reportThemes, selectReportThemes } from '../src/reports/themes';
 import { createProductionApp } from '../src/server/production';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import { MemoryPublisherStore } from '../src/publishers/store';
@@ -62,10 +62,21 @@ describe('report themes', () => {
     expect(themesFor({ ...profile, themes: ['litigation', 'trademark'] })).toEqual(['litigation', 'trademark']);
   });
 
-  it('keeps dedicated roles on their existing themes', () => {
+  it('gives dedicated roles the same near-synonym check: no "retail" + "retail operations" or "stores" + "store openings"', () => {
     const profile = buildProfessionalProfile(company('nike.com', 'Nike', 'sporting goods', []), 'Head of Retail');
-    const previous = [...new Set([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes])].slice(0, 4);
-    expect(themesFor(profile)).toEqual(previous);
+    const candidates = [...new Set([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes])];
+    // Before: the first four candidates as they came.
+    expect(candidates.slice(0, 4)).toEqual(['retail', 'retail operations', 'stores', 'store openings']);
+    const themes = themesFor(profile);
+    expect(themes).toEqual(['retail', 'stores', 'omnichannel', 'distribution']);
+    // Still drawn from the role's own candidates, in their order.
+    expect(themes.every((theme) => candidates.includes(theme))).toBe(true);
+    expect(themes.map((theme) => candidates.indexOf(theme))).toEqual([...themes.map((theme) => candidates.indexOf(theme))].sort((a, b) => a - b));
+  });
+
+  it('keeps dedicated roles whose themes are already distinct unchanged', () => {
+    const profile = buildProfessionalProfile(company('nike.com', 'Nike', 'sporting goods', []), 'Head of Procurement');
+    expect(themesFor(profile)).toEqual(['procurement', 'suppliers', 'sourcing', 'vendors']);
   });
 });
 
@@ -127,5 +138,32 @@ describe('factual line for theme results', () => {
     const long = factualLine({ title: 'T', description: `${'word '.repeat(60)}end.` });
     expect(long.length).toBeLessThanOrEqual(221);
     expect(long.endsWith('…')).toBe(true);
+  });
+});
+
+describe('theme consolidation after support', () => {
+  it('merges a theme whose stories equal or sit within another theme\'s, keeping the larger (or earlier) one', () => {
+    // retail (7 of the 8 stores stories) merges; omnichannel and distribution are small subtopics and stay.
+    const support = { retail: ['1', '3', '4', '5', '6', '7', '8'], stores: ['1', '2', '3', '4', '5', '6', '7', '8'], omnichannel: ['4', '8'], distribution: ['1', '2'] };
+    expect(consolidateThemes(['retail', 'stores', 'omnichannel', 'distribution'], support, 8)).toEqual({ themes: ['stores', 'omnichannel', 'distribution'], support: { stores: support.stores, omnichannel: ['4', '8'], distribution: ['1', '2'] }, merged: 1 });
+    // Four themes on the same seven stories are one card.
+    const same = ['1', '2', '3', '4', '5', '6', '7'];
+    expect(consolidateThemes(['procurement', 'suppliers', 'sourcing', 'vendors'], { procurement: same, suppliers: same, sourcing: same, vendors: same }, 7).themes).toEqual(['procurement']);
+    // A subset at 75% merges; under 75% it does not.
+    expect(consolidateThemes(['stores', 'retail'], { stores: ['a', 'b', 'c'], retail: ['a', 'b', 'c', 'd'] }, 8).themes).toEqual(['retail']);
+    expect(consolidateThemes(['strategy', 'markets'], { strategy: ['1'], markets: ['1', '2', '3', '5'] }, 5).themes).toEqual(['strategy', 'markets']);
+    // Equal sets: the earlier theme stays.
+    expect(consolidateThemes(['stores', 'retail'], { stores: ['a', 'b'], retail: ['b', 'a'] }, 8).themes).toEqual(['stores']);
+    // Partial overlap is not a merge.
+    expect(consolidateThemes(['stores', 'retail'], { stores: ['a', 'b'], retail: ['b', 'c'] }, 8).themes).toEqual(['stores', 'retail']);
+  });
+
+  it('never shows more themes than stories, and leaves unsupported themes for reportThemes to hide', () => {
+    const support = { retail: ['a', 'd'], stores: ['b'], omnichannel: ['c'], distribution: ['a', 'd'] };
+    const result = consolidateThemes(['retail', 'stores', 'omnichannel', 'distribution', 'pricing'], support, 3);
+    // distribution equals retail (the earlier stays), and three stories mean at most three themes.
+    expect(result.themes).toEqual(['retail', 'stores', 'omnichannel', 'pricing']);
+    expect(Object.keys(result.support)).toEqual(['retail', 'stores', 'omnichannel']);
+    expect(consolidateThemes(['a', 'b', 'c', 'd'], { a: ['1'], b: ['2'], c: ['3'], d: ['4'] }, 3).support).toEqual({ a: ['1'], b: ['2'], c: ['3'] });
   });
 });

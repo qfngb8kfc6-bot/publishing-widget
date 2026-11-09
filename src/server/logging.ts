@@ -118,6 +118,8 @@ export interface ServerLogFields {
   /** theme_unsupported_removed: themes chosen, and those dropped for having no supporting report story. */
   themeCount?: number;
   removedCount?: number;
+  /** theme_unsupported_removed: themes merged into another whose supporting stories include theirs, or over the story count. */
+  mergedCount?: number;
   /** explanation_restated: which overlap rule fired, and what happened (regenerated / fallback). */
   restatedRule?: 'consecutive_words' | 'token_overlap';
   outcome?: string;
