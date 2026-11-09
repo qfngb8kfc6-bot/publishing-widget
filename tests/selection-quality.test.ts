@@ -36,8 +36,9 @@ const item = (title: string, index: number) => `<item><title>${title}</title><li
 const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>SGI</title>${[...nikeTitles, ...otherTitles].map(item).join('')}</channel></rss>`;
 type Call = { operation: string; ids: string[]; titles: string[]; part?: 'S' | 'E' };
 
-async function generate(respond: (call: Call) => unknown) {
+async function generate(respond: (call: Call, calls: Call[]) => unknown) {
   const logs: Array<{ message: string; fields: Record<string, unknown> }> = [];
+  const calls: Call[] = [];
   const manifest = { ...sgiEuropeManifest, content: { ...sgiEuropeManifest.content, resultLimit: 5 }, results: { ...sgiEuropeManifest.results, maximumRecommendations: 5 } };
   const app = createProductionApp({
     environment: 'test',
@@ -49,7 +50,8 @@ async function generate(respond: (call: Call) => unknown) {
       const ref = JSON.parse(body.messages[1].content.replace('BEGIN_REFERENCE_JSON\n', '').replace('\nEND_REFERENCE_JSON', ''));
       const list = ref.payload.candidates ?? ref.payload.articles ?? [];
       const call: Call = { operation: ref.operation, ids: list.map((entry: { id: string }) => entry.id), titles: list.map((entry: { title: string }) => entry.title), ...(ref.operation === 'report-content' ? { part: body.messages[0].content.includes('Do not write explanations') ? 'S' as const : 'E' as const } : {}) };
-      return Response.json({ choices: [{ message: { content: JSON.stringify(respond(call)) }, finish_reason: 'stop' }] });
+      calls.push(call);
+      return Response.json({ choices: [{ message: { content: JSON.stringify(respond(call, calls)) }, finish_reason: 'stop' }] });
     },
     companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sporting goods', description: 'Nike', topics: [], entities: ['Nike'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
     logger: { info: (message, fields) => logs.push({ message, fields: (fields ?? {}) as Record<string, unknown> }), error: () => undefined },
@@ -57,8 +59,11 @@ async function generate(respond: (call: Call) => unknown) {
   const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
   expect(response.status).toBe(201);
   const { reportId } = await response.json() as { reportId: string };
-  return { report: (await app.reportStore.get(reportId, 'sgi-europe'))!, logs };
+  return { report: (await app.reportStore.get(reportId, 'sgi-europe'))!, logs, calls };
 }
+
+/** The titles sent to the summary call: report stories only (reserves never go there). IDs are aliased per call. */
+const summaryTitles = (calls: Call[]) => new Set(calls.find((call) => call.part === 'S')?.titles ?? []);
 
 /** S writes the summary; E batches explain Nike stories and mark every other company's story weak. */
 function content(call: Call) {
@@ -68,7 +73,7 @@ function content(call: Call) {
 
 describe('own-company cap after weak-fit removal', () => {
   it('restores held-back own-company stories (best first) when content weak fits leave under five', async () => {
-    const { report, logs } = await generate((call) => (call.operation === 'semantic-reranking'
+    const { report, logs, calls } = await generate((call) => (call.operation === 'semantic-reranking'
       ? { results: call.ids.map((id, index) => ({ id, score: 90 - index })) }
       : call.operation === 'report-content' ? content(call) : {}));
     const titles = report.recommendations.map((recommendation) => recommendation.article.title);
@@ -77,10 +82,28 @@ describe('own-company cap after weak-fit removal', () => {
     expect(titles).toHaveLength(5);
     expect(titles.every((title) => title.startsWith('Nike'))).toBe(true);
     const share = logs.find((entry) => entry.message === 'own_company_share')!.fields;
-    expect(share).toMatchObject({ ownCompanyRestored: 2, ownCompanyDeferred: 0, recommendationCount: 5 });
-    const restored = logs.filter((entry) => entry.message === 'explanation_fallback' && entry.fields.rejectReason === 'own_company_restored');
-    expect(restored).toHaveLength(2);
-    for (const entry of restored) expect(report.recommendations.find((recommendation) => recommendation.articleId === entry.fields.articleId)?.article.title).toMatch(/^Nike/);
+    // Only one other-company story is left eligible, so passing 60% is the logged exception.
+    expect(share).toMatchObject({ ownCompanyRestored: 2, ownCompanyDeferred: 0, recommendationCount: 5, nonOwnCompanyEligible: 1, ownCompanyCapExceeded: true });
+    // Restored stories went through the normal explanation batches: every card has its AI "why", none the fallback.
+    expect(report.recommendations.every((recommendation) => recommendation.rankingMetadata.explanationSource === 'ai')).toBe(true);
+    expect(logs.filter((entry) => entry.message === 'explanation_fallback')).toHaveLength(0);
+    // The reserves rode in the E batches only, never in the summary call, and added no more than one batch.
+    const reserveTitles = titles.filter((title) => !calls.find((call) => call.part === 'S')!.titles.includes(title));
+    expect(reserveTitles).toHaveLength(2);
+    expect(calls.filter((call) => call.part === 'E').flatMap((call) => call.titles)).toEqual(expect.arrayContaining(reserveTitles));
+    expect(calls.filter((call) => call.part === 'E')).toHaveLength(2);
+  });
+
+  it('never restores a reserve whose explanation failed or came back weak', async () => {
+    const { report, calls } = await generate((call, seen) => (call.operation === 'semantic-reranking'
+      ? { results: call.ids.map((id, index) => ({ id, score: 90 - index })) }
+      : call.operation === 'report-content' && call.part === 'S' ? content(call)
+        // Report stories: Nike explained, others weak. Reserves (the last two in the batches): weak.
+        : call.operation === 'report-content' ? { explanations: call.ids.map((articleId, index) => (call.titles[index].startsWith('Nike') && summaryTitles(seen).has(call.titles[index]) ? { articleId, angle: 'channel shift', explanation: `Store expansion ${index} widens your owned footprint.` } : { articleId, fit: 'weak' })) } : {}));
+    // The summary call went out before the explanation batches, so reserves were known when E was answered.
+    expect(calls.findIndex((call) => call.part === 'S')).toBeLessThan(calls.findIndex((call) => call.part === 'E'));
+    expect(report.recommendations).toHaveLength(3);
+    expect(report.recommendations.every((recommendation) => recommendation.rankingMetadata.explanationSource === 'ai')).toBe(true);
   });
 
   it('fills places freed by rerank weak fits from the pool instead of shrinking the report', async () => {

@@ -141,6 +141,10 @@ export interface ServerLogFields {
   ownCompanyDeferred?: number;
   /** own_company_share: held-back own-company articles restored because the report fell under five stories. */
   ownCompanyRestored?: number;
+  /** own_company_share: other-company stories eligible to show; when under five, own-company stories may pass 60%. */
+  nonOwnCompanyEligible?: number;
+  /** own_company_share: true when own-company stories are more than 60% of the report (only allowed with nonOwnCompanyEligible < 5). */
+  ownCompanyCapExceeded?: boolean;
   /** duplicates_collapsed: near-duplicate stories removed before the AI calls, and "removedId>keptId" pairs. */
   duplicatesCollapsed?: number;
   duplicatePairs?: string;

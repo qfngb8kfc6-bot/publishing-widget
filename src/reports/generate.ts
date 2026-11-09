@@ -13,7 +13,7 @@ import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, consolidateThemes, p
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
-import { articleRelationship, limitOwnCompanyShare, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
+import { articleRelationship, limitOwnCompanyShare, OWN_COMPANY_MAX_SHARE, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
 import { collapseNearDuplicates } from './near-duplicates';
 import { explanationQualityWarnings, explanationRestatement, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
 import { angleForArticle, normalizeAngle } from '../ai/angles';
@@ -1095,7 +1095,12 @@ export class ReportGenerationService {
     this.trackTimed(timing, 'retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
     this.trackTimed(timing, 'ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
     const contentRanked = ranked;
-    const deterministicRecommendations = contentRanked.map((item) => ({
+    // Reserves: the best held-back own-company stories that could be restored if content weak fits thin the report.
+    // At most two (from the three-story floor to five). They ride in the explanation batches only (never the summary
+    // call), so a restored story has its own AI "why" like the others; unused explanations are discarded.
+    const reserves = ownCompanyCap.heldBack.filter((item) => !rerankWeakIds.has(item.article.id)).slice(0, THIN_REPORT_STORIES - MIN_REPORT_RECOMMENDATIONS);
+    const reserveIds = new Set(reserves.map((item) => item.article.id));
+    const contentRecommendation = (item: RankedCandidate) => ({
       article: item.article,
       deterministicExplanation: factualLine(item.article),
       relevanceSignals: item.relevanceSignals,
@@ -1103,7 +1108,9 @@ export class ReportGenerationService {
       matchedConcepts: [...item.directMatches, ...item.adjacentMatches],
       score: Math.round(item.finalScore),
       relationship: articleRelationship(item.article, profile),
-    }));
+    });
+    const deterministicRecommendations = contentRanked.map(contentRecommendation);
+    const reserveRecommendations = reserves.map(contentRecommendation);
     const themes = selectReportThemes(profile, contentRanked.map((item) => item.article));
     // Thin coverage for this reader (best match below a strong fit, or fewer than three direct matches): the summary
     // call is told so and writes a short, hedged note instead of building a pattern out of weak matches.
@@ -1125,22 +1132,25 @@ export class ReportGenerationService {
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
     const aiExplanationStartedAt = clockMs();
     // One query for the selected articles: leads for the AI content call and the subscriberOnly flag.
-    const articleTexts = await this.articleLeads(input.publisherId, contentRanked.map((item) => item.article), AI_LEAD_CHARS, input.requestId);
+    const articleTexts = await this.articleLeads(input.publisherId, [...contentRanked, ...reserves].map((item) => item.article), AI_LEAD_CHARS, input.requestId);
     if (aiAvailable && ranked.length > 0) {
       // Parallel calls, each under its own AI time cap and falling back independently: S (summary, cited IDs, theme
       // lines) only affects the summary and theme cards; a failed E batch only affects its own articles.
       const explanationsEnabled = this.ai!.config.explanationsEnabled;
       // Lead excerpts ride only on the AI request objects, never on the recommendations that are persisted.
-      const contentRecommendations = deterministicRecommendations.map((recommendation) => {
+      const withLead = <R extends { article: NormalizedArticle }>(recommendation: R) => {
         const leadExcerpt = articleTexts.get(recommendation.article.id)?.lead;
         return leadExcerpt ? { ...recommendation, leadExcerpt } : recommendation;
-      });
+      };
+      const contentRecommendations = deterministicRecommendations.map(withLead);
+      // Report stories first, reserves last: with SGI's eight places the two reserves add at most one parallel batch.
+      const explainedRecommendations = [...contentRecommendations, ...reserveRecommendations.map(withLead)];
       const parts: Array<{ part: string; request: ReportContentRequest }> = [
         { part: 'S', request: { publisherId: input.publisherId, profile, themes, includeExplanations: false, ...(coverageLimited ? { coverage: 'limited' as const } : {}), recommendations: contentRecommendations } },
-        ...(explanationsEnabled ? explanationBatches(contentRecommendations).map((batch, index) => ({ part: `E${index + 1}`, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: batch } })) : []),
+        ...(explanationsEnabled ? explanationBatches(explainedRecommendations).map((batch, index) => ({ part: `E${index + 1}`, request: { publisherId: input.publisherId, profile, includeSummary: false, recommendations: batch } })) : []),
       ];
       // What each article's figures can be dated from (title, description, lead): only for the year check, never logged.
-      const yearSources = new Map(contentRecommendations.map((recommendation) => {
+      const yearSources = new Map(explainedRecommendations.map((recommendation) => {
         const timing = articleTiming(recommendation.article.publishedAt);
         const text = [recommendation.article.title, recommendation.article.description ?? recommendation.article.summary ?? recommendation.article.contentSnippet, 'leadExcerpt' in recommendation ? recommendation.leadExcerpt : undefined].filter(Boolean).join(' ');
         return [recommendation.article.id, { text, olderYear: timing.older ? timing.published : undefined }];
@@ -1174,17 +1184,17 @@ export class ReportGenerationService {
           for (const articleId of skipped) notReturnedIds.set(articleId, outcome.part);
           return outcome.value.explanations ?? [];
         });
-        const articleById = new Map(ranked.map((item) => [item.article.id, item.article]));
+        const articleById = new Map([...ranked, ...reserves].map((item) => [item.article.id, item.article]));
         // An explanation that only retells the headline and excerpt shown above it is weak: regenerate those once
         // from the reader's side; one still restated (or not returned) falls back like any unexplained story.
-        const restatedIds = await this.regenerateRestated(input, profile, accepted, contentRecommendations, articleById, explanationOutcomes);
+        const restatedIds = await this.regenerateRestated(input, profile, accepted, explainedRecommendations, articleById, explanationOutcomes);
         for (const articleId of restatedIds) restatedFallbackIds.add(articleId);
         for (const item of accepted.filter((entry) => !restatedIds.has(entry.articleId))) {
           const article = articleById.get(item.articleId);
           explanationById.set(item.articleId, { explanation: item.explanation, angle: article ? angleForArticle(normalizeAngle(item.angle), article) : normalizeAngle(item.angle) });
         }
         aiExplanationUsed = explanationById.size > 0;
-        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map(ranked.map((item) => {
+        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map([...ranked, ...reserves].map((item) => {
           const timing = articleTiming(item.article.publishedAt);
           return [item.article.id, { title: item.article.title, olderYear: timing.older ? timing.published : undefined, sourceText: yearSources.get(item.article.id)?.text }];
         }))));
@@ -1194,12 +1204,21 @@ export class ReportGenerationService {
     const afterContent = removeWeakFits(contentRanked, new Set([...contentWeakIds, ...notReturnedIds.keys()]));
     if (notReturnedIds.size) {
       const removedIds = new Set(afterContent.removed.map((item) => item.article.id));
-      for (const [articleId, part] of notReturnedIds) this.logger?.info('not_returned_treated_as_weak', { requestId: input.requestId, publisherId: input.publisherId, part, articleId: safeLogText(articleId, 200), operation: removedIds.has(articleId) ? 'removed' : 'kept_lower_confidence' });
+      for (const [articleId, part] of notReturnedIds) if (!reserveIds.has(articleId)) this.logger?.info('not_returned_treated_as_weak', { requestId: input.requestId, publisherId: input.publisherId, part, articleId: safeLogText(articleId, 200), operation: removedIds.has(articleId) ? 'removed' : 'kept_lower_confidence' });
     }
-    // A report left thin (under five stories) by content weak fits gets the own-company stories the cap held back,
-    // best first: they passed the threshold and the rerank. They had no content call, so they take the fallback line.
-    const restoredOwn = afterContent.kept.length < THIN_REPORT_STORIES ? restoreHeldBack(afterContent.kept, ownCompanyCap.heldBack.filter((item) => !rerankWeakIds.has(item.article.id)), afterRerank.kept) : { kept: afterContent.kept, restored: [] as RankedCandidate[] };
-    const restoredOwnIds = new Set(restoredOwn.restored.map((item) => item.article.id));
+    // A report left thin (under five stories) by content weak fits gets the reserves back, best first: they passed
+    // the threshold and the rerank. With AI explanations on, only a reserve with an accepted, non-restated AI
+    // explanation can return (never a weak fit, never a card without the "why" the others have).
+    const explanationsAttempted = aiAvailable && this.ai!.config.explanationsEnabled && ranked.length > 0;
+    const restorable = reserves.filter((item) => !contentWeakIds.has(item.article.id) && (!explanationsAttempted || explanationById.has(item.article.id)));
+    const isOwn = (item: RankedCandidate) => articleRelationship(item.article, profile) === 'own_company';
+    // Other-company stories still eligible to show: past the rerank and not removed as content weak fits.
+    const contentRemoved = new Set(afterContent.removed);
+    const nonOwnEligible = afterRerank.kept.filter((item) => !isOwn(item) && !contentRemoved.has(item)).length;
+    // Five or more of them: restoring must not take own-company stories past 60% of the report.
+    const ownKept = afterContent.kept.filter(isOwn).length;
+    const maxRestore = nonOwnEligible >= THIN_REPORT_STORIES ? Math.max(0, Math.floor((OWN_COMPANY_MAX_SHARE * afterContent.kept.length - ownKept) / (1 - OWN_COMPANY_MAX_SHARE) + 1e-9)) : restorable.length;
+    const restoredOwn = afterContent.kept.length < THIN_REPORT_STORIES ? restoreHeldBack(afterContent.kept, restorable.slice(0, maxRestore), afterRerank.kept) : { kept: afterContent.kept, restored: [] as RankedCandidate[] };
     const weakFit = { kept: restoredOwn.kept, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
     const finalCoverageLimited = coverageLimited || hasLimitedCoverage(weakFit.kept);
     const coverageNote = finalCoverageLimited ? limitedCoverageNote(definition.manifest?.name ?? definition.config.publisherName, profile, themes) : undefined;
@@ -1230,7 +1249,7 @@ export class ReportGenerationService {
       for (const item of weakFit.kept) {
         const articleId = item.article.id;
         if (explanationById.has(articleId)) continue;
-        const reason = restoredOwnIds.has(articleId) ? 'own_company_restored' : restatedFallbackIds.has(articleId) ? 'restated' : contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
+        const reason = restatedFallbackIds.has(articleId) ? 'restated' : contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
         this.logger?.info('explanation_fallback', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: notReturnedIds.get(articleId) ?? failedBatchIds.get(articleId), rejectReason: reason });
       }
     }
@@ -1258,7 +1277,7 @@ export class ReportGenerationService {
     const unsupportedThemes = consolidated.themes.filter((theme) => !themeArticleIds[theme]).length;
     if (unsupportedThemes || consolidated.merged) this.logger?.info('theme_unsupported_removed', { requestId: input.requestId, publisherId: input.publisherId, themeCount: themes.length, removedCount: unsupportedThemes, mergedCount: consolidated.merged });
     const ownCompanyCount = recommendations.filter((recommendation) => articleRelationship(recommendation.article, profile) === 'own_company').length;
-    this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ownCompanyCap.deferred - restoredOwn.restored.length, ownCompanyRestored: restoredOwn.restored.length });
+    this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ownCompanyCap.deferred - restoredOwn.restored.length, ownCompanyRestored: restoredOwn.restored.length, nonOwnCompanyEligible: nonOwnEligible, ownCompanyCapExceeded: ownCompanyCount > recommendations.length * OWN_COMPANY_MAX_SHARE });
     const report: ReportRecord = {
       id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: { ...profile, themes: consolidated.themes, themeArticleIds, ...(ranking.normalizedArticleCount > 0 ? { catalogueArticleCount: ranking.normalizedArticleCount } : {}), ...(coverageNote ? { coverage: { limited: true as const, note: coverageNote } } : {}) }, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
