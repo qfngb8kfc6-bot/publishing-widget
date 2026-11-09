@@ -28,9 +28,10 @@ export const OWN_COMPANY_MAX_SHARE = 0.6;
  * Takes the first `limit` items of a ranked list, holding articles about the reader's own company to about 60%
  * of the result while other articles that already passed the normal threshold are available. Thresholds are
  * never lowered: when there are not enough alternatives the best own-company articles fill the remaining slots.
- * Rank order is preserved. `deferred` counts own-company articles moved out of the plain top `limit`.
+ * Rank order is preserved. `deferred` counts own-company articles moved out of the plain top `limit`; `heldBack`
+ * lists them, best first.
  */
-export function limitOwnCompanyShare<T>(ranked: T[], limit: number, isOwnCompany: (item: T) => boolean): { selected: T[]; deferred: number } {
+export function limitOwnCompanyShare<T>(ranked: T[], limit: number, isOwnCompany: (item: T) => boolean): { selected: T[]; deferred: number; heldBack: T[] } {
   const size = Math.min(limit, ranked.length);
   const maxOwn = Math.round(size * OWN_COMPANY_MAX_SHARE);
   const own = ranked.map(isOwnCompany);
@@ -42,7 +43,24 @@ export function limitOwnCompanyShare<T>(ranked: T[], limit: number, isOwnCompany
   }
   for (let index = 0; index < ranked.length && chosen.size < size; index += 1) chosen.add(index);
   const deferred = own.slice(0, size).filter((isOwn, index) => isOwn && !chosen.has(index)).length;
-  return { selected: ranked.filter((_, index) => chosen.has(index)), deferred };
+  // Own-company articles the cap moved out of the plain top `limit`, best first: restored when the report thins out.
+  const heldBack = ranked.slice(0, size).filter((_, index) => own[index] && !chosen.has(index));
+  return { selected: ranked.filter((_, index) => chosen.has(index)), deferred, heldBack };
+}
+
+/** Below this many stories a report is thin: held-back own-company stories come back before it is shown. */
+export const THIN_REPORT_STORIES = 5;
+
+/**
+ * Restores held-back own-company articles (best first) until the report has `minimum` stories, keeping the
+ * pool's rank order. Held-back articles already passed the threshold and the rerank; nothing else is added.
+ */
+export function restoreHeldBack<T>(kept: T[], heldBack: readonly T[], pool: readonly T[], minimum = THIN_REPORT_STORIES): { kept: T[]; restored: T[] } {
+  const restored = heldBack.filter((item) => !kept.includes(item)).slice(0, Math.max(0, minimum - kept.length));
+  if (!restored.length) return { kept, restored };
+  const position = new Map(pool.map((item, index) => [item, index]));
+  const rank = (item: T) => position.get(item) ?? Number.MAX_SAFE_INTEGER;
+  return { kept: [...kept, ...restored].sort((left, right) => rank(left) - rank(right)), restored };
 }
 
 export function articleRelationship(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): ArticleRelationship {

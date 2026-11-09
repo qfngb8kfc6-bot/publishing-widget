@@ -13,7 +13,7 @@ import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, profileForTheme, sel
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
-import { articleRelationship, limitOwnCompanyShare } from './relationship';
+import { articleRelationship, limitOwnCompanyShare, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
 import { collapseNearDuplicates } from './near-duplicates';
 import { explanationQualityWarnings, explanationRestatement, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
 import { angleForArticle, normalizeAngle } from '../ai/angles';
@@ -266,6 +266,12 @@ interface RankedCandidate {
 const MIN_REPORT_RECOMMENDATIONS = 3;
 
 /**
+ * Why the AI rerank took an article out: not in its response, marked keep:false, blended score under the
+ * threshold, or flagged weak and removed before the content call (weak_removed).
+ */
+type RerankDropReason = 'not_returned' | 'keep_false' | 'below_threshold' | 'weak_removed';
+
+/**
  * Removes weak-fit articles (quality over quantity). If that would leave fewer than the minimum, the strongest
  * weak articles stay in rank order and are returned as lower confidence.
  */
@@ -485,6 +491,11 @@ export class ReportGenerationService {
     return stillRestated;
   }
 
+  /** One rerank_dropped line per article the AI rerank took out of the ranking: article ID and reason only. */
+  private logRerankDrops(input: { requestId?: string; publisherId: string }, stage: 'report' | 'theme', drops: ReadonlyArray<{ articleId: string; reason: RerankDropReason }>): void {
+    for (const drop of drops) this.logger?.info('rerank_dropped', { requestId: input.requestId, publisherId: input.publisherId, stage, articleId: safeLogText(drop.articleId, 200), rejectReason: drop.reason });
+  }
+
   /** One ai_quality_warning line per issue: scope, article ID and code only, never the text. */
   private logQualityWarnings(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, scope: 'summary' | 'explanation', warnings: Array<{ code: ContentQualityCode; articleId?: string }>): void {
     for (const warning of warnings) this.logger?.info('ai_quality_warning', { requestId: input.requestId, publisherId: input.publisherId, stage: scope, qualityCode: warning.code, articleId: warning.articleId ? safeLogText(warning.articleId, 200) : undefined });
@@ -639,7 +650,7 @@ export class ReportGenerationService {
     }
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string, articlesSearched?: number) => void, capOwnCompany = false): Promise<{ ranked: RankedCandidate[]; ownCompanyDeferred: number; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string, articlesSearched?: number) => void, fullPool = false): Promise<{ ranked: RankedCandidate[]; finalLimit: number; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     const runtimeInfo = this.runtimeDiagnostics?.(publisherId);
@@ -797,14 +808,9 @@ export class ReportGenerationService {
     const deterministicRankingMs = clockMs() - deterministicStartedAt;
     const aiEligibleCount = aiAvailable ? Math.min(deterministicRanked.length, this.ai!.config.rerankLimit) : 0;
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_input', { stage: 'ranking', retrievalCandidates: candidates.length, rankingCandidateCount: preselected.length, normalizedArticles: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, deterministicEligible: deterministicRanked.length, eligibleCount: deterministicRanked.length });
-    // The main report holds own-company articles to about 60% when other qualifying articles exist.
-    let ownCompanyDeferred = 0;
-    const limitRanked = <T extends RankedCandidate>(items: T[]): T[] => {
-      if (!capOwnCompany) return items.slice(0, finalLimit);
-      const limited = limitOwnCompanyShare(items, finalLimit, (item) => articleRelationship(item.article, profile) === 'own_company');
-      ownCompanyDeferred = limited.deferred;
-      return limited.selected;
-    };
+    // fullPool (the main report): every ranked candidate comes back, so the report can remove rerank weak fits
+    // first and only then take its places and apply the own-company cap. Theme search takes the top places here.
+    const limitRanked = <T extends RankedCandidate>(items: T[]): T[] => (fullPool ? items : items.slice(0, finalLimit));
     let ranked = limitRanked(deterministicRanked);
     let aiRerankUsed = false;
     let aiFilteredCount = 0;
@@ -835,14 +841,15 @@ export class ReportGenerationService {
         const semanticById = new Map(semanticResults.map((result) => [result.articleId, result]));
         const deterministicWeight = definition.manifest?.ranking?.deterministicWeight ?? this.ai!.config.deterministicWeight;
         const semanticWeight = definition.manifest?.ranking?.semanticWeight ?? this.ai!.config.semanticWeight;
+        const rerankDrops: Array<{ articleId: string; reason: RerankDropReason }> = [];
         const aiRankedCandidates = deterministicRanked.slice(0, aiEligibleCount).flatMap((result, index) => {
           const semantic = semanticById.get(result.article.id);
-          if (!semantic) return [];
+          if (!semantic) { rerankDrops.push({ articleId: result.article.id, reason: 'not_returned' }); return []; }
           const semanticScore = semantic.semanticScore ?? result.deterministicScore;
-          if (semantic.keep === false) return [];
+          if (semantic.keep === false) { rerankDrops.push({ articleId: result.article.id, reason: 'keep_false' }); return []; }
           const relevanceType = result.relevanceType === 'adjacent' ? 'adjacent' as const : semantic.relevanceType ?? result.relevanceType;
           const finalScore = calibrateRelevanceScore(combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight }), relevanceType);
-          if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) return [];
+          if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) { rerankDrops.push({ articleId: result.article.id, reason: 'below_threshold' }); return []; }
           return [{ ...result, semanticScore, semanticSignals: semantic.signals ?? [], finalScore, rankingMode: 'hybrid' as const, ...(semantic.weak ? { weakFit: true } : {}), relevanceType, confidence: semantic.confidence ?? result.confidence, index }];
         });
         const aiRanked = aiRankedCandidates
@@ -861,6 +868,7 @@ export class ReportGenerationService {
         if (aiLimited.length > 0) {
           ranked = aiLimited;
           aiRerankUsed = true;
+          this.logRerankDrops({ requestId, publisherId }, fullPool ? 'report' : 'theme', rerankDrops);
         } else {
           ranked = limitRanked(deterministicRanked);
         }
@@ -871,7 +879,7 @@ export class ReportGenerationService {
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_output', { stage: 'ranking', deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, finalRecommendations: ranked.length });
     const finalFormattingStartedAt = clockMs();
     const timings = { ...catalogueDiagnostics, normalizationMs: catalogueDiagnostics.normalizationMs ?? normalizationMs, cataloguePreparationMs: catalogueDiagnostics.cataloguePreparationMs ?? (clockMs() - catalogueLoadStartedAt), catalogueCacheLookupMs, catalogueSelectionMs, currentReportExclusionMs, preselectionMs, deterministicRankingMs, aiRerankMs, finalFormattingMs: clockMs() - finalFormattingStartedAt };
-    return { ranked, ownCompanyDeferred, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
+    return { ranked, finalLimit, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
   }
 
   /** Leads and privacy for the given articles, in one query. Empty when not enriched, slow or failing. */
@@ -1072,17 +1080,21 @@ export class ReportGenerationService {
         catalogueRefreshReason: warmupDiagnostics.catalogueRefreshReason,
       };
     }
-    const ranked = ranking.ranked;
+    // Rerank weak fits leave first, before the content call, so the summary is never built on them. Only then are
+    // the report's places taken, with own-company articles held to about 60% while alternatives exist.
+    const pool = ranking.ranked;
+    const rerankWeakIds = new Set(pool.filter((item) => item.weakFit).map((item) => item.article.id));
+    const afterRerank = removeWeakFits(pool, rerankWeakIds);
+    this.logRerankDrops(input, 'report', afterRerank.removed.map((item) => ({ articleId: item.article.id, reason: 'weak_removed' as const })));
+    const ownCompanyCap = limitOwnCompanyShare(afterRerank.kept, ranking.finalLimit, (item) => articleRelationship(item.article, profile) === 'own_company');
+    const ranked = ownCompanyCap.selected;
     const aiRerankUsed = ranking.aiRerankUsed;
     this.logger?.info('report_retrieval_diagnostics', { requestId: input.requestId, publisherId: input.publisherId, normalizedArticles: ranking.normalizedCount, normalizedArticleCount: ranking.normalizedArticleCount, catalogueItemCount: ranking.normalizedArticleCount, preselectionInputCount: ranking.preselectionInputCount, preselectionOutputCount: ranking.preselectionOutputCount, retrievalCandidates: ranking.retrievedCount, candidateCount: ranking.retrievedCount, rankingCandidateCount: ranking.retrievedCount, deterministicEligible: ranking.deterministicEligible, eligibleCount: ranking.deterministicEligible, finalRecommendations: ranked.length, finalRecommendationCount: ranked.length, ...ranking.timings });
     this.logIbi(input, 'ibi_generation_counts', { stage: 'ranking', retrievalCandidates: ranking.retrievedCount, normalizedArticles: ranking.normalizedCount, deterministicEligible: ranking.deterministicEligible, aiRerankSurvivors: ranking.aiRerankSurvivors, finalRecommendations: ranked.length });
     const aiAvailable = this.canUseAI(definition);
     this.trackTimed(timing, 'retrieval_completed', input.publisherId, activeSession, { resultCount: ranking.retrievedCount });
     this.trackTimed(timing, 'ranking_completed', input.publisherId, activeSession, { resultCount: ranked.length, rankingMode: aiRerankUsed ? 'hybrid' : 'deterministic', aiRerankUsed });
-    // Rerank weak fits leave before the content call so the summary is never built on them.
-    const rerankWeakIds = new Set(ranked.filter((item) => item.weakFit).map((item) => item.article.id));
-    const afterRerank = removeWeakFits(ranked, rerankWeakIds);
-    const contentRanked = afterRerank.kept;
+    const contentRanked = ranked;
     const deterministicRecommendations = contentRanked.map((item) => ({
       article: item.article,
       deterministicExplanation: factualLine(item.article),
@@ -1184,7 +1196,11 @@ export class ReportGenerationService {
       const removedIds = new Set(afterContent.removed.map((item) => item.article.id));
       for (const [articleId, part] of notReturnedIds) this.logger?.info('not_returned_treated_as_weak', { requestId: input.requestId, publisherId: input.publisherId, part, articleId: safeLogText(articleId, 200), operation: removedIds.has(articleId) ? 'removed' : 'kept_lower_confidence' });
     }
-    const weakFit = { kept: afterContent.kept, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
+    // A report left thin (under five stories) by content weak fits gets the own-company stories the cap held back,
+    // best first: they passed the threshold and the rerank. They had no content call, so they take the fallback line.
+    const restoredOwn = afterContent.kept.length < THIN_REPORT_STORIES ? restoreHeldBack(afterContent.kept, ownCompanyCap.heldBack.filter((item) => !rerankWeakIds.has(item.article.id)), afterRerank.kept) : { kept: afterContent.kept, restored: [] as RankedCandidate[] };
+    const restoredOwnIds = new Set(restoredOwn.restored.map((item) => item.article.id));
+    const weakFit = { kept: restoredOwn.kept, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
     const finalCoverageLimited = coverageLimited || hasLimitedCoverage(weakFit.kept);
     const coverageNote = finalCoverageLimited ? limitedCoverageNote(definition.manifest?.name ?? definition.config.publisherName, profile, themes) : undefined;
     if (!aiSummaryUsed) generatedSummary = finalCoverageLimited ? limitedCoverageSummary(profile) : reportSummary(profile, weakFit.kept.length);
@@ -1214,7 +1230,7 @@ export class ReportGenerationService {
       for (const item of weakFit.kept) {
         const articleId = item.article.id;
         if (explanationById.has(articleId)) continue;
-        const reason = restatedFallbackIds.has(articleId) ? 'restated' : contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
+        const reason = restoredOwnIds.has(articleId) ? 'own_company_restored' : restatedFallbackIds.has(articleId) ? 'restated' : contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
         this.logger?.info('explanation_fallback', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: notReturnedIds.get(articleId) ?? failedBatchIds.get(articleId), rejectReason: reason });
       }
     }
@@ -1239,7 +1255,7 @@ export class ReportGenerationService {
     const unsupportedThemes = themes.filter((theme) => !themeArticleIds[theme]).length;
     if (unsupportedThemes) this.logger?.info('theme_unsupported_removed', { requestId: input.requestId, publisherId: input.publisherId, themeCount: themes.length, removedCount: unsupportedThemes });
     const ownCompanyCount = recommendations.filter((recommendation) => articleRelationship(recommendation.article, profile) === 'own_company').length;
-    this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ranking.ownCompanyDeferred });
+    this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ownCompanyCap.deferred - restoredOwn.restored.length, ownCompanyRestored: restoredOwn.restored.length });
     const report: ReportRecord = {
       id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: { ...profile, themes, themeArticleIds, ...(ranking.normalizedArticleCount > 0 ? { catalogueArticleCount: ranking.normalizedArticleCount } : {}), ...(coverageNote ? { coverage: { limited: true as const, note: coverageNote } } : {}) }, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };

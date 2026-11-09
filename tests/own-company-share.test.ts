@@ -26,7 +26,7 @@ describe('limitOwnCompanyShare', () => {
 
   it('is a plain top-N when the share is already within the cap', () => {
     const ranked = [other('o1'), own('n1'), other('o2'), own('n2'), other('o3')];
-    expect(limitOwnCompanyShare(ranked, 4, (item) => item.own)).toEqual({ selected: ranked.slice(0, 4), deferred: 0 });
+    expect(limitOwnCompanyShare(ranked, 4, (item) => item.own)).toEqual({ selected: ranked.slice(0, 4), deferred: 0, heldBack: [] });
   });
 });
 
