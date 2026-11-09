@@ -26,7 +26,7 @@ describe('limited-coverage report page', () => {
     expect(card.querySelector('.brief-lead')).toBeNull();
     expect(card.textContent).not.toMatch(/closest stories in the current coverage/);
     expect(document.querySelector('#highlights-heading')?.textContent).toBe('Closest themes in this coverage');
-    const lines = [...document.querySelectorAll('.highlight-card p')].map((line) => line.textContent ?? '');
+    const lines = [...document.querySelectorAll('.cx-theme-text')].map((line) => line.textContent ?? '');
     for (const line of lines) expect(line).not.toMatch(/Relevant to your/);
   });
 });

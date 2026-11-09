@@ -75,9 +75,9 @@ describe('hosted professional experience', () => {
     expect(document.querySelector('.report-hero .brief-card')).not.toBeNull();
     expect(document.querySelector('.relevance-ring, .match-summary-card, .report-identity')).toBeNull();
     expect(document.querySelector('.highlights-section')).not.toBeNull();
-    expect(document.querySelector('.also-relevant')).not.toBeNull();
-    expect(document.querySelector('.featured-story')).not.toBeNull();
-    expect(document.querySelectorAll('.story-card').length).toBeGreaterThan(0);
+    expect(document.querySelector('.also-relevant, .featured-story, .story-card')).toBeNull();
+    expect(document.querySelector('#top-stories .cx-lead')).not.toBeNull();
+    expect(document.querySelectorAll('#top-stories .cx-grid > .cx-rest-card').length).toBeGreaterThan(0);
     expect(document.querySelector('#highlights-heading')?.textContent).toBe('Top themes in your briefing');
     expect(document.querySelector('.why strong')?.textContent).toBe('Why this matters to you');
     expect(document.querySelector('.report-cover')).toBeNull();
@@ -161,16 +161,16 @@ describe('hosted professional experience', () => {
 
     const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-theme-search]')];
     expect(buttons.length).toBe(4);
-    const cardLines = [...document.querySelectorAll('.highlight-card p')].map((line) => line.textContent);
+    const cardLines = [...document.querySelectorAll('.cx-theme-text')].map((line) => line.textContent);
     expect(cardLines[0]).toBe('Two platform teams <b>cut</b> release times by half.');
-    expect(document.querySelector('.highlight-card p b')).toBeNull();
+    expect(document.querySelector('.cx-theme-text b')).toBeNull();
     expect(cardLines[1]).toMatch(/^Relevant to your .+ focus and the information needs identified for this briefing\.$/);
-    expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(true);
+    expect(document.querySelector<HTMLElement>('[data-focus-panel]')?.hidden).toBe(true);
     await buttons[0].click();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(false);
+    expect(document.querySelector<HTMLElement>('[data-focus-panel]')?.hidden).toBe(false);
     expect(document.querySelector('.theme-results-heading')?.textContent).toBe(`Stories about ${themeInlineText(report.professionalProfile.professionalInterests[0])}`);
-    expect(document.querySelector('.theme-results .story-card')).not.toBeNull();
+    expect(document.querySelector('.theme-results .cx-compact')).not.toBeNull();
     // A theme result without an AI explanation has no "Why this matters to you" box; main-report cards keep theirs.
     expect(document.querySelector('.theme-results .why')).toBeNull();
     // An article without a category shows no label rather than a placeholder.
@@ -242,7 +242,8 @@ describe('hosted professional experience', () => {
     // Images and the compact fallback.
     const cards = [...document.querySelectorAll<HTMLElement>('[data-story-card]')];
     expect(cards.map((card) => card.classList.contains('no-image'))).toEqual([false, true, false]);
-    expect(cards[1].querySelector('.story-placeholder')?.textContent).toContain('coverage');
+    expect(cards[1].querySelector('.cx-type .cx-type-line')?.textContent).toBeTruthy();
+    expect(document.querySelector('.story-placeholder')).toBeNull();
     // "Why" has a More toggle, hidden where nothing is cut off (jsdom has no layout), that expands the text.
     const toggle = cards[0].querySelector<HTMLButtonElement>('.why-toggle')!;
     expect(toggle.hidden).toBe(true);
@@ -253,7 +254,7 @@ describe('hosted professional experience', () => {
     expect(toggle.textContent).toBe('Less');
 
     const styles = [...document.querySelectorAll('style')].map((style) => style.textContent).join('');
-    for (const rule of ['html{scroll-padding-top:104px}', 'scroll-margin-top:104px', '@media(max-width:639px)', 'scroll-snap-type:x mandatory', '.report-page .highlight-index{display:none}', 'max-height:180px;aspect-ratio:16/9', '-webkit-line-clamp:3', '.report-page .featured-story.no-image .story-placeholder{display:none}', '.report-page .featured-story h3,.report-page .story-card h3{font-family:Georgia,serif;font-weight:500;letter-spacing:-.045em}',
+    for (const rule of ['html{scroll-padding-top:104px}', 'scroll-margin-top:104px', '@media(max-width:639px)', 'scroll-snap-type:x mandatory', 'aspect-ratio:16/9', '-webkit-line-clamp:3', ".cx-card .cx-title{margin:8px 0 6px;color:#151a3a;font:600 1.18rem/1.22 'Source Serif 4',Georgia,serif",
       // The gap to Highlights (the sticky bar only shows once the hero is gone, so it never covers the eyebrow).
       'html{scroll-padding-top:84px}', 'scroll-margin-top:84px', '.report-page .report-content{padding-top:clamp(64px,5vw,72px)}', '.report-page .report-content{padding-top:50px}']) {
       expect(styles).toContain(rule);

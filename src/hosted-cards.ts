@@ -1,19 +1,11 @@
 /**
- * Report body below the hero, redesigned variants selected with ?cards=a (editorial list) or ?cards=b (magazine
- * grid). Without the parameter the page keeps its current layout (hosted.ts). Visual and structural only: the
- * same stories in the same order, with the same image, headline, excerpt, match %, "why this matters" (+ More)
- * and link to the original story. Browser code: never import server modules here.
+ * Report body below the hero: the magazine layout (lead story large, the rest in a two-column grid on desktop,
+ * full-width cards on phones), theme cards and the focused-reading panel. Each card keeps the image, headline,
+ * excerpt, match %, "why this matters" (+ More) and link to the original story. Browser code: never import server
+ * modules here.
  */
 import type { ReportRecommendation, ReportRecord } from './reports';
 import { themeDisplayTitle, themeInlineText, themeSupportingRecommendations } from './reports/themes';
-
-export type CardsVariant = 'a' | 'b';
-
-/** The variant named by ?cards=a / ?cards=b; anything else keeps the current layout. */
-export function cardsVariant(search: string): CardsVariant | undefined {
-  const value = new URLSearchParams(search).get('cards')?.trim().toLowerCase();
-  return value === 'a' || value === 'b' ? value : undefined;
-}
 
 const SERIF = "'Source Serif 4',Georgia,serif";
 
@@ -54,24 +46,83 @@ function whyMarkup(explanation: string): string {
   return `<div class="why"><span class="why-icon" aria-hidden="true">✦</span><div><strong>Why this matters to you</strong><p class="why-text">${escapeHtml(explanation)}</p><button class="why-toggle" type="button" aria-expanded="false" hidden>More</button></div></div>`;
 }
 
+const KEY_LINE_MIN_WORDS = 4;
+const KEY_LINE_MAX_WORDS = 12;
+const MIN_REMAINING_EXCERPT_WORDS = 6;
+const LONG_KEY_LINE_CHARS = 56;
+
+export interface PanelText {
+  /** The excerpt's first clause, set large on the panel; absent when no 4-12 word clause exists. */
+  keyLine?: string;
+  /** The excerpt shown under the headline: what follows the key line, or nothing when too little is left. */
+  excerpt: string;
+}
+
+const wordCount = (value: string) => value.split(/\s+/).filter(Boolean).length;
+
 /**
- * One story. The image, or without one a designed tile in the publisher accent naming the category, sits in a
- * media slot with the same proportions either way. The top row holds only the match (and the "Source N" tag the
- * citation chips add), so category and date get their own quiet line that wraps instead of truncating.
+ * Text for an image-less card. The panel line is the excerpt's first clause (cut at the first sentence end, or at a
+ * comma, colon, semicolon or spaced dash once it has four words) when it is 4-12 words, never truncated; the headline
+ * is never used (it sits right below). So the card does not say the same thing twice, the visible excerpt then
+ * starts after that clause (leading punctuation and "as" trimmed, first letter capitalised), and is left out when
+ * fewer than six words remain. Without a usable clause the panel shows the category instead and the excerpt is whole.
+ */
+export function panelText(article: Pick<ReportRecommendation['article'], 'description' | 'summary' | 'contentSnippet'>): PanelText {
+  const excerpt = (article.description ?? article.summary ?? article.contentSnippet ?? '').replace(/\s+/g, ' ').trim();
+  if (!excerpt) return { excerpt: '' };
+  const sentenceEnd = excerpt.search(/[.!?](?:\s|$)/);
+  const sentence = sentenceEnd < 0 ? excerpt : excerpt.slice(0, sentenceEnd);
+  const clause = sentence.match(/^(.+?)\s*(?:[,;:]|\s[\u2013\u2014-])\s/);
+  const keyLine = (clause && wordCount(clause[1]) >= KEY_LINE_MIN_WORDS ? clause[1] : sentence).trim();
+  const words = wordCount(keyLine);
+  if (words < KEY_LINE_MIN_WORDS || words > KEY_LINE_MAX_WORDS) return { excerpt };
+  const rest = excerpt.slice(excerpt.indexOf(keyLine) + keyLine.length).replace(/^[\s.,;:!?\u2013\u2014-]+/, '').replace(/^as\s+/i, '');
+  const remaining = wordCount(rest) >= MIN_REMAINING_EXCERPT_WORDS ? `${rest.charAt(0).toUpperCase()}${rest.slice(1)}` : '';
+  return { keyLine, excerpt: remaining };
+}
+
+/** Six tints the publisher accent is blended into; each category keeps the same one on every card. */
+export const PANEL_TINTS = 6;
+
+export function categoryTint(category: string): number {
+  let hash = 0;
+  for (const character of category.trim().toLowerCase()) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return hash % PANEL_TINTS;
+}
+
+/**
+ * Without an image: a designed typographic panel in the media slot (same height as an image would be). A gradient
+ * from the publisher accent tinted per category, a fine dot texture, a small label and, set large in Source Serif 4,
+ * the excerpt's first clause, or the category itself when there is no usable clause. Decorative (aria-hidden): the
+ * clause is not repeated in the visible excerpt, so the headline and excerpt below still carry the story.
+ */
+function typePanelMarkup(keyLine: string | undefined, category: string, context: CardContext): string {
+  const name = category || context.publisherName;
+  const label = keyLine ? name : category ? context.publisherName : '';
+  // A long clause is set smaller so all of it fits (it is never cut off); hyphenated words never break at the hyphen.
+  const size = !keyLine ? ' is-category' : keyLine.length > LONG_KEY_LINE_CHARS ? ' is-long' : '';
+  const line = escapeHtml(keyLine ?? name).replace(/\S+-\S+/g, (word) => `<span class="cx-nb">${word}</span>`);
+  return `<div class="cx-type cx-tint-${categoryTint(name)}${size}" aria-hidden="true">${label ? `<span class="cx-type-label">${escapeHtml(label)}</span>` : '<span></span>'}<p class="cx-type-line">${line}</p><span class="cx-type-mark">${escapeHtml(name.charAt(0).toUpperCase())}</span></div>`;
+}
+
+/**
+ * One story. The image, or without one a typographic panel, sits in a media slot with the same proportions either
+ * way. The top row holds only the match (and the "Source N" tag the citation chips add), so category and date get
+ * their own quiet line that wraps instead of truncating.
  */
 export function cardMarkup(recommendation: ReportRecommendation, context: CardContext, options: CardOptions = {}): string {
   const article = recommendation.article;
   const image = safeImageUrl(article.imageUrl);
   const category = article.categories[0] ?? '';
   const date = cardDate(article.publishedAt);
-  const description = article.description ?? article.summary ?? article.contentSnippet ?? '';
+  // The panel's clause is not repeated in the excerpt (compact cards show a monogram, so they keep the whole text).
+  const panel = !image && !options.compact ? panelText(article) : undefined;
+  const description = panel ? panel.excerpt : article.description ?? article.summary ?? article.contentSnippet ?? '';
   // An explanation that only retold the story is the excerpt's first sentence: the box is left out (as before).
   const showWhy = (options.showWhy ?? true) && !recommendation.rankingMetadata?.explanationRestated && Boolean(recommendation.explanation);
-  const media = image
-    ? `<img class="cx-image" src="${escapeHtml(image)}" alt="" loading="lazy">`
-    : `<div class="cx-tile" lang="en" aria-hidden="true"><span class="cx-tile-publisher">${escapeHtml(context.publisherName)}</span><span class="cx-tile-category">${escapeHtml(category || 'Coverage')}</span></div>`;
+  const media = image ? `<img class="cx-image" src="${escapeHtml(image)}" alt="" loading="lazy">` : typePanelMarkup(panel?.keyLine, category, context);
   const meta = [category ? `<span>${escapeHtml(category)}</span>` : '', date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''].filter(Boolean).join('<span class="cx-dot" aria-hidden="true">·</span>');
-  const classes = ['cx-card', options.lead ? 'cx-lead' : options.compact ? 'cx-compact' : 'cx-rest-card', image ? 'has-image' : 'no-image'].filter(Boolean).join(' ');
+  const classes = ['cx-card', options.lead ? 'cx-lead' : options.compact ? 'cx-compact' : 'cx-rest-card', image ? 'has-image' : 'no-image'].join(' ');
   return `<article class="${classes}" data-story-card="${escapeHtml(article.id)}"><div class="cx-media">${media}</div><div class="cx-head"><div class="story-meta cx-top"><span class="match-badge cx-match"><b>${recommendation.displayScore}%</b> match</span></div>${options.label ? `<p class="cx-label">${escapeHtml(options.label)}</p>` : ''}<h3 class="cx-title">${escapeHtml(article.title)}</h3>${meta ? `<p class="cx-meta">${meta}</p>` : ''}</div><div class="cx-body">${description ? `<p class="story-summary">${escapeHtml(description)}</p>` : ''}${showWhy ? whyMarkup(recommendation.explanation) : ''}${context.link(article)}</div></article>`;
 }
 
@@ -81,22 +132,33 @@ export interface StoryGroup {
   label?: string;
 }
 
+export interface DisplayStory {
+  recommendation: ReportRecommendation;
+  label?: string;
+}
+
 /**
- * One "Your N stories" section: the lead story large, then every other story in page order. Editorial section
+ * Display order only: every story on the page (sections flattened, labels kept), highest match % first so the lead
+ * is the strongest match. Ties keep the ranking order. Selection and ranking are unchanged; the hero numbers its
+ * "Source N" chips from this same order, so they match the cards.
+ */
+export function displayStories(groups: StoryGroup[]): DisplayStory[] {
+  const stories = groups.flatMap((group) => group.recommendations.map((recommendation) => ({ recommendation, label: group.label })));
+  return stories.map((story, index) => ({ story, index })).sort((left, right) => (right.story.recommendation.displayScore - left.story.recommendation.displayScore) || (left.index - right.index)).map(({ story }) => story);
+}
+
+/**
+ * One "Your N stories" section: the lead story large, then every other story in a grid. Editorial section
  * groupings become small labels on their cards, inside the count, never separate "Additional reading" sections.
  */
-export function storiesSectionMarkup(variant: CardsVariant, groups: StoryGroup[], context: CardContext, heading: string): string {
-  const stories = groups.flatMap((group) => group.recommendations.map((recommendation) => ({ recommendation, label: group.label })));
+export function storiesSectionMarkup(stories: DisplayStory[], context: CardContext, heading: string): string {
   const count = stories.length;
-  const head = `<div class="cx-section-head"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${count ? `Your ${count} ${count === 1 ? 'story' : 'stories'}` : escapeHtml(heading)}</h2></div>${count > 1 ? '<p class="cx-section-note">Lead story first, then the rest of your selection</p>' : ''}</div>`;
+  const head = `<div class="cx-section-head"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${count ? `Your ${count} ${count === 1 ? 'story' : 'stories'}` : escapeHtml(heading)}</h2></div>${count > 1 ? '<p class="cx-section-note">Strongest match first</p>' : ''}</div>`;
   if (!count) return `<section class="stories-section top-stories cx-stories" id="top-stories" aria-labelledby="top-stories-heading">${head}<p>No strong matches were found in the current coverage.</p></section>`;
   const [lead, ...rest] = stories;
   const leadMarkup = cardMarkup(lead.recommendation, context, { lead: true, label: lead.label ?? 'Top match' });
   const restMarkup = rest.map((story) => cardMarkup(story.recommendation, context, { label: story.label })).join('');
-  const body = variant === 'a'
-    ? `<div class="cx-list">${leadMarkup}${restMarkup}</div>`
-    : `${leadMarkup}${rest.length ? `<div class="cx-grid">${restMarkup}</div>` : ''}`;
-  return `<section class="stories-section top-stories cx-stories" id="top-stories" aria-labelledby="top-stories-heading">${head}${body}</section>`;
+  return `<section class="stories-section top-stories cx-stories" id="top-stories" aria-labelledby="top-stories-heading">${head}${leadMarkup}${rest.length ? `<div class="cx-grid">${restMarkup}</div>` : ''}</section>`;
 }
 
 /**
@@ -184,12 +246,14 @@ export function bindFocusPanel(scope: HTMLElement, documentRef: Document): Focus
 }
 
 /**
- * Styles for both variants. Colours come from the publisher tokens (--brand, --secondary); small text stays at or
- * above 4.5:1 on white (#5b6170, #151a3a), and the no-image tile mixes the accent towards near-black so white
- * text on it stays readable for any accent. Motion is limited to the panel slide, off under reduced motion.
+ * Styles. Colours come from the publisher tokens (--brand, --secondary); small text stays at or above 4.5:1 on white
+ * (#5b6170, #151a3a). The typographic panel blends at most 30% of the accent into a near-black tint, so its white
+ * text stays above 4.5:1 for any accent, white included. Words are never split or hyphenated. Motion is limited to
+ * the panel slide, off under reduced motion.
  */
-export function cardsStyle(variant: CardsVariant): string {
-  const shared = `
+export function cardsStyle(): string {
+  return `<style>
+.cx,.cx-panel{hyphens:manual;-webkit-hyphens:manual;overflow-wrap:normal;word-break:normal}
 .cx .section-kicker{margin:0 0 8px}
 .cx .cx-section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px}
 .cx .cx-section-head h2{margin:0}
@@ -209,14 +273,24 @@ export function cardsStyle(variant: CardsVariant): string {
 .cx .cx-theme-action:focus-visible,.cx .story-link:focus-visible,.cx .why-toggle:focus-visible,.cx-close:focus-visible{outline:3px solid color-mix(in srgb,var(--brand) 55%,white);outline-offset:2px}
 .cx .cx-theme-action:disabled{opacity:.7;cursor:progress}
 .cx .cx-stories{margin-bottom:clamp(48px,6vw,80px)}
-.cx-card{position:relative;display:grid;min-width:0;overflow:hidden;border:1px solid rgba(20,30,60,.1);border-radius:18px;background:#fff;box-shadow:0 8px 24px rgba(21,26,58,.05)}
-.cx-card .cx-media{grid-area:media;position:relative;min-width:0;overflow:hidden;aspect-ratio:16/9;background:#eef1f6}
+.cx-card{position:relative;display:grid;grid-template-rows:auto auto 1fr;grid-template-areas:"media" "head" "body";min-width:0;overflow:hidden;border:1px solid rgba(20,30,60,.1);border-radius:18px;background:#fff;box-shadow:0 8px 24px rgba(21,26,58,.05)}
+.cx-card .cx-media{grid-area:media;position:relative;min-width:0;overflow:hidden;aspect-ratio:16/9;background:#eef1f6;container-type:inline-size}
 .cx-card .cx-image{display:block;width:100%;height:100%;object-fit:cover}
-.cx-card .cx-tile{display:flex;flex-direction:column;justify-content:space-between;gap:8px;width:100%;height:100%;padding:clamp(12px,2vw,20px);color:#fff;background:radial-gradient(120% 90% at 100% 0%,color-mix(in srgb,var(--brand) 55%,transparent),transparent 60%),linear-gradient(135deg,color-mix(in srgb,var(--brand) 62%,#0b0d1a),color-mix(in srgb,var(--brand) 38%,#0b0d1a))}
-.cx-card .cx-tile-publisher{font-size:.64rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase;opacity:.9}
-.cx-card .cx-tile-category{font:600 clamp(1rem,2vw,1.35rem)/1.1 ${SERIF};letter-spacing:-.01em;overflow-wrap:normal;word-break:normal;hyphens:manual}
+/* Typographic panel for stories without an image. */
+.cx-type{--tint:#10203f;position:relative;isolation:isolate;display:flex;flex-direction:column;justify-content:space-between;gap:12px;width:100%;height:100%;padding:clamp(16px,5.5cqi,30px);overflow:hidden;color:#fff;background:linear-gradient(155deg,color-mix(in srgb,var(--brand) 30%,var(--tint)) 0%,color-mix(in srgb,var(--brand) 16%,var(--tint)) 48%,color-mix(in srgb,var(--tint) 62%,#05060c) 100%)}
+.cx-type::before{content:"";position:absolute;inset:0;z-index:-1;background-image:radial-gradient(rgba(255,255,255,.1) .8px,transparent 1.3px);background-size:11px 11px;-webkit-mask-image:linear-gradient(200deg,#000 0%,transparent 62%);mask-image:linear-gradient(200deg,#000 0%,transparent 62%)}
+.cx-type::after{content:"";position:absolute;right:-18%;bottom:-38%;z-index:-1;width:62%;aspect-ratio:1;border:1px solid rgba(255,255,255,.1);border-radius:50%;box-shadow:0 0 0 22px rgba(255,255,255,.025),0 0 0 23px rgba(255,255,255,.07)}
+.cx-tint-1{--tint:#0b3638}.cx-tint-2{--tint:#2e1538}.cx-tint-3{--tint:#123020}.cx-tint-4{--tint:#3a1418}.cx-tint-5{--tint:#1d2431}
+.cx-type-label{display:flex;align-items:center;gap:10px;max-width:100%;color:#fff;font:800 .68rem/1.3 var(--font);letter-spacing:.16em;text-transform:uppercase}
+.cx-type-label::before{content:"";flex:none;width:22px;height:2px;border-radius:2px;background:color-mix(in srgb,var(--brand) 45%,white)}
+.cx-type-line{display:-webkit-box;max-width:22ch;margin:0;overflow:hidden;color:#fff;font:600 clamp(1.15rem,5.4cqi,2rem)/1.14 ${SERIF};letter-spacing:-.015em;text-wrap:balance;-webkit-box-orient:vertical;-webkit-line-clamp:5}
+.cx-type.is-long .cx-type-line{max-width:28ch;font-size:clamp(1.02rem,4.3cqi,1.6rem);line-height:1.18}
+.cx-type .cx-nb{white-space:nowrap}
+.cx-type.is-category .cx-type-line{max-width:none;font-size:clamp(1.5rem,8cqi,2.6rem);line-height:1.05;letter-spacing:-.02em}
+.cx-card.cx-lead .cx-type.is-category .cx-type-line{font-size:clamp(1.8rem,9cqi,3.2rem)}
+.cx-type-mark{display:none}
 .cx-card .cx-head{grid-area:head;min-width:0;padding:16px 18px 0}
-.cx-card .cx-body{grid-area:body;min-width:0;padding:8px 18px 16px}
+.cx-card .cx-body{grid-area:body;display:flex;flex-direction:column;min-width:0;padding:8px 18px 14px}
 .cx-card .story-meta.cx-top{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0;color:inherit;font-size:inherit;font-weight:inherit;letter-spacing:0;text-transform:none;white-space:normal}
 .cx-card .cx-match{display:inline-flex;align-items:baseline;gap:4px;padding:4px 10px;border-radius:999px;color:var(--brand);background:var(--secondary,#eef1f6);font-size:.74rem;font-weight:700;line-height:1.2;white-space:nowrap}
 .cx-card .cx-match b{font-size:1.02rem;font-weight:850;letter-spacing:-.01em}
@@ -233,13 +307,17 @@ export function cardsStyle(variant: CardsVariant): string {
 .cx-card .why.is-expanded .why-text{display:block}
 .cx-card .why-toggle{display:inline-flex;margin-top:4px;padding:0;border:0;color:var(--brand);background:transparent;font-size:.78rem;font-weight:800;cursor:pointer}
 .cx-card .why-toggle[hidden]{display:none}
-.cx-card .story-link{display:inline-flex;align-items:center;gap:6px;min-height:40px;margin-top:6px;color:var(--brand);font-size:.86rem;font-weight:800;text-decoration:none}
+/* "Read the original story" sits at the bottom of every card, so cards in a grid row end on one line. */
+.cx-card .story-link{display:inline-flex;align-self:flex-start;align-items:center;gap:6px;min-height:40px;margin-top:auto;padding-top:6px;color:var(--brand);font-size:.86rem;font-weight:800;text-decoration:none}
 .cx-card .story-link:hover{text-decoration:underline}
-.cx-card.cx-lead{grid-template-areas:"media" "head" "body";border-color:color-mix(in srgb,var(--brand) 22%,white);box-shadow:0 18px 48px rgba(21,26,58,.09)}
+.cx-card.cx-lead{margin-bottom:16px;border-color:color-mix(in srgb,var(--brand) 22%,white);box-shadow:0 18px 48px rgba(21,26,58,.09)}
 .cx-card.cx-lead .cx-title{font-size:clamp(1.45rem,2.4vw,2.1rem);line-height:1.12;letter-spacing:-.02em}
 .cx-card.cx-lead .story-summary{-webkit-line-clamp:4}
-.cx-card.cx-lead .cx-head{padding:20px 22px 0}.cx-card.cx-lead .cx-body{padding:10px 22px 20px}
-@media(min-width:900px){.cx-card.cx-lead{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);grid-template-areas:"media head" "media body";grid-template-rows:auto 1fr}.cx-card.cx-lead .cx-media{aspect-ratio:auto;min-height:100%}.cx-card.cx-lead .cx-head{padding:28px 30px 0}.cx-card.cx-lead .cx-body{padding:12px 30px 26px}}
+.cx-card.cx-lead .cx-head{padding:20px 22px 0}.cx-card.cx-lead .cx-body{padding:10px 22px 18px}
+.cx-card.cx-lead .cx-type-line{max-width:20ch;font-size:clamp(1.35rem,6cqi,2.5rem)}.cx-card.cx-lead .cx-type.is-long .cx-type-line{max-width:26ch;font-size:clamp(1.2rem,4.8cqi,2rem)}
+@media(min-width:900px){.cx-card.cx-lead{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);grid-template-areas:"media head" "media body";grid-template-rows:auto 1fr}.cx-card.cx-lead .cx-media{aspect-ratio:auto;min-height:100%}.cx-card.cx-lead .cx-type{min-height:320px}.cx-card.cx-lead .cx-head{padding:28px 30px 0}.cx-card.cx-lead .cx-body{padding:12px 30px 24px}}
+.cx .cx-grid{display:grid;grid-template-columns:1fr;gap:16px}
+@media(min-width:760px){.cx .cx-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:18px}}
 [data-story-card].cx-card.is-cited{outline:3px solid color-mix(in srgb,var(--brand) 55%,white);outline-offset:4px}
 /* Focused reading: side panel on desktop, bottom sheet on phones. */
 .cx-backdrop{position:fixed;inset:0;z-index:60;background:rgba(11,13,26,.48)}
@@ -251,29 +329,33 @@ export function cardsStyle(variant: CardsVariant): string {
 .cx-close{display:inline-grid;flex:none;width:44px;height:44px;place-items:center;border:1px solid rgba(20,30,60,.14);border-radius:999px;color:#151a3a;background:#fff;font-size:1.5rem;line-height:1;cursor:pointer}
 .cx-close:hover{background:#eef1f6}
 .cx-panel-body{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:16px 24px 32px}
-.cx-panel-body.theme-results{max-width:none;margin:0;border:0;border-radius:0;background:transparent;box-shadow:none}
 .cx-panel .theme-results-subheading{margin:0 0 16px;color:#5b6170;font-size:.86rem}
 .cx-panel .theme-results-group+.theme-results-group{margin-top:24px}
 .cx-panel .theme-results-group-heading{display:flex;align-items:center;gap:8px;margin:0 0 10px;color:#4b5160;font:850 .72rem/1.2 var(--font);letter-spacing:.12em;text-transform:uppercase}
 .cx-panel .theme-results-group-heading span{padding:2px 8px;border-radius:999px;color:var(--brand);background:#fff;letter-spacing:0}
 .cx-panel .theme-results-status{margin:0;color:#5b6170}
 .cx-focus-list{display:grid;gap:10px}
-.cx-card.cx-compact{grid-template-columns:88px minmax(0,1fr);grid-template-areas:"media head" "body body";border-radius:14px;box-shadow:none}
+.cx-card.cx-compact{grid-template-columns:88px minmax(0,1fr);grid-template-rows:auto 1fr;grid-template-areas:"media head" "body body";border-radius:14px;box-shadow:none}
 .cx-card.cx-compact .cx-media{aspect-ratio:1/1;margin:12px 0 0 12px;border-radius:10px}
-.cx-card.cx-compact .cx-tile{justify-content:flex-end;padding:8px}.cx-card.cx-compact .cx-tile-publisher{display:none}.cx-card.cx-compact .cx-tile-category{font:750 .66rem/1.2 var(--font);letter-spacing:0;hyphens:auto}
+.cx-card.cx-compact .cx-type{justify-content:center;align-items:center;padding:0}.cx-card.cx-compact .cx-type-label,.cx-card.cx-compact .cx-type-line{display:none}
+.cx-card.cx-compact .cx-type-mark{display:block;color:#fff;font:600 2.4rem/1 ${SERIF}}
 .cx-card.cx-compact .cx-head{padding:12px 14px 0}.cx-card.cx-compact .cx-title{margin:6px 0 4px;font-size:1rem}
 .cx-card.cx-compact .cx-body{padding:8px 14px 10px}.cx-card.cx-compact .story-summary{font-size:.86rem;-webkit-line-clamp:2}
 @keyframes cx-panel-in{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
 @keyframes cx-sheet-in{from{transform:translateY(32px);opacity:0}to{transform:none;opacity:1}}
 @media(max-width:639px){
-.cx .cx-section-head{align-items:flex-start;flex-direction:column;gap:4px;margin-bottom:14px}
+.cx .cx-section-head{align-items:flex-start;flex-direction:column;gap:4px;margin-bottom:12px}
 .cx .highlights-section h2,.cx .section-heading{font-size:1.5rem;letter-spacing:-.035em}
-.cx .cx-themes{margin-bottom:40px}
+.cx .cx-themes{margin-bottom:36px}
 .cx .cx-theme-row{display:flex;gap:10px;margin:0 -14px;padding:2px 14px 10px;overflow-x:auto;scroll-snap-type:x mandatory;scroll-padding:0 14px;scrollbar-width:none}.cx .cx-theme-row::-webkit-scrollbar{display:none}
 .cx .cx-theme{flex:0 0 82%;scroll-snap-align:start}
-.cx-card .cx-head{padding:14px 16px 0}.cx-card .cx-body{padding:8px 16px 14px}
-.cx-card .cx-title{font-size:1.12rem}
-.cx-card.cx-lead .cx-head{padding:16px 16px 0}.cx-card.cx-lead .cx-body{padding:8px 16px 16px}.cx-card.cx-lead .cx-title{font-size:1.4rem}
+.cx .cx-grid{gap:12px}
+.cx-card .cx-head{padding:12px 16px 0}.cx-card .cx-body{padding:6px 16px 10px}
+.cx-card .cx-label{margin-top:8px}.cx-card .cx-title{margin:6px 0 4px;font-size:1.12rem}
+.cx-card .story-summary{font-size:.9rem;line-height:1.45}
+.cx-card .why{margin:10px 0 2px;padding:10px 12px}
+.cx-card .story-link{min-height:36px;padding-top:4px}
+.cx-card.cx-lead{margin-bottom:12px}.cx-card.cx-lead .cx-head{padding:14px 16px 0}.cx-card.cx-lead .cx-body{padding:6px 16px 12px}.cx-card.cx-lead .cx-title{font-size:1.4rem}.cx-card.cx-lead .story-summary{-webkit-line-clamp:3}
 .cx-panel{top:auto;left:0;width:100%;max-height:88vh;border-radius:20px 20px 0 0;box-shadow:0 -20px 50px rgba(11,13,26,.25);animation-name:cx-sheet-in}
 .cx-panel-head{position:relative;padding:22px 16px 12px;border-radius:20px 20px 0 0}
 .cx-panel-head::before{content:"";position:absolute;top:8px;left:50%;width:40px;height:4px;margin-left:-20px;border-radius:4px;background:#c9cdd6}
@@ -281,20 +363,6 @@ export function cardsStyle(variant: CardsVariant): string {
 }
 @media(min-width:640px){.cx .cx-swipe{display:none}}
 @media(max-width:639px){.cx .cx-theme-count-more{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}}
-@media(prefers-reduced-motion:reduce){.cx-panel{animation:none}}`;
-  const variantStyle = variant === 'a'
-    ? `
-.cx-a .cx-list{display:grid;gap:12px}
-.cx-a .cx-list>.cx-lead{margin-bottom:8px}
-.cx-a .cx-rest-card{grid-template-columns:104px minmax(0,1fr);grid-template-areas:"media head" "body body"}
-.cx-a .cx-rest-card .cx-media{aspect-ratio:1/1;margin:14px 0 0 14px;border-radius:12px}
-.cx-a .cx-rest-card .cx-tile{justify-content:flex-end;padding:10px}.cx-a .cx-rest-card .cx-tile-publisher{display:none}.cx-a .cx-rest-card .cx-tile-category{font:750 .7rem/1.2 var(--font);letter-spacing:0;hyphens:auto}
-@media(min-width:640px){.cx-a .cx-rest-card{grid-template-columns:clamp(180px,24%,260px) minmax(0,1fr);grid-template-areas:"media head" "media body";grid-template-rows:auto 1fr}.cx-a .cx-rest-card .cx-media{aspect-ratio:4/3;align-self:start;margin:16px 0 16px 16px}.cx-a .cx-rest-card .cx-tile{justify-content:space-between;padding:14px}.cx-a .cx-rest-card .cx-tile-publisher{display:block}.cx-a .cx-rest-card .cx-tile-category{font:600 1.05rem/1.1 ${SERIF};letter-spacing:-.01em;text-transform:none}.cx-a .cx-rest-card .cx-head{padding:18px 22px 0}.cx-a .cx-rest-card .cx-body{padding:6px 22px 14px}.cx-a .cx-rest-card .story-summary{-webkit-line-clamp:2}}`
-    : `
-.cx-b .cx-lead{margin-bottom:16px}
-.cx-b .cx-grid{display:grid;grid-template-columns:1fr;gap:16px}
-.cx-b .cx-rest-card{grid-template-rows:auto auto 1fr;grid-template-areas:"media" "head" "body"}
-.cx-b .cx-rest-card .cx-body{display:flex;flex-direction:column}.cx-b .cx-rest-card .story-link{margin-top:auto;padding-top:6px}
-@media(min-width:760px){.cx-b .cx-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}`;
-  return `<style>${shared}${variantStyle}</style>`;
+@media(prefers-reduced-motion:reduce){.cx-panel{animation:none}}
+</style>`;
 }

@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { summaryQualityWarnings } from '../src/ai/content-quality';
 import { REPORT_SUMMARY_ONLY_INSTRUCTIONS } from '../src/ai/providers/openai-compatible';
 import { renderHostedRoute } from '../src/hosted';
-import { cardDate, cardsVariant, focusHeading } from '../src/hosted-cards';
+import { cardDate, categoryTint, panelText, displayStories, focusHeading } from '../src/hosted-cards';
 import { createPublisherRegistry } from '../src/publishers/registry';
 import type { ReportRecord, ReportRecommendation } from '../src/reports';
 import { createProductionApp } from '../src/server/production';
@@ -66,66 +66,126 @@ async function render(report: ReportRecord, search: string): Promise<void> {
 
 const storyIds = (scope: ParentNode) => [...scope.querySelectorAll<HTMLElement>('[data-story-card]')].filter((card) => !card.closest('[data-theme-results]')).map((card) => card.dataset.storyCard);
 
-describe('report body variants', () => {
+describe('report body (magazine layout)', () => {
   afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ''; document.body.className = ''; });
 
-  it('reads only ?cards=a and ?cards=b; anything else keeps the current layout', async () => {
-    expect(cardsVariant('?cards=a')).toBe('a');
-    expect(cardsVariant('?cards=B')).toBe('b');
-    expect(cardsVariant('?cards=c')).toBeUndefined();
-    expect(cardsVariant('')).toBeUndefined();
-    await render(sgiReport(), '');
-    expect(document.querySelector('.cx')).toBeNull();
-    expect(document.querySelectorAll('.additional-section').length).toBeGreaterThan(0);
+  it('is the only layout: no ?cards switch, no old sections, one "Your 7 stories" section with sections as card labels', async () => {
+    for (const search of ['', '?cards=a', '?cards=b']) {
+      const report = sgiReport();
+      await render(report, search);
+      expect(document.querySelector('[data-cards], .cx-a, .cx-b, .cx-list, .additional-section, .also-relevant, .highlight-card, .story-card, .featured-story')).toBeNull();
+      const section = document.querySelector<HTMLElement>('#top-stories.cx-stories')!;
+      expect(section.querySelector('h2')?.textContent).toBe('Your 7 stories');
+      expect(storyIds(section)).toEqual(report.recommendations.map((item) => item.articleId));
+      expect(storyIds(document)).toEqual(storyIds(section));
+      expect(document.body.textContent).not.toContain('Additional reading');
+      const lead = section.querySelector<HTMLElement>('.cx-lead')!;
+      expect(lead.dataset.storyCard).toBe('s-0');
+      expect(lead.querySelector('.cx-label')?.textContent).toBe('Top match');
+      expect(section.querySelector('[data-story-card="s-3"] .cx-label')?.textContent).toBe('Companies to watch');
+      expect(section.querySelector('[data-story-card="s-6"] .cx-label')?.textContent).toBe('Market moves');
+      expect(section.querySelector('[data-story-card="s-1"] .cx-label')).toBeNull();
+      expect(section.querySelectorAll('.cx-grid > .cx-rest-card')).toHaveLength(6);
+    }
   });
 
-  it.each(['a', 'b'] as const)('variant %s: one "Your 7 stories" section with every story, lead first, sections as card labels', async (variant) => {
+  it('shows stories by match % descending (lead = highest) without changing the selection, and Source N follows the cards', async () => {
     const report = sgiReport();
-    await render(report, `?cards=${variant}`);
+    // Ranking order s-0..s-6 with display scores out of order: the lead was 33% and the next story 42%.
+    const scores = [33, 42, 61, 38, 58, 42, 47];
+    report.recommendations.forEach((item, index) => { item.displayScore = scores[index]; });
+    const ranked = report.recommendations.map((item) => item.articleId);
+    await render(report, '');
     const section = document.querySelector<HTMLElement>('#top-stories')!;
-    expect(section.querySelector('h2')?.textContent).toBe('Your 7 stories');
-    expect(storyIds(section)).toEqual(report.recommendations.map((item) => item.articleId));
-    expect(storyIds(document)).toEqual(storyIds(section));
-    expect(document.querySelector('.additional-section, .also-relevant')).toBeNull();
-    expect(document.body.textContent).not.toContain('Additional reading');
-    const lead = section.querySelector<HTMLElement>('.cx-lead')!;
-    expect(lead.dataset.storyCard).toBe('s-0');
-    expect(lead.querySelector('.cx-label')?.textContent).toBe('Top match');
-    expect(section.querySelector('[data-story-card="s-3"] .cx-label')?.textContent).toBe('Companies to watch');
+    // Ties (s-1 and s-5 at 42%) keep their ranking order.
+    expect(storyIds(section)).toEqual(['s-2', 's-4', 's-6', 's-1', 's-5', 's-3', 's-0']);
+    const shown = [...section.querySelectorAll('.cx-match b')].map((node) => Number.parseInt(node.textContent ?? '', 10));
+    expect(shown).toEqual([...shown].sort((left, right) => right - left));
+    expect(section.querySelector<HTMLElement>('.cx-lead')?.dataset.storyCard).toBe('s-2');
+    expect(section.querySelector('.cx-lead .cx-label')?.textContent).toBe('Top match');
     expect(section.querySelector('[data-story-card="s-6"] .cx-label')?.textContent).toBe('Market moves');
-    expect(section.querySelector('[data-story-card="s-1"] .cx-label')).toBeNull();
-    // Variant A: one list of horizontal cards; variant B: the lead, then a grid.
-    if (variant === 'a') expect(section.querySelectorAll('.cx-list > .cx-rest-card')).toHaveLength(6);
-    else expect(section.querySelectorAll('.cx-grid > .cx-rest-card')).toHaveLength(6);
+    expect(report.recommendations.map((item) => item.articleId)).toEqual(ranked);
+    // s-4 and s-6 are cited: chips 1, 2 follow the display order and each card's tag matches its chip.
+    const chips = [...document.querySelectorAll<HTMLElement>('[data-cite]')];
+    expect(chips.map((chip) => `${chip.textContent}:${chip.dataset.cite}`)).toEqual(['1:s-4', '2:s-6']);
+    expect(document.querySelector('[data-story-card="s-4"] .source-tag')?.textContent).toBe('Source 1');
+    expect(document.querySelector('[data-story-card="s-6"] .source-tag')?.textContent).toBe('Source 2');
+    expect(displayStories([{ recommendations: [] }])).toEqual([]);
   });
 
-  it('keeps every card element, gives image-less stories a designed tile and a quiet one-line meta', async () => {
+  it('keeps every card element and gives image-less stories a typographic panel, not an empty block', async () => {
     const report = sgiReport();
-    await render(report, '?cards=a');
+    report.recommendations[1].article.description = 'Garmin is moving adaptive training plans from its phone app onto the watch itself this year.';
+    report.recommendations[3].article.description = 'Retailers are cutting packaging waste in their European stores, with new targets for 2027. More follows.';
+    await render(report, '');
     const withImage = document.querySelector<HTMLElement>('[data-story-card="s-2"]')!;
     expect(withImage.querySelector<HTMLImageElement>('.cx-media img')?.src).toBe('https://www.sgieurope.com/Pictures/s-2.jpg');
+    expect(withImage.querySelector('.cx-type')).toBeNull();
     const noImage = document.querySelector<HTMLElement>('[data-story-card="s-3"]')!;
-    expect(noImage.querySelector('.cx-media .cx-tile')?.textContent).toBe('SGI EuropeCSR and sustainability');
-    expect(document.querySelector('.story-placeholder')).toBeNull();
+    const panel = noImage.querySelector<HTMLElement>('.cx-media .cx-type')!;
+    expect(panel.getAttribute('aria-hidden')).toBe('true');
+    expect(panel.className).toBe(`cx-type cx-tint-${categoryTint('CSR and sustainability')} is-long`);
+    expect(panel.querySelector('.cx-type-label')?.textContent).toBe('CSR and sustainability');
+    expect(panel.querySelector('.cx-type-line')?.textContent).toBe('Retailers are cutting packaging waste in their European stores');
+    // The excerpt starts after the panel's clause, so the card never says it twice; the headline is never on the panel.
+    expect(noImage.querySelector('.story-summary')?.textContent).toBe('With new targets for 2027. More follows.');
+    for (const card of document.querySelectorAll<HTMLElement>('#top-stories .no-image')) {
+      const line = card.querySelector('.cx-type-line')?.textContent ?? '';
+      expect(line).not.toBe(card.querySelector('.cx-title')?.textContent);
+      expect(card.querySelector('.story-summary')?.textContent ?? '').not.toContain(line);
+    }
+    // No usable clause (a 13-word first sentence): the category is set large, the excerpt stays whole.
+    const categoryPanel = document.querySelector<HTMLElement>('[data-story-card="s-1"] .cx-type')!;
+    expect(categoryPanel.classList.contains('is-category')).toBe(true);
+    expect(categoryPanel.querySelector('.cx-type-line')?.textContent).toBe('Technology');
+    expect(categoryPanel.querySelector('.cx-type-label')?.textContent).toBe('SGI Europe');
+    expect(document.querySelector('[data-story-card="s-1"] .story-summary')?.textContent).toBe('Garmin is moving adaptive training plans from its phone app onto the watch itself this year.');
+    // A long clause is set smaller rather than cut off, and hyphenated words are kept whole.
+    report.recommendations[5].article.description = 'Decathlon is expanding its camera-based self-checkout after a year-long pilot, saying queues fell by a third across its stores.';
+    await render(report, '');
+    const long = document.querySelector<HTMLElement>('[data-story-card="s-5"] .cx-type')!;
+    expect(long.classList.contains('is-long')).toBe(true);
+    expect(long.querySelector('.cx-type-line')?.textContent).toBe('Decathlon is expanding its camera-based self-checkout after a year-long pilot');
+    expect([...long.querySelectorAll('.cx-nb')].map((node) => node.textContent)).toEqual(['camera-based', 'self-checkout', 'year-long']);
+    expect(document.querySelector('[data-story-card="s-5"] .story-summary')?.textContent).toBe('Saying queues fell by a third across its stores.');
+    expect(document.querySelector('.story-placeholder, .cx-tile')).toBeNull();
     // Match first and alone in the top row; category and date as one line, untruncated.
     expect(noImage.querySelector('.cx-top .match-badge')?.textContent).toBe('55% match');
     expect(noImage.querySelector('.cx-meta')?.textContent).toBe(`CSR and sustainability·${cardDate('2026-10-13T09:00:00Z')}`);
     expect(cardDate('2026-10-13T09:00:00Z')).toBe('13 Oct 2026');
     expect(noImage.querySelector('.cx-title')?.textContent).toBe('Story 3 headline');
-    expect(noImage.querySelector('.story-summary')?.textContent).toBe('Excerpt for story 3.');
     expect(noImage.querySelector('.why .why-text')?.textContent).toMatch(/^Your roadmap gets a benchmark/);
     expect(noImage.querySelector('.why-toggle')?.textContent).toBe('More');
     const link = noImage.querySelector<HTMLAnchorElement>('a.story-link')!;
     expect(link.href).toBe('https://www.sgieurope.com/s-3.article');
     expect(link.dataset.storyId).toBe('s-3');
-    // Citation chips number 1, 2 in page order and tag the cited cards in the top row, after the match.
-    expect([...document.querySelectorAll('[data-cite]')].map((chip) => chip.textContent)).toEqual(['1', '2']);
     expect(document.querySelector('[data-story-card="s-4"] .cx-top .match-badge + .source-tag')?.textContent).toBe('Source 1');
-    expect(document.querySelector('[data-story-card="s-6"] .source-tag')?.textContent).toBe('Source 2');
+  });
+
+  it('styles: no hyphenation, accent capped for AA on the panel, mobile clamps, equal-height grid rows', async () => {
+    await render(sgiReport(), '');
+    const css = [...document.querySelectorAll('style')].map((node) => node.textContent).join('');
+    expect(css).not.toMatch(/hyphens:auto/);
+    expect(css).toContain('.cx,.cx-panel{hyphens:manual;-webkit-hyphens:manual;overflow-wrap:normal;word-break:normal}');
+    // The panel blends at most 30% of the accent into a near-black tint (white text stays above 4.5:1).
+    expect(css).toContain('color-mix(in srgb,var(--brand) 30%,var(--tint))');
+    expect(css).not.toMatch(/var\(--brand\) (?:3[1-9]|[4-9]\d|100)%,var\(--tint\)/);
+    expect(css).toMatch(/\.cx-type-line\{[^}]*font:600 [^}]*'Source Serif 4'/);
+    // The panel line is never clamped to fewer lines than a 12-word clause needs; long clauses are set smaller.
+    expect(css).toMatch(/\.cx-type-line\{[^}]*-webkit-line-clamp:5\}/);
+    expect(css).toContain('.cx-type.is-long .cx-type-line{max-width:28ch;font-size:clamp(1.02rem,4.3cqi,1.6rem)');
+    // Excerpt and "why" clamp to three lines on phones (lead included), with More for the why.
+    expect(css).toMatch(/\.cx-card \.story-summary\{[^}]*-webkit-line-clamp:3/);
+    expect(css).toMatch(/\.cx-card \.why-text\{[^}]*-webkit-line-clamp:3/);
+    expect(css).toContain('.cx-card.cx-lead .story-summary{-webkit-line-clamp:3}');
+    // Grid rows stretch and the link is pushed to the card bottom.
+    expect(css).toMatch(/\.cx-card \.cx-body\{grid-area:body;display:flex;flex-direction:column/);
+    expect(css).toMatch(/\.cx-card \.story-link\{[^}]*margin-top:auto/);
+    expect(css).toContain('grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch');
   });
 
   it('theme cards show the count, how many briefing stories each groups, and a Find stories button', async () => {
-    await render(sgiReport(), '?cards=b');
+    await render(sgiReport(), '');
     const cards = [...document.querySelectorAll<HTMLElement>('.cx-theme')];
     expect(cards.map((card) => card.querySelector('h3')?.textContent)).toEqual(['Connected fitness', 'AI coaching', 'Wearables']);
     expect(cards[0].querySelector('.cx-theme-index')?.textContent).toBe('01 / 03');
@@ -136,7 +196,7 @@ describe('report body variants', () => {
 
   it('opens focused reading in a dialog panel, briefing stories first, and closes it with Escape, the button or the backdrop', async () => {
     const report = sgiReport();
-    await render(report, '?cards=a');
+    await render(report, '');
     const panel = document.querySelector<HTMLElement>('[data-focus-panel]')!;
     const backdrop = document.querySelector<HTMLElement>('[data-focus-backdrop]')!;
     expect(panel.hidden).toBe(true);
@@ -173,11 +233,37 @@ describe('report body variants', () => {
   });
 
   it('keeps the panel styles accessible: reduced motion stops the slide, focus rings are visible', async () => {
-    await render(sgiReport(), '?cards=b');
+    await render(sgiReport(), '');
     const css = [...document.querySelectorAll('style')].map((node) => node.textContent).join('');
     expect(css).toContain('@media(prefers-reduced-motion:reduce){.cx-panel{animation:none}}');
     expect(css).toMatch(/\.cx \.cx-theme-action:focus-visible[^{]*\{outline:3px solid/);
     expect(css).toContain('.cx-close{display:inline-grid;flex:none;width:44px;height:44px');
+  });
+});
+
+describe('typographic panel helpers', () => {
+  it('uses the first 4-12 word clause on the panel and starts the visible excerpt after it, never repeating it', () => {
+    const text = (description?: string) => panelText({ description, summary: undefined, contentSnippet: undefined });
+    // The reported case: a 13-word first clause is too long for the panel, so it shows the category and the excerpt stays whole.
+    const rubber = 'Prices for synthetic rubber used in outsoles have risen for a third month, as two Asian producers cut output for maintenance.';
+    expect(text(rubber)).toEqual({ excerpt: rubber });
+    // Clause cut at a comma: the excerpt continues after it, "as" and punctuation trimmed, capitalised.
+    expect(text('Rubber prices have risen for a third month, as two Asian producers cut output for maintenance.')).toEqual({ keyLine: 'Rubber prices have risen for a third month', excerpt: 'Two Asian producers cut output for maintenance.' });
+    // Whole first sentence as the clause: the excerpt is the following sentences.
+    expect(text('Container rates from Asia climbed 12% in October. Carriers removed capacity ahead of the peak season.')).toEqual({ keyLine: 'Container rates from Asia climbed 12% in October', excerpt: 'Carriers removed capacity ahead of the peak season.' });
+    // Fewer than six words left: the excerpt is hidden rather than showing a fragment.
+    expect(text('Puma tests nearshore production in Turkey, for fast lines.')).toEqual({ keyLine: 'Puma tests nearshore production in Turkey', excerpt: '' });
+    expect(text('Shoe makers face higher freight costs.')).toEqual({ keyLine: 'Shoe makers face higher freight costs', excerpt: '' });
+    // Too short a clause or no excerpt at all: no key line (the panel shows the category), the excerpt unchanged.
+    expect(text('Up 4%. Prices rose again across Europe this month.')).toEqual({ excerpt: 'Up 4%. Prices rose again across Europe this month.' });
+    expect(text(undefined)).toEqual({ excerpt: '' });
+  });
+
+  it('gives each category a stable tint out of six', () => {
+    expect(categoryTint('Technology')).toBe(categoryTint(' technology '));
+    const tints = new Set(['Technology', 'Retail', 'CSR and sustainability', 'Supply chain', 'Finance', 'People', 'Wearables', 'Legal'].map(categoryTint));
+    expect(tints.size).toBeGreaterThan(2);
+    for (const tint of tints) expect(tint).toBeLessThan(6);
   });
 });
 
