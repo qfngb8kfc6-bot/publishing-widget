@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createDemoRegistry } from '../src/demo/definition';
 import { renderHostedRoute } from '../src/hosted';
-import { bindCitationChips, companyMonogram, heroVariant, summaryParts, summarySentences } from '../src/hosted-hero';
+import { bindCitationChips, briefHeroStyle, companyMonogram, isLimitedFallbackSummary, storyDate, summaryParts, summarySentences } from '../src/hosted-hero';
 import type { ReportRecord } from '../src/reports';
 import { createProductionApp } from '../src/server/production';
 
@@ -18,10 +20,10 @@ beforeAll(async () => {
   base = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as ReportRecord;
 });
 
-/** A report with the given summary whose 1st and 3rd recommendations are cited, plus one cited article that is not on the page. */
+/** A full-coverage report with an AI-style summary whose 1st and 3rd recommendations are cited. */
 function shaped(overrides: Partial<ReportRecord> = {}): ReportRecord {
   const recommendations = base.recommendations.map((recommendation, index) => ({ ...recommendation, rankingMetadata: { ...recommendation.rankingMetadata, citedInSummary: index === 0 || index === 2 ? true : undefined } }));
-  return { ...base, companyName: 'LD Systems', jobTitle: 'technology professional', generatedSummary: SUMMARY, overallMatchScore: 72, recommendations, sections: [], professionalProfile: { ...base.professionalProfile, coverage: undefined }, ...overrides };
+  return { ...base, companyName: 'LD Systems', jobTitle: 'technology professional', generatedSummary: SUMMARY, summarySource: 'ai', overallMatchScore: 72, recommendations, sections: [], professionalProfile: { ...base.professionalProfile, coverage: undefined }, ...overrides };
 }
 
 async function render(report: ReportRecord, search = ''): Promise<void> {
@@ -41,65 +43,71 @@ describe('summary parts', () => {
   });
 
   it('keeps every sentence when the last one is not a watch line', () => {
-    const parts = summaryParts('One fact here. Another fact there. A third implication.');
-    expect(parts).toEqual({ lead: 'One fact here.', body: 'Another fact there. A third implication.' });
+    expect(summaryParts('One fact here. Another fact there. A third implication.')).toEqual({ lead: 'One fact here.', body: 'Another fact there. A third implication.' });
     expect(summaryParts('Only one sentence.')).toEqual({ lead: 'Only one sentence.', body: '' });
   });
 
-  it('builds a monogram and reads the variant from the URL', () => {
+  it('builds a monogram that keeps short acronyms', () => {
     expect(companyMonogram('LD Systems')).toBe('LD');
     expect(companyMonogram('Nike')).toBe('N');
     expect(companyMonogram('Foot Locker')).toBe('FL');
-    expect(heroVariant('?hero=a')).toBe('a');
-    expect(heroVariant('?hero=B')).toBe('b');
-    expect(heroVariant('?hero=c')).toBeUndefined();
-    expect(heroVariant('')).toBeUndefined();
+  });
+
+  it('dates stories as "5 Nov", adding the year only outside the current year', () => {
+    const now = new Date('2026-11-09T12:00:00Z');
+    expect(storyDate('2026-11-05T09:00:00Z', now)).toBe('5 Nov');
+    expect(storyDate('2025-12-30T09:00:00Z', now)).toBe('30 Dec 2025');
+    expect(storyDate(undefined, now)).toBe('');
+    expect(storyDate('not a date', now)).toBe('');
+  });
+
+  it('recognises the generic limited-coverage summary, not an AI summary written for limited coverage', () => {
+    const limited = { ...base.professionalProfile, coverage: { limited: true as const, note: 'Limited.' } };
+    expect(isLimitedFallbackSummary({ professionalProfile: limited, generatedSummary: 'These are the closest stories in the current coverage; read them as context.', summarySource: undefined })).toBe(true);
+    expect(isLimitedFallbackSummary({ professionalProfile: limited, generatedSummary: 'Anything', summarySource: 'deterministic' })).toBe(true);
+    expect(isLimitedFallbackSummary({ professionalProfile: limited, generatedSummary: SUMMARY, summarySource: 'ai' })).toBe(false);
+    expect(isLimitedFallbackSummary({ professionalProfile: { ...limited, coverage: undefined }, generatedSummary: 'These are the closest stories in the current coverage.', summarySource: 'deterministic' })).toBe(false);
   });
 });
 
-describe('report hero variants', () => {
-  afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ''; });
+describe('report hero', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); document.body.innerHTML = ''; });
 
-  it('keeps the current hero when no variant is requested', async () => {
-    await render(shaped());
-    expect(document.querySelector('#report-heading')?.textContent).toBe('Your personalised briefing');
-    expect(document.querySelector('.match-summary-card .relevance-ring')).not.toBeNull();
-    expect(document.querySelector('.brief-hero, .brief-card')).toBeNull();
+  it('renders one hero with headline, meta, stats and the summary card inside it; the URL has no say', async () => {
+    vi.useFakeTimers({ now: new Date('2026-11-09T12:00:00Z'), toFake: ['Date'] });
+    const report = shaped({ recommendations: shaped().recommendations.map((item, index) => ({ ...item, article: { ...item.article, publishedAt: index === 0 ? '2026-11-05T09:00:00Z' : '2026-10-01T09:00:00Z' } })) });
+    for (const search of ['', '?hero=a', '?hero=b']) {
+      await render(report, search);
+      expect(document.querySelectorAll('.report-hero')).toHaveLength(1);
+      const hero = document.querySelector<HTMLElement>('.report-hero.brief-hero')!;
+      expect(hero.querySelector('h1')?.textContent).toBe('Technology Professional at LD Systems');
+      expect(hero.querySelector('h1 .brief-company')?.textContent).toBe('LD Systems');
+      expect(hero.querySelector('.brief-mark')?.textContent).toBe('LD');
+      const count = report.professionalProfile.catalogueArticleCount!;
+      expect(count).toBeGreaterThan(0);
+      expect(hero.querySelector('.brief-meta')?.textContent).toMatch(new RegExp(`^Prepared \\d{1,2} \\w{3} \\d{4} from ${count} ${PUBLISHER} articles?$`));
+      const labels = [...hero.querySelectorAll('.brief-stat dt')].map((node) => node.querySelector('.brief-dt-full')?.textContent ?? node.textContent);
+      expect(labels).toEqual(['Stories selected', 'Themes', 'Newest story', 'Relevance']);
+      expect(hero.querySelectorAll('.brief-stat dd')[2]?.textContent).toBe('5 Nov');
+      expect(hero.querySelector('.brief-stat-relevance dd')?.textContent).toBe('72%');
+      const card = hero.querySelector('.brief-hero-inner > .brief-card')!;
+      expect(card.querySelector('.brief-card-kicker')?.textContent).toBe('The signal');
+      expect(card.querySelector('.brief-lead')?.textContent).toMatch(/^Brands are pulling/);
+      expect(card.querySelector('.brief-body')?.textContent).toMatch(/^Intersport/);
+      expect(card.querySelector('.brief-watch-label')?.textContent).toBe('Watch next');
+      expect(card.querySelector('.brief-watch-text')?.textContent).toMatch(/^Watch whether/);
+      expect(document.querySelector('.relevance-ring, .match-summary-card, .report-identity, [data-hero-variant]')).toBeNull();
+    }
   });
 
-  it('variant A: personal headline, meta line, stats and the restructured summary card below the hero', async () => {
+  it('lets a very long company name wrap rather than overflow a phone', async () => {
+    await render(shaped({ companyName: 'International Federation of Sporting Goods Retailers' }));
+    expect(document.querySelector('.brief-hero h1 .brief-company')).toBeNull();
+  });
+
+  it('citation chips are buttons numbered by page position that move focus to the story', async () => {
     const report = shaped();
-    await render(report, '?hero=a');
-    const hero = document.querySelector<HTMLElement>('.report-hero.brief-hero-a')!;
-    expect(hero.querySelector('h1')?.textContent).toBe('Technology Professional at LD Systems');
-    expect(hero.querySelector('.brief-mark')?.textContent).toBe('LD');
-    const count = report.professionalProfile.catalogueArticleCount!;
-    expect(count).toBeGreaterThan(0);
-    expect(hero.querySelector('.brief-meta')?.textContent).toMatch(new RegExp(`^Prepared \\d{1,2} \\w{3} \\d{4} from ${count} ${PUBLISHER} articles?$`));
-    const stats = [...hero.querySelectorAll('.brief-stat dt .brief-dt-full, .brief-stat dt:not(:has(.brief-dt-full))')].map((node) => node.textContent);
-    expect(stats).toEqual(['Stories selected', 'Themes', 'Newest story', 'Relevance']);
-    expect(hero.querySelector('.brief-stat-relevance dd')?.textContent).toBe('72%');
-    expect(hero.querySelector('.brief-card')).toBeNull();
-    const card = hero.nextElementSibling!;
-    expect(card.classList.contains('brief-card')).toBe(true);
-    expect(card.querySelector('.brief-card-kicker')?.textContent).toBe('The signal');
-    expect(card.querySelector('.brief-lead')?.textContent).toMatch(/^Brands are pulling/);
-    expect(card.querySelector('.brief-body')?.textContent).toMatch(/^Intersport/);
-    expect(card.querySelector('.brief-watch-label')?.textContent).toBe('Watch next');
-    expect(card.querySelector('.brief-watch-text')?.textContent).toMatch(/^Watch whether/);
-    expect(document.querySelector('.relevance-ring')).toBeNull();
-  });
-
-  it('variant B puts the summary card inside the hero', async () => {
-    await render(shaped(), '?hero=b');
-    const hero = document.querySelector('.report-hero.brief-hero-b')!;
-    expect(hero.querySelector('.brief-masthead h1')).not.toBeNull();
-    expect(hero.querySelector('.brief-card .brief-lead')).not.toBeNull();
-  });
-
-  it('citation chips are buttons numbered by page position, only for stories on the page, and move focus to the story', async () => {
-    const report = shaped();
-    await render(report, '?hero=a');
+    await render(report);
     const order = [...document.querySelectorAll<HTMLElement>('[data-story-card]')].map((card) => card.dataset.storyCard);
     const chips = [...document.querySelectorAll<HTMLButtonElement>('.brief-cite')];
     const cited = report.recommendations.filter((item) => item.rankingMetadata.citedInSummary && order.includes(item.article.id));
@@ -115,7 +123,6 @@ describe('report hero variants', () => {
     chips[0].click();
     expect(scrolled).toHaveBeenCalled();
     expect(document.activeElement).toBe(target);
-
   });
 
   it('drops chips for cited stories that are not rendered (e.g. in a section the page does not show)', () => {
@@ -128,32 +135,61 @@ describe('report hero variants', () => {
     expect(scope.querySelector('[data-brief-cites]')).toBeNull();
   });
 
-  it('shows the limited-coverage note first and does not call the closest stories a signal', async () => {
+  it('limited coverage with the generic fallback summary shows only the note and the buttons', async () => {
     const note = 'Coverage for software engineering is limited. These are the closest stories.';
-    const report = shaped({ generatedSummary: 'These are the closest stories in the current coverage; read them as context.', professionalProfile: { ...base.professionalProfile, coverage: { limited: true, note } } });
-    for (const variant of ['a', 'b']) {
-      await render(report, `?hero=${variant}`);
-      const card = document.querySelector('.brief-card')!;
-      expect(card.firstElementChild?.getAttribute('data-coverage-note')).not.toBeNull();
-      expect(card.firstElementChild?.textContent).toBe(note);
-      expect(card.querySelector('.brief-card-kicker')?.textContent).toBe('In this coverage');
-      expect(card.querySelector('.brief-watch')).toBeNull();
-    }
+    await render(shaped({ generatedSummary: 'These are the closest stories in the current coverage; read them as context rather than a direct briefing on software engineering.', summarySource: 'deterministic', professionalProfile: { ...base.professionalProfile, coverage: { limited: true, note } } }));
+    const card = document.querySelector('.brief-card')!;
+    expect(card.firstElementChild?.getAttribute('data-coverage-note')).not.toBeNull();
+    expect(card.firstElementChild?.textContent).toBe(note);
+    expect(card.querySelector('.brief-card-kicker, .brief-lead, .brief-body, .brief-watch, .brief-cites')).toBeNull();
+    expect(card.querySelector('[href="#top-stories"]')).not.toBeNull();
+    expect(card.querySelector('[data-share]')).not.toBeNull();
+    expect(card.textContent).not.toMatch(/closest stories in the current coverage/);
+  });
+
+  it('limited coverage with an AI summary keeps the summary, labelled as coverage rather than a signal', async () => {
+    await render(shaped({ professionalProfile: { ...base.professionalProfile, coverage: { limited: true, note: 'Limited coverage.' } } }));
+    const card = document.querySelector('.brief-card')!;
+    expect(card.firstElementChild?.textContent).toBe('Limited coverage.');
+    expect(card.querySelector('.brief-card-kicker')?.textContent).toBe('In this coverage');
+    expect(card.querySelector('.brief-lead')?.textContent).toMatch(/^Brands/);
   });
 
   it('falls back to publisher coverage without a catalogue count and escapes reader input', async () => {
-    const report = shaped({ jobTitle: '<img src=x onerror=alert(1)>', professionalProfile: { ...base.professionalProfile, catalogueArticleCount: undefined } });
-    await render(report, '?hero=a');
+    await render(shaped({ jobTitle: '<img src=x onerror=alert(1)>', professionalProfile: { ...base.professionalProfile, catalogueArticleCount: undefined } }));
     expect(document.querySelector('.brief-meta')?.textContent).toMatch(new RegExp(` from ${PUBLISHER} coverage$`));
     expect(document.querySelector('.brief-hero img[onerror]')).toBeNull();
     expect(document.querySelector('.brief-hero h1')?.textContent).toContain('<img');
   });
 
-  it('has no animated background and honours reduced motion', async () => {
-    await render(shaped(), '?hero=a');
-    const css = [...document.querySelectorAll('style')].map((style) => style.textContent ?? '').join('');
-    const heroCss = css.slice(css.indexOf('.brief-hero'));
-    expect(heroCss).not.toMatch(/@keyframes|animation:/);
-    expect(heroCss).toMatch(/prefers-reduced-motion:reduce/);
+  it('balances the headline, keeps the company on one line and has no animated background', () => {
+    const css = briefHeroStyle();
+    expect(css).toMatch(/\.brief-hero h1\{[^}]*text-wrap:balance/);
+    expect(css).toContain('.brief-company{white-space:nowrap}');
+    expect(css).not.toMatch(/@keyframes|animation:/);
+    expect(css).toMatch(/prefers-reduced-motion:reduce/);
+  });
+});
+
+describe('self-hosted serif', () => {
+  it('declares Source Serif 4 at 400 and 600 from same-origin woff2 files with font-display swap', () => {
+    const css = briefHeroStyle();
+    const faces = css.match(/@font-face\{[^}]*\}/g) ?? [];
+    expect(faces).toHaveLength(2);
+    for (const [face, weight] of faces.map((face, index) => [face, [400, 600][index]] as const)) {
+      expect(face).toContain("font-family:'Source Serif 4'");
+      expect(face).toContain(`font-weight:${weight}`);
+      expect(face).toContain('font-display:swap');
+      expect(face).toMatch(new RegExp(`src:url\\("[^"]*source-serif-4-latin-${weight}-normal\\.woff2"\\) format\\("woff2"\\)`));
+      expect(face).not.toMatch(/https?:\/\/(?!localhost)/);
+      expect(face).toContain('unicode-range:U+0000-00FF');
+    }
+    expect(css).toMatch(/\.brief-hero h1\{[^}]*'Source Serif 4',Georgia,serif/);
+    expect(css).toMatch(/\.brief-lead\{[^}]*'Source Serif 4',Georgia,serif/);
+  });
+
+  it('ships the two latin woff2 files and the OFL licence', () => {
+    for (const weight of [400, 600]) expect(readFileSync(path.resolve('src/assets/fonts', `source-serif-4-latin-${weight}-normal.woff2`)).subarray(0, 4).toString('latin1')).toBe('wOF2');
+    expect(readFileSync(path.resolve('src/assets/fonts/SourceSerif4-OFL.txt'), 'utf8')).toContain('SIL Open Font License');
   });
 });

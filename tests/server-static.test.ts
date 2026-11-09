@@ -25,6 +25,16 @@ describe('production static routes', () => {
     expect(staticAssetPath(pathname)).toBe('/index.html');
   });
 
+  it('serves self-hosted fonts as font/woff2 with an immutable cache and a same-origin policy', async () => {
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(path.join(root, 'assets'), { recursive: true });
+    await writeFile(path.join(root, 'assets', 'source-serif-4-latin-400-normal-AbC123.woff2'), 'wOF2');
+    const response = await staticResponse(new Request('http://localhost/assets/source-serif-4-latin-400-normal-AbC123.woff2'), root);
+    expect(response?.headers.get('Content-Type')).toBe('font/woff2');
+    expect(response?.headers.get('Cache-Control')).toContain('immutable');
+    expect(response?.headers.get('Content-Security-Policy')).toContain("default-src 'self'");
+  });
+
   it('does not make admin APIs public through static serving', async () => {
     const response = await staticResponse(new Request('http://localhost/api/admin/publishers'), root);
     expect(response).toBeNull();
