@@ -106,6 +106,8 @@ export interface ProfessionalProfile {
   coverage?: { limited: true; note: string };
   /** The job title exactly as entered, when the profile uses a corrected one ("Softere Enginer"). */
   submittedJobTitle?: string;
+  /** How many publisher articles the briefing was prepared from (display metadata for the report header). */
+  catalogueArticleCount?: number;
 }
 
 interface RoleRule {

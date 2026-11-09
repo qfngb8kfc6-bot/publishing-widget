@@ -17,9 +17,12 @@ describe('limited-coverage report page', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
     window.history.replaceState({}, '', `/p/demo/${reportId}`);
     await renderHostedRoute(document, createDemoRegistry());
-    const card = document.querySelector('.match-summary-card')!;
-    expect(card.firstElementChild?.className).toBe('coverage-note');
+    const card = document.querySelector('.brief-card')!;
+    expect(card.firstElementChild?.hasAttribute('data-coverage-note')).toBe(true);
     expect(card.firstElementChild?.textContent).toMatch(/coverage for software engineering is limited\. These are the closest stories/);
+    // The generic fallback summary would repeat the note, so the card shows only the note and the buttons.
+    expect(card.querySelector('.brief-lead')).toBeNull();
+    expect(card.textContent).not.toMatch(/closest stories in the current coverage/);
     expect(document.querySelector('#highlights-heading')?.textContent).toBe('Closest themes in this coverage');
     const lines = [...document.querySelectorAll('.highlight-card p')].map((line) => line.textContent ?? '');
     for (const line of lines) expect(line).not.toMatch(/Relevant to your/);

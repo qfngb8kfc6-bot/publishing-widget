@@ -64,8 +64,8 @@ describe('hosted professional experience', () => {
     expect(document.querySelector('[data-share]')).not.toBeNull();
     expect(document.querySelector('[data-edit]')).not.toBeNull();
     expect(document.querySelector('.report-hero')).not.toBeNull();
-    expect(document.querySelector('.match-summary-card')).not.toBeNull();
-    expect(document.querySelector('.relevance-ring')).not.toBeNull();
+    expect(document.querySelector('.report-hero .brief-card')).not.toBeNull();
+    expect(document.querySelector('.relevance-ring, .match-summary-card, .report-identity')).toBeNull();
     expect(document.querySelector('.highlights-section')).not.toBeNull();
     expect(document.querySelector('.also-relevant')).not.toBeNull();
     expect(document.querySelector('.featured-story')).not.toBeNull();
@@ -79,11 +79,8 @@ describe('hosted professional experience', () => {
     expect(document.querySelector('.context-bar')).not.toBeNull();
     expect(document.querySelector('.edit-sheet')).not.toBeNull();
     const styles = document.querySelector('style')?.textContent ?? '';
-    expect(styles).toContain('.report-hero{min-height:clamp(560px,68vh,740px);padding:clamp(24px,3.5vw,48px)}');
-    expect(styles).toContain('.report-hero-content{min-height:clamp(460px,55vh,560px)');
-    expect(styles).toContain('.report-hero h1{font-size:clamp(4.75rem,7vw,6.25rem)}');
-    expect(styles).toContain('.report-title{margin-top:18px;font-size:clamp(2.25rem,3vw,2.875rem)}');
-    expect(styles).toContain('.match-summary-card{margin-top:-48px;padding:clamp(22px,3vw,36px)}');
+    // The old hero's rules are gone: one hero, styled by hosted-hero.ts.
+    expect(styles).not.toMatch(/\.report-hero(?![\w-])|\.match-summary-card|\.relevance-ring|\.report-identity|\.report-title/);
     expect(styles).toContain('.context-bar{top:18px;background:#fff');
     expect(styles).toContain('.context-bar .hosted-brand.compact{color:#151a3a}');
 
@@ -232,10 +229,7 @@ describe('hosted professional experience', () => {
 
     // One headline in the hero; the publisher's results heading names the top stories instead.
     expect(document.querySelectorAll('.report-hero h1, .report-hero h2')).toHaveLength(1);
-    expect(document.querySelector('.report-title')).toBeNull();
     expect(document.querySelector('#top-stories-heading')?.textContent).toBeTruthy();
-    // Ring, heading, summary and actions are direct children so the ring can sit beside the heading on mobile.
-    expect([...document.querySelector('.match-summary-card')!.children].map((child) => child.className)).toEqual(['relevance-ring', 'section-kicker', 'match-summary-text', 'summary-actions']);
     // Images and the compact fallback.
     const cards = [...document.querySelectorAll<HTMLElement>('[data-story-card]')];
     expect(cards.map((card) => card.classList.contains('no-image'))).toEqual([false, true, false]);
@@ -250,11 +244,9 @@ describe('hosted professional experience', () => {
     expect(toggle.textContent).toBe('Less');
 
     const styles = [...document.querySelectorAll('style')].map((style) => style.textContent).join('');
-    for (const rule of ['html{scroll-padding-top:104px}', 'scroll-margin-top:104px', '@media(max-width:639px)', 'scroll-snap-type:x mandatory', '.report-page .highlight-index{display:none}', 'max-height:180px;aspect-ratio:16/9', '-webkit-line-clamp:3', '.report-page .featured-story.no-image .story-placeholder{display:none}', 'font-size:clamp(2.5rem,3.9vw,3.5rem)', 'font-size:clamp(1.75rem,8vw,2rem)', '.report-page .featured-story h3,.report-page .story-card h3{font-family:Georgia,serif;font-weight:500;letter-spacing:-.045em}',
-      // Mobile ring: a fixed-size flex item beside a wrapping heading, its number scaled to the ring in tabular figures.
-      // The in-flow sticky bar (-58px / -84px bottom margin) never covers the HIGHLIGHTS eyebrow.
-      'html{scroll-padding-top:84px}', 'scroll-margin-top:84px', '.report-page .report-content{padding:76px 14px 0}', '.report-page .report-content{padding-top:clamp(96px,8vw,112px)}',
-      '.report-page .match-summary-card{display:flex;flex-wrap:wrap', '.report-page .relevance-ring{--ring:52px;flex:none', 'font-size:calc(var(--ring) * .23)', 'font-variant-numeric:tabular-nums', '>.section-kicker{flex:1 1 0;min-width:0']) {
+    for (const rule of ['html{scroll-padding-top:104px}', 'scroll-margin-top:104px', '@media(max-width:639px)', 'scroll-snap-type:x mandatory', '.report-page .highlight-index{display:none}', 'max-height:180px;aspect-ratio:16/9', '-webkit-line-clamp:3', '.report-page .featured-story.no-image .story-placeholder{display:none}', '.report-page .featured-story h3,.report-page .story-card h3{font-family:Georgia,serif;font-weight:500;letter-spacing:-.045em}',
+      // The gap to Highlights (the sticky bar only shows once the hero is gone, so it never covers the eyebrow).
+      'html{scroll-padding-top:84px}', 'scroll-margin-top:84px', '.report-page .report-content{padding-top:clamp(64px,5vw,72px)}', '.report-page .report-content{padding-top:50px}']) {
       expect(styles).toContain(rule);
     }
   });
