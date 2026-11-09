@@ -114,6 +114,12 @@ export interface ServerLogFields {
   /** Article the rejected AI explanation was for (an ID, never explanation text). */
   articleId?: string;
   rejectReason?: string;
+  /** theme_unsupported_removed: themes chosen, and those dropped for having no supporting report story. */
+  themeCount?: number;
+  removedCount?: number;
+  /** explanation_restated: which overlap rule fired, and what happened (regenerated / fallback). */
+  restatedRule?: 'consecutive_words' | 'token_overlap';
+  outcome?: string;
   /** catalogue_refresh_complete: time spent writing the persisted snapshot (0 when unchanged). */
   snapshotSaveMs?: number;
   /** heap_usage: process memory in MB, logged every 60s and after each catalogue stage. */
@@ -184,7 +190,7 @@ export function logHeapUsage(logger: StructuredLogger | undefined, stage: string
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'duplicates_collapsed', 'explanation_fallback', 'not_returned_treated_as_weak', 'own_company_share', 'enrichment_retry', 'heap_usage', 'report_performance', 'theme_performance', 'slow_span', 'wvc_sync_progress', 'wvc_catalogue_sync_started', 'lead_index_update'].includes(message);
+    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'duplicates_collapsed', 'explanation_fallback', 'explanation_restated', 'theme_unsupported_removed', 'not_returned_treated_as_weak', 'own_company_share', 'enrichment_retry', 'heap_usage', 'report_performance', 'theme_performance', 'slow_span', 'wvc_sync_progress', 'wvc_catalogue_sync_started', 'lead_index_update'].includes(message);
     if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };

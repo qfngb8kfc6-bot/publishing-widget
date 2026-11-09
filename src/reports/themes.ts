@@ -1,6 +1,6 @@
 import { isAmbiguousSingleWord, normalizeToken, roleSubjectTerms, wordsMatch } from '../core';
 import type { ProfessionalProfile } from '../core';
-import type { ReportRecord } from './types';
+import type { ReportRecord, ReportRecommendation } from './types';
 
 function unique(values: string[]): string[] {
   const seen = new Set<string>();
@@ -115,14 +115,116 @@ export function selectReportThemes(profile: ProfessionalProfile, articles: Theme
   return unique([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes]).filter((theme) => !isAmbiguousSingleWord(theme)).slice(0, 4);
 }
 
-/** The same bounded theme list is used by the report UI and the focused-search API. */
-export function reportThemes(report: Pick<ReportRecord, 'professionalProfile'>): string[] {
-  return report.professionalProfile.themes ?? selectReportThemes(report.professionalProfile);
+type ThemeReport = Pick<ReportRecord, 'professionalProfile' | 'recommendations'>;
+type SupportArticle = Pick<ReportRecommendation['article'], 'title' | 'description' | 'categories'> & Partial<Pick<ReportRecommendation['article'], 'summary' | 'tags'>>;
+
+/**
+ * Standard synonyms that show a story is about a theme without naming it ("supplier" for procurement). Used only to
+ * decide whether a story supports a theme, never for theme selection or ranking.
+ */
+const THEME_RELATED_TERMS: Record<string, string[]> = {
+  procurement: ['sourcing', 'supplier', 'vendor', 'purchasing', 'buying', 'tender'],
+  sourcing: ['supplier', 'vendor', 'procurement', 'manufacturer', 'factory', 'factories'],
+  suppliers: ['supplier', 'vendor', 'sourcing', 'procurement', 'manufacturer', 'factory', 'factories'],
+  vendors: ['vendor', 'supplier', 'sourcing', 'procurement'],
+  wearables: ['wearable', 'smartwatch', 'smart ring', 'fitness tracker', 'fitness band'],
+};
+
+/** The theme, its focused-search expansions, related terms and, for a theme in a concept family, its members. */
+function themeMatchTerms(theme: string): string[] {
+  const family = themeFamily(theme);
+  return unique([...expandedThemeTerms(theme), ...(THEME_RELATED_TERMS[normalizeToken(theme)] ?? []), ...(family >= 0 ? THEME_FAMILIES[family] : [])]);
 }
 
+/**
+ * True when the article's own text (title, description, categories, tags) or the concepts the scorer matched in it
+ * name the theme, one of its expansions or a member of its concept family, in some word form.
+ */
+export function articleSupportsTheme(theme: string, article: SupportArticle, matchedConcepts: readonly string[] = []): boolean {
+  const text = words([article.title, article.description ?? article.summary ?? '', ...(article.categories ?? []), ...(article.tags ?? [])].join(' '));
+  const terms = themeMatchTerms(theme);
+  if (terms.some((term) => containsTerm(text, term))) return true;
+  return matchedConcepts.some((concept) => terms.some((term) => containsTerm(words(concept), term)));
+}
+
+/**
+ * The report stories that support each theme, as article IDs. A theme the AI linked to report stories (the
+ * articles its theme line was written from) keeps those links; otherwise, or when none of them is still in the
+ * report, the stories whose text names the theme. Themes with no supporting story get no entry.
+ */
+export function themeSupport(themes: readonly string[], recommendations: ReadonlyArray<{ articleId: string; article: SupportArticle; matchedConcepts?: readonly string[] }>, aiLinks: Readonly<Record<string, readonly string[]>> = {}): Record<string, string[]> {
+  const inReport = new Set(recommendations.map((item) => item.articleId));
+  const support: Record<string, string[]> = {};
+  for (const theme of themes) {
+    const linked = [...new Set(aiLinks[theme] ?? [])].filter((id) => inReport.has(id));
+    const ids = linked.length ? linked : recommendations.filter((item) => articleSupportsTheme(theme, item.article, item.matchedConcepts)).map((item) => item.articleId);
+    if (ids.length) support[theme] = ids;
+  }
+  return support;
+}
+
+/** Article IDs of the report stories supporting a theme: stored at generation, else matched by text (older reports). */
+function supportingIds(report: ThemeReport, theme: string): string[] {
+  const stored = report.professionalProfile.themeArticleIds;
+  if (stored) return stored[theme] ?? [];
+  return themeSupport([theme], report.recommendations)[theme] ?? [];
+}
+
+/** The report stories that support the theme, strongest match first. */
+export function themeSupportingRecommendations(report: ThemeReport, theme: string): ReportRecommendation[] {
+  const ids = new Set(supportingIds(report, theme));
+  const seen = new Set<string>();
+  return report.recommendations
+    .filter((item) => ids.has(item.articleId) && !seen.has(item.articleId) && Boolean(seen.add(item.articleId)))
+    .sort((left, right) => right.displayScore - left.displayScore || left.rank - right.rank);
+}
+
+/**
+ * The same bounded theme list is used by the report UI and the focused-search API. A theme no report story
+ * supports is not shown: its card would promise stories that focused reading cannot list.
+ */
+export function reportThemes(report: ThemeReport): string[] {
+  const themes = report.professionalProfile.themes ?? selectReportThemes(report.professionalProfile);
+  return themes.filter((theme) => supportingIds(report, theme).length > 0);
+}
+
+/**
+ * Focused search accepts any theme chosen for the report, shown or not: a hidden theme has no card to click, and
+ * accepting it keeps links from older report pages working.
+ */
 export function findReportTheme(report: Pick<ReportRecord, 'professionalProfile'>, requestedTheme: string): string | undefined {
   const normalized = normalizeToken(requestedTheme);
-  return reportThemes(report).find((theme) => normalizeToken(theme) === normalized);
+  return (report.professionalProfile.themes ?? selectReportThemes(report.professionalProfile)).find((theme) => normalizeToken(theme) === normalized);
+}
+
+/** Acronyms and brand spellings kept as written when a theme is shown in sentence case. */
+const DISPLAY_WORDS: Record<string, string> = Object.fromEntries([
+  'AI', 'AR', 'VR', 'RFID', 'ESG', 'EU', 'UK', 'USA', 'DTC', 'D2C', 'B2B', 'B2C', 'B2B2C', 'IoT', 'GDPR', 'PFAS', 'CSRD', 'CSDDD', 'ESPR', 'DPP',
+  'KPI', 'KPIs', 'SKU', 'SKUs', 'ERP', 'CRM', 'API', 'APIs', 'NFT', 'NFTs', 'GPS', 'CEO', 'CFO', 'CTO', 'M&A', 'IPO', 'ROI', 'SaaS', 'SEO',
+  'GenAI', 'eBay', 'iPhone', 'iOS', 'TikTok', 'YouTube', 'LinkedIn', 'PayPal', 'WhatsApp',
+].map((word) => [word.toLowerCase(), word]));
+
+function displayWord(word: string): string {
+  // A word written with capitals ("AI", "eBay", "Nike") is already as its source spelled it.
+  if (/[A-Z]/.test(word)) return word;
+  return word.split(/(?<=[-/])/).map((part) => {
+    const match = part.match(/^(.*?)([-/]?)$/)!;
+    return `${DISPLAY_WORDS[match[1]] ?? match[1]}${match[2]}`;
+  }).join('');
+}
+
+/** A theme for inline text ("stories that touch on AI coaching"): acronyms and brands restored, nothing else. */
+export function themeInlineText(theme: string): string {
+  return theme.replace(/\s+/g, ' ').trim().split(' ').map(displayWord).join(' ');
+}
+
+/** A theme as a heading in sentence case: "connected fitness" → "Connected fitness", "ai in retail" → "AI in retail". */
+export function themeDisplayTitle(theme: string): string {
+  const [first = '', ...rest] = theme.replace(/\s+/g, ' ').trim().split(' ');
+  const shown = displayWord(first);
+  // An acronym or brand opening the theme keeps its spelling ("eBay marketplace", "AI coaching").
+  const opening = shown !== first || /[A-Z]/.test(first) ? shown : `${first.charAt(0).toUpperCase()}${first.slice(1)}`;
+  return [opening, ...rest.map(displayWord)].filter(Boolean).join(' ');
 }
 
 /** Add a selected theme to the persisted profile only in memory for focused retrieval. */

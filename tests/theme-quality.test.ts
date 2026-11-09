@@ -14,7 +14,8 @@ const legalEnrichment = {
   subjectVocabulary: ['litigation', 'lawsuit', 'trademark', 'patent', 'regulator', 'settlement'],
 };
 
-const themesFor = (profile: ReturnType<typeof buildProfessionalProfile>) => reportThemes({ professionalProfile: profile });
+// Candidate theme selection only: report stories are not involved, so no support filtering applies.
+const themesFor = (profile: ReturnType<typeof buildProfessionalProfile>) => profile.themes ?? selectReportThemes(profile);
 
 describe('report themes', () => {
   it('gives a generic titled role subject themes only, never strategy, markets or operations', () => {

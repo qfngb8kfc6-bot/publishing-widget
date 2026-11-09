@@ -23,7 +23,7 @@ beforeAll(async () => {
 /** A full-coverage report with an AI-style summary whose 1st and 3rd recommendations are cited. */
 function shaped(overrides: Partial<ReportRecord> = {}): ReportRecord {
   const recommendations = base.recommendations.map((recommendation, index) => ({ ...recommendation, rankingMetadata: { ...recommendation.rankingMetadata, citedInSummary: index === 0 || index === 2 ? true : undefined } }));
-  return { ...base, companyName: 'LD Systems', jobTitle: 'technology professional', generatedSummary: SUMMARY, summarySource: 'ai', overallMatchScore: 72, recommendations, sections: [], professionalProfile: { ...base.professionalProfile, coverage: undefined }, ...overrides };
+  return { ...base, companyName: 'LD Systems', jobTitle: 'technology professional', generatedSummary: SUMMARY, summarySource: 'ai', overallMatchScore: 72, recommendations, sections: [], professionalProfile: { ...base.professionalProfile, coverage: undefined, themeArticleIds: Object.fromEntries((base.professionalProfile.themes ?? []).map((theme) => [theme, [base.recommendations[0].articleId]])) }, ...overrides };
 }
 
 async function render(report: ReportRecord, search = ''): Promise<void> {
@@ -125,11 +125,27 @@ describe('report hero', () => {
     expect(document.activeElement).toBe(target);
   });
 
+  it('numbers chips 1, 2, 3 in page order of the cited stories and tags each cited card "Source N"', () => {
+    const scope = document.createElement('div');
+    const card = (id: string) => `<article data-story-card="${id}"><div class="story-meta"><span class="match-badge">60% match</span><span class="story-category" title="Retail">Retail</span></div></article>`;
+    scope.innerHTML = `<div data-brief-cites><span class="brief-cites-label">Sources</span><button data-cite="g" title="G">7</button><button data-cite="d" title="D">4</button><button data-cite="e" title="E">5</button></div>${['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(card).join('')}`;
+    bindCitationChips(scope, true);
+    expect([...scope.querySelectorAll<HTMLElement>('[data-cite]')].map((chip) => `${chip.dataset.cite}:${chip.textContent}`)).toEqual(['d:1', 'e:2', 'g:3']);
+    expect(scope.querySelector('[data-cite="g"]')?.getAttribute('aria-label')).toBe('Source 3: G');
+    const tags = [...scope.querySelectorAll<HTMLElement>('[data-story-card] .source-tag')].map((tag) => `${tag.closest<HTMLElement>('[data-story-card]')!.dataset.storyCard}:${tag.textContent}`);
+    expect(tags).toEqual(['d:Source 1', 'e:Source 2', 'g:Source 3']);
+    // The tag sits right after the match badge, and binding again does not duplicate it.
+    expect(scope.querySelector('[data-story-card="d"] .match-badge')?.nextElementSibling?.textContent).toBe('Source 1');
+    bindCitationChips(scope, true);
+    expect(scope.querySelectorAll('.source-tag')).toHaveLength(3);
+  });
+
   it('drops chips for cited stories that are not rendered (e.g. in a section the page does not show)', () => {
     const scope = document.createElement('div');
     scope.innerHTML = '<div data-brief-cites><button data-cite="b" title="B">9</button><button data-cite="gone" title="Gone">9</button></div><article data-story-card="a"></article><article data-story-card="b"></article><section data-theme-results><article data-story-card="gone"></article></section>';
     bindCitationChips(scope, true);
-    expect([...scope.querySelectorAll<HTMLElement>('[data-cite]')].map((chip) => `${chip.dataset.cite}:${chip.textContent}`)).toEqual(['b:2']);
+    // Numbered in citation order (1), not by page position (2).
+    expect([...scope.querySelectorAll<HTMLElement>('[data-cite]')].map((chip) => `${chip.dataset.cite}:${chip.textContent}`)).toEqual(['b:1']);
     scope.querySelector<HTMLElement>('[data-cite="b"]')!.remove();
     bindCitationChips(scope, true);
     expect(scope.querySelector('[data-brief-cites]')).toBeNull();

@@ -13,6 +13,8 @@ describe('limited-coverage report page', () => {
     const { reportId } = await generated.json() as { reportId: string };
     const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json();
     expect(report.professionalProfile.coverage?.limited).toBe(true);
+    // Theme cards show only themes a report story supports; link them so the card copy is what is tested here.
+    report.professionalProfile.themeArticleIds = Object.fromEntries((report.professionalProfile.themes ?? []).map((theme: string) => [theme, [report.recommendations[0].articleId]]));
     document.body.innerHTML = '<div id="app"></div>';
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
     window.history.replaceState({}, '', `/p/demo/${reportId}`);

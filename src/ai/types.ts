@@ -125,6 +125,8 @@ export interface ReportContentRequest {
   includeExplanations?: boolean;
   /** 'limited': the publisher covers little that is directly about the reader's field; the summary is hedged. */
   coverage?: 'limited';
+  /** true for the one regeneration of explanations that only retold their story (explanations-only call). */
+  rewriteRestated?: boolean;
   profile: ProfessionalProfile;
   recommendations: Array<{
     article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'> & Partial<Pick<NormalizedArticle, 'category' | 'summary'>>;
@@ -150,6 +152,8 @@ export interface AIReportContent {
   explanations?: AIExplanationResult[];
   /** One short line per supplied theme, keyed by the theme exactly as supplied. */
   themeDescriptions?: Record<string, string>;
+  /** Supplied article IDs each theme line draws on, keyed like themeDescriptions (only themes with valid IDs). */
+  themeArticleIds?: Record<string, string[]>;
 }
 
 export interface IntentEnhancer {

@@ -196,10 +196,10 @@ export function validateReportContent(raw: unknown, request: ReportContentReques
   if (request.includeExplanations === false) {
     // Summary-only call: any explanations the model added anyway are ignored, never applied or logged as missing.
     const summary = optionalString(value.summary, 1200);
-    const themeDescriptions = validThemeDescriptions(value.themeDescriptions, request.themes ?? []);
+    const { descriptions: themeDescriptions, links: themeArticleIds } = validThemeDescriptions(value.themeDescriptions, request.themes ?? [], candidateIds);
     if (!summary && !themeDescriptions) return null;
     const citedArticleIds = summary && Array.isArray(value.citedArticleIds) ? [...new Set(value.citedArticleIds.filter((id): id is string => typeof id === 'string' && candidateIds.has(id)))] : [];
-    return { summary, explanations: [], ...(summary ? { citedArticleIds } : {}), ...(themeDescriptions ? { themeDescriptions } : {}) };
+    return { summary, explanations: [], ...(summary ? { citedArticleIds } : {}), ...(themeDescriptions ? { themeDescriptions } : {}), ...(themeArticleIds ? { themeArticleIds } : {}) };
   }
   // {"articleId", "fit": "weak"} is an honest "this does not help the reader", not a missing explanation.
   const isWeakFit = (item: unknown) => { const entry = record(item); return entry?.fit === 'weak' && typeof entry.articleId === 'string' && candidateIds.has(entry.articleId); };
@@ -210,25 +210,31 @@ export function validateReportContent(raw: unknown, request: ReportContentReques
   const summary = optionalString(value.summary, 1200);
   if (!summary && explanations.length === 0 && weakArticleIds.length === 0) return null;
   const citedArticleIds = summary && Array.isArray(value.citedArticleIds) ? [...new Set(value.citedArticleIds.filter((id): id is string => typeof id === 'string' && candidateIds.has(id)))] : [];
-  const themeDescriptions = validThemeDescriptions(value.themeDescriptions, request.themes ?? []);
-  return { summary, explanations, ...(summary ? { citedArticleIds } : {}), ...(weakArticleIds.length ? { weakArticleIds } : {}), ...(themeDescriptions ? { themeDescriptions } : {}) };
+  const { descriptions: themeDescriptions, links: themeArticleIds } = validThemeDescriptions(value.themeDescriptions, request.themes ?? [], candidateIds);
+  return { summary, explanations, ...(summary ? { citedArticleIds } : {}), ...(weakArticleIds.length ? { weakArticleIds } : {}), ...(themeDescriptions ? { themeDescriptions } : {}), ...(themeArticleIds ? { themeArticleIds } : {}) };
 }
 
 const THEME_DESCRIPTION_MAX_LENGTH = 160;
 
-/** One single-line description per supplied theme; unknown themes and over-long or empty lines are dropped. */
-function validThemeDescriptions(raw: unknown, themes: string[]): Record<string, string> | undefined {
-  if (!Array.isArray(raw) || themes.length === 0) return undefined;
+/**
+ * One single-line description per supplied theme; unknown themes and over-long or empty lines are dropped. The
+ * articles each line draws on (articleIds) are kept only when they are supplied article IDs.
+ */
+function validThemeDescriptions(raw: unknown, themes: string[], candidateIds: ReadonlySet<string>): { descriptions?: Record<string, string>; links?: Record<string, string[]> } {
+  if (!Array.isArray(raw) || themes.length === 0) return {};
   const byKey = new Map(themes.map((theme) => [normalizeToken(theme), theme]));
   const descriptions: Record<string, string> = {};
+  const links: Record<string, string[]> = {};
   for (const item of raw) {
     const entry = record(item);
     const theme = typeof entry?.theme === 'string' ? byKey.get(normalizeToken(entry.theme)) : undefined;
     const description = typeof entry?.description === 'string' ? entry.description.replace(/\s+/g, ' ').trim() : '';
     if (!theme || !description || description.length > THEME_DESCRIPTION_MAX_LENGTH || descriptions[theme]) continue;
     descriptions[theme] = description;
+    const ids = Array.isArray(entry?.articleIds) ? [...new Set(entry.articleIds.filter((id): id is string => typeof id === 'string' && candidateIds.has(id)))] : [];
+    if (ids.length) links[theme] = ids;
   }
-  return Object.keys(descriptions).length ? descriptions : undefined;
+  return Object.keys(descriptions).length ? { descriptions, ...(Object.keys(links).length ? { links } : {}) } : {};
 }
 
 export function sanitizeEnrichedIntent(raw: unknown, baseIntent: Intent): EnrichedIntent | null {

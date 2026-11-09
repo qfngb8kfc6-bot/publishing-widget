@@ -108,9 +108,10 @@ export interface HeroContext {
   brand: string;
 }
 
+/** Chips are numbered 1, 2, 3 in citation order (page order of the cited stories), never by page position. */
 function citationChips(context: HeroContext): string {
-  const chips = context.storiesOnPage.flatMap((recommendation, index) => {
-    if (!recommendation.rankingMetadata?.citedInSummary) return [];
+  const cited = context.storiesOnPage.filter((recommendation) => recommendation.rankingMetadata?.citedInSummary);
+  const chips = cited.map((recommendation, index) => {
     const title = recommendation.article.title;
     return `<button class="brief-cite" type="button" data-cite="${escapeHtml(recommendation.article.id)}" aria-label="Source ${index + 1}: ${escapeHtml(title)}" title="${escapeHtml(title)}">${index + 1}</button>`;
   });
@@ -170,17 +171,35 @@ export function briefHeroMarkup(context: HeroContext): string {
 }
 
 /**
- * Numbers citation chips by the story's position on the page and drops chips whose story is not shown (some
- * sections are not rendered), then makes each chip scroll to its story card and move focus there.
+ * Drops chips whose story is not shown (some sections are not rendered), puts the rest in page order and numbers
+ * them 1, 2, 3 in that order, tags each cited story card "Source N" to match, and makes each chip scroll to its
+ * story card and move focus there.
  */
 export function bindCitationChips(scope: ParentNode, reducedMotion: boolean): void {
   const cards = [...scope.querySelectorAll<HTMLElement>('[data-story-card]')].filter((card) => !card.closest('[data-theme-results]'));
   const order = [...new Set(cards.map((card) => card.dataset.storyCard ?? ''))];
-  scope.querySelectorAll<HTMLButtonElement>('[data-cite]').forEach((chip) => {
-    const position = order.indexOf(chip.dataset.cite ?? '');
-    if (position < 0) { chip.remove(); return; }
-    chip.textContent = String(position + 1);
-    chip.setAttribute('aria-label', `Source ${position + 1}: ${chip.title}`);
+  scope.querySelectorAll('[data-source-tag]').forEach((tag) => tag.remove());
+  const chips = [...scope.querySelectorAll<HTMLButtonElement>('[data-cite]')];
+  const shown = chips.filter((chip) => {
+    if (order.includes(chip.dataset.cite ?? '')) return true;
+    chip.remove();
+    return false;
+  }).sort((left, right) => order.indexOf(left.dataset.cite ?? '') - order.indexOf(right.dataset.cite ?? ''));
+  shown.forEach((chip, index) => {
+    const number = index + 1;
+    chip.parentElement?.appendChild(chip);
+    chip.textContent = String(number);
+    chip.setAttribute('aria-label', `Source ${number}: ${chip.title}`);
+    const card = cards.find((candidate) => candidate.dataset.storyCard === chip.dataset.cite);
+    const meta = card?.querySelector('.story-meta');
+    if (meta) {
+      const tag = document.createElement('span');
+      tag.className = 'source-tag';
+      tag.dataset.sourceTag = '';
+      tag.textContent = `Source ${number}`;
+      const badge = meta.querySelector('.match-badge');
+      if (badge) badge.after(tag); else meta.prepend(tag);
+    }
     chip.addEventListener('click', () => {
       const target = cards.find((card) => card.dataset.storyCard === chip.dataset.cite);
       if (!target) return;
@@ -234,6 +253,7 @@ export function briefHeroStyle(): string {
 .brief-cites{display:flex;flex-wrap:wrap;align-items:center;gap:5px}.brief-cites-label{margin-right:3px;color:#5b6170;font-size:.66rem;font-weight:850;letter-spacing:.12em;text-transform:uppercase}
 .brief-cite{display:inline-grid;min-width:26px;height:26px;place-items:center;padding:0 7px;border:1px solid color-mix(in srgb,var(--card-accent) 35%,white);border-radius:8px;color:var(--card-accent);background:#fff;font-size:.74rem;font-weight:800;font-variant-numeric:tabular-nums}.brief-cite:hover,.brief-cite:focus-visible{color:#fff;background:var(--card-accent)}.brief-cite:focus-visible{outline-offset:2px}
 .report-page .brief-actions{margin:0;gap:8px}.report-page .brief-actions .action-button,.report-page .brief-actions .text-button{gap:6px;min-height:38px;padding:8px 14px;font-size:.8rem}
+.source-tag{display:inline-flex;align-items:center;padding:4px 8px;border:1px solid color-mix(in srgb,var(--brand) 35%,white);border-radius:999px;color:var(--brand);background:#fff;font-size:.64rem;font-weight:850;letter-spacing:.04em;text-transform:none}
 [data-story-card].is-cited{outline:3px solid color-mix(in srgb,var(--brand) 55%,white);outline-offset:4px;transition:outline-color .6s ease}
 .report-page .report-content{padding-top:clamp(64px,5vw,72px)}
 @media(max-width:1023px){.brief-hero-inner{grid-template-columns:1fr}}
@@ -243,7 +263,7 @@ export function briefHeroStyle(): string {
 .brief-stats{grid-template-columns:repeat(4,auto);justify-content:space-between;gap:0;margin-top:12px;padding-top:10px}.brief-stat{padding:0 10px;border-left:1px solid rgba(255,255,255,.14)}.brief-stat:first-child{padding-left:0;border-left:0}.brief-stat:last-child{padding-right:0}
 .brief-stat dt{font-size:.58rem;letter-spacing:.08em;line-height:1.2}.brief-stat dd{gap:6px;font-size:.9rem;line-height:1.2}.brief-meter{width:28px;height:4px}
 .brief-dt-full{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.brief-dt-short{display:inline}
-.brief-card{margin:0 -4px;padding:16px;border-radius:20px}.report-page .brief-lead{font-size:1.06rem}.brief-body{font-size:.86rem}.brief-watch-text{font-size:.82rem}
+.brief-card{margin:0 -4px;padding:16px;border-radius:20px}.report-page .brief-lead{font-size:.98rem;line-height:1.38}.brief-body{font-size:.86rem}.brief-watch-text{font-size:.82rem}
 .report-page .report-content{padding-top:50px}
 }
 @media(prefers-reduced-motion:reduce){[data-story-card].is-cited{transition:none}}

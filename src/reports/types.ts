@@ -31,6 +31,11 @@ export interface ReportRecommendation {
     citedInSummary?: boolean;
     /** Flagged as a weak fit but kept so the report has a minimum number of recommendations. */
     lowerConfidence?: boolean;
+    /**
+     * The AI explanation only retold the headline and excerpt, even after one regeneration: the stored explanation is
+     * the fallback (the excerpt's first sentence), so the report page leaves the "why" box out instead of repeating it.
+     */
+    explanationRestated?: boolean;
     editorialSection?: EditorialSectionId;
   };
 }

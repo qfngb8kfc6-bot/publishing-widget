@@ -83,7 +83,7 @@ describe('content call inputs and stored output', () => {
     const { instance, logs } = app(({ articles: sent }) => ({
       summary: 'Nike is adding 12 owned stores in Germany while Adidas cuts wholesale accounts, and European sports retail grew 4%. Watch shelf space at multi-brand retailers.',
       citedArticleIds: [sent[0].id, sent[1].id, 'a99'],
-      explanations: sent.map((article, index) => ({ articleId: article.id, angle: index === 0 ? 'Channel Shift' : 'a very long angle label that is far too long', explanation: index === 0 ? 'This article is relevant because it maps to retail.' : `${article.title} signals a shift worth tracking.` })),
+      explanations: sent.map((article, index) => ({ articleId: article.id, angle: index === 0 ? 'Channel Shift' : 'a very long angle label that is far too long', explanation: index === 0 ? 'This article is relevant because it maps to retail.' : `${article.title.split(' ').slice(0, 2).join(' ')} signals a shift worth tracking.` })),
     }));
     const report = await generate(instance);
     const byTitle = new Map(report.recommendations.map((item) => [item.article.title, item]));
