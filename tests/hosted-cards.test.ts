@@ -214,6 +214,13 @@ describe('report body (magazine layout)', () => {
     expect([...panel.querySelectorAll('.theme-results-group-heading')].map((node) => node.textContent)).toEqual(['In your briefing 2', 'More on this theme 1']);
     expect(storyIdsIn(panel, 'briefing')).toEqual(['s-2', 's-0']);
     expect(storyIdsIn(panel, 'archive')).toEqual(['archive-1']);
+    // Archive results carry the theme search's own % as a quieter "Theme match" pill; briefing stories keep their
+    // report % and the normal "match" pill.
+    const pill = (group: string) => [...panel.querySelectorAll(`[data-theme-group="${group}"] .match-badge`)];
+    expect(pill('archive').map((node) => node.textContent)).toEqual(['70% Theme match']);
+    expect(pill('archive').every((node) => node.classList.contains('cx-theme-match'))).toBe(true);
+    expect(pill('briefing').map((node) => node.textContent)).toEqual(['60% match', '70% match']);
+    expect(pill('briefing').some((node) => node.classList.contains('cx-theme-match'))).toBe(false);
     // Briefing stories do not repeat their "why"; the stories section stays where it was (nothing inserted above it).
     expect(panel.querySelectorAll('[data-theme-group="briefing"] .why')).toHaveLength(0);
     expect(document.querySelector('.cx-themes + #top-stories')).not.toBeNull();
