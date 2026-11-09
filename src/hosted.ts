@@ -7,7 +7,7 @@ import { allocateEditorialSections, articleIdentityKeys, type EditorialSection }
 import { generationPageMarkup, runGenerationPage } from './hosted-loading';
 import { generationInputMessage } from './widget/messages';
 import { bindCitationChips, briefHeroMarkup, briefHeroStyle } from './hosted-hero';
-import { bindFocusPanel, cardsStyle, displayStories, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext } from './hosted-cards';
+import { bindFocusPanel, cardsStyle, displayStories, displayTitle, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext } from './hosted-cards';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&#38;', '<': '&#60;', '>': '&#62;', "'": '&#39;', '"': '&#34;' })[character] ?? character);
@@ -41,16 +41,6 @@ function overlayValue(experience: PublisherExperienceBranding | undefined, fallb
   const opacity = experience?.overlayOpacity;
   if (typeof opacity !== 'number' || !Number.isFinite(opacity)) return overlay;
   return `color-mix(in srgb, ${overlay} ${Math.round(Math.max(0, Math.min(1, opacity)) * 100)}%, transparent)`;
-}
-
-const SMALL_WORDS = new Set(['a', 'an', 'and', 'at', 'for', 'in', 'of', 'on', 'or', 'the', 'to']);
-
-function displayTitle(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().split(' ').map((word, index) => {
-    if (/^[A-Z\d-]{2,}$/.test(word)) return word;
-    if (index > 0 && SMALL_WORDS.has(word.toLowerCase())) return word.toLowerCase();
-    return word.length ? word.charAt(0).toUpperCase() + word.slice(1) : word;
-  }).join(' ');
 }
 
 function displayCompany(report: ReportRecord): string {

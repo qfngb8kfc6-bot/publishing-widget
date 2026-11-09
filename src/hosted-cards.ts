@@ -175,6 +175,17 @@ export function themesSectionMarkup(report: ReportRecord, themes: string[], desc
   return `<section class="highlights-section cx-themes" aria-labelledby="highlights-heading"><div class="cx-section-head"><div><p class="section-kicker">Highlights</p><h2 id="highlights-heading">${limited ? 'Closest themes in this coverage' : 'Top themes in your briefing'}</h2></div><p class="cx-section-note cx-theme-total">${themes.length} ${themes.length === 1 ? 'theme' : 'themes'}${themes.length > 1 ? '<span class="cx-swipe"> · swipe for more</span>' : ''}</p></div><div class="cx-theme-row" tabindex="0" aria-label="Themes">${cards}</div></section>`;
 }
 
+const SMALL_WORDS = new Set(['a', 'an', 'and', 'at', 'for', 'in', 'of', 'on', 'or', 'the', 'to']);
+
+/** The role or company as a title: "head of retail" → "Head of Retail"; acronyms ("VP", "CTO") stay as typed. */
+export function displayTitle(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().split(' ').map((word, index) => {
+    if (/^[A-Z\d-]{2,}$/.test(word)) return word;
+    if (index > 0 && SMALL_WORDS.has(word.toLowerCase())) return word.toLowerCase();
+    return word.length ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+  }).join(' ');
+}
+
 /** The focused-reading panel: a bottom sheet on phones, a side panel on desktop. Its body is [data-theme-results]. */
 export function focusPanelMarkup(): string {
   return `<div class="cx-backdrop" data-focus-backdrop hidden></div><div class="cx-panel" data-focus-panel role="dialog" aria-modal="true" aria-labelledby="cx-panel-title" hidden><div class="cx-panel-head"><div><p class="section-kicker">Focused reading</p><h2 class="theme-results-heading" id="cx-panel-title" tabindex="-1">Stories</h2></div><button class="cx-close" type="button" data-focus-close aria-label="Close focused reading"><span aria-hidden="true">×</span></button></div><div class="cx-panel-body theme-results" data-theme-results aria-live="polite" aria-busy="false"></div></div>`;
@@ -187,7 +198,7 @@ export function focusHeading(theme: string): string {
 
 /** Panel contents: "In your briefing" first (no repeated "why"), then "More on this theme". */
 export function focusResultsMarkup(report: ReportRecord, briefing: ReportRecommendation[], archive: ReportRecommendation[], context: CardContext): string {
-  const intro = `<p class="theme-results-subheading">Selected for your role as ${escapeHtml(report.jobTitle)}</p>`;
+  const intro = `<p class="theme-results-subheading">Selected for your role as ${escapeHtml(displayTitle(report.jobTitle))}</p>`;
   if (!briefing.length && !archive.length) return `${intro}<p class="theme-results-status">No strong stories were found for this theme in the current coverage.</p>`;
   const list = (items: ReportRecommendation[], showWhy: (item: ReportRecommendation) => boolean) => `<div class="cx-focus-list">${items.map((item) => cardMarkup(item, context, { compact: true, showWhy: showWhy(item) })).join('')}</div>`;
   const briefingMarkup = briefing.length ? `<div class="theme-results-group" data-theme-group="briefing"><h3 class="theme-results-group-heading">In your briefing <span>${briefing.length}</span></h3>${list(briefing, () => false)}</div>` : '';

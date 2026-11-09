@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { summaryQualityWarnings } from '../src/ai/content-quality';
 import { REPORT_SUMMARY_ONLY_INSTRUCTIONS } from '../src/ai/providers/openai-compatible';
 import { renderHostedRoute } from '../src/hosted';
-import { cardDate, categoryTint, panelText, displayStories, focusHeading } from '../src/hosted-cards';
+import { cardDate, categoryTint, panelText, displayStories, displayTitle, focusHeading, focusResultsMarkup } from '../src/hosted-cards';
 import { createPublisherRegistry } from '../src/publishers/registry';
 import type { ReportRecord, ReportRecommendation } from '../src/reports';
 import { createProductionApp } from '../src/server/production';
@@ -284,5 +284,12 @@ describe('focused-reading heading and summary opening', () => {
     expect(REPORT_SUMMARY_ONLY_INSTRUCTIONS).toMatch(/never with the reader or the briefing \("You are seeing"/);
     expect(summaryQualityWarnings('You are seeing brands move coaching onto devices. Fitbit and Peloton lead.', ['a', 'b'], {})).toContain('meta_opening');
     expect(summaryQualityWarnings('Fitbit and Peloton moved coaching onto devices. Watch prices.', ['a', 'b'], {})).not.toContain('meta_opening');
+  });
+
+  it('names the role in title case in the focused-reading intro ("Head of Retail", not "head of retail")', () => {
+    const report = { ...sgiReport(), jobTitle: 'head of retail' };
+    const html = focusResultsMarkup(report, [report.recommendations[0]], [], { publisherName: 'SGI Europe', link: (article) => `<a href="${article.url}">Read</a>` });
+    expect(html).toContain('Selected for your role as Head of Retail<');
+    expect(displayTitle('VP of CRM and loyalty')).toBe('VP of CRM and Loyalty');
   });
 });
