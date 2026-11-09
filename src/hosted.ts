@@ -7,6 +7,7 @@ import { allocateEditorialSections, articleIdentityKeys, type EditorialSection }
 import { generationPageMarkup, runGenerationPage } from './hosted-loading';
 import { generationInputMessage } from './widget/messages';
 import { bindCitationChips, briefHeroMarkup, briefHeroStyle } from './hosted-hero';
+import { bindFocusPanel, cardsStyle, cardsVariant, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext, type FocusPanel } from './hosted-cards';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&#38;', '<': '&#60;', '>': '&#62;', "'": '&#39;', '"': '&#34;' })[character] ?? character);
@@ -169,7 +170,7 @@ function themeResultsMarkup(): string {
  * strongest match first, then any further archive stories about the theme.
  */
 function themeResultsContent(theme: string, report: ReportRecord, manifest: PublisherManifest, briefing: ReportRecommendation[], archive: ReportRecommendation[]): string {
-  const heading = `<p class="section-kicker">Focused reading</p><h2 class="theme-results-heading">Stories about ${escapeHtml(themeDisplayTitle(theme))}</h2><p class="theme-results-subheading">Selected for your role as ${escapeHtml(report.jobTitle)}</p>`;
+  const heading = `<p class="section-kicker">Focused reading</p><h2 class="theme-results-heading">${escapeHtml(focusHeading(theme))}</h2><p class="theme-results-subheading">Selected for your role as ${escapeHtml(report.jobTitle)}</p>`;
   if (!briefing.length && !archive.length) return `${heading}<p class="theme-results-status">No strong stories were found for this theme in the current coverage.</p>`;
   // Briefing stories already show their "why" in the report above, so it is not repeated here; archive stories
   // without an AI explanation show the article's own description only, not a repeat of it.
@@ -179,8 +180,10 @@ function themeResultsContent(theme: string, report: ReportRecord, manifest: Publ
   return `${heading}${briefingMarkup}${archiveMarkup}`;
 }
 
+const SECTION_LABELS: Record<string, string> = { 'top-developments': 'Top developments', 'companies-to-watch': 'Companies to watch', 'market-moves': 'Market moves', 'technology-developments': 'Technology developments', 'what-to-watch-next': 'What to watch next', 'from-the-archive': 'From the archive', 'more-relevant-stories': 'More relevant stories' };
+
 function optionalSectionsMarkup(manifest: PublisherManifest, sections: EditorialSection[]): string {
-  const labels: Record<string, string> = { 'top-developments': 'Top developments', 'companies-to-watch': 'Companies to watch', 'market-moves': 'Market moves', 'technology-developments': 'Technology developments', 'what-to-watch-next': 'What to watch next', 'from-the-archive': 'From the archive', 'more-relevant-stories': 'More relevant stories' };
+  const labels = SECTION_LABELS;
   return (manifest.reportSections ?? []).filter((section) => labels[section]).flatMap((section) => {
     const allocated = sections.find((item) => item.id === section)?.recommendations ?? [];
     if (!allocated.length) return [];
@@ -282,7 +285,14 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   app.className = 'report-page';
   const storiesOnPage = [...(feature ? [feature] : []), ...additional, ...presentation.sections.flatMap((section) => section.recommendations)];
   const heroMarkup = `${briefHeroStyle()}${briefHeroMarkup({ report, publisherName: manifest.name, role: displayTitle(report.jobTitle), company: displayCompany(report), themeCount: reportThemes(report).length, storiesOnPage, brand: brandMarkup(manifest) })}`;
-  app.innerHTML = `${reportCoverStyle}${heroMarkup}<div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div><div class="report-content">${highlightMarkup(report)}${themeResultsMarkup()}<section class="stories-section top-stories" id="top-stories" aria-labelledby="top-stories-heading"><div class="section-heading-row"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${escapeHtml(reportTitle)}</h2></div><span class="story-count">${report.recommendations.length} recommendations</span></div>${feature ? storyMarkup(feature, manifest, true) : '<p>No strong matches were found in the current coverage.</p>'}</section>${additionalMarkup}${optionalSectionsMarkup(manifest, presentation.sections)}<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div></div>${editSheetMarkup(report)}`;
+  // ?cards=a / ?cards=b: the redesigned body below the hero (hosted-cards.ts); otherwise the current layout.
+  const variant = cardsVariant(window.location.search);
+  const cardContext: CardContext = { publisherName: manifest.name, link: (article) => articleLink(article, manifest) };
+  const reportActions = '<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div>';
+  const body = variant
+    ? `${cardsStyle(variant)}<div class="report-content cx cx-${variant}" data-cards="${variant}">${themesSectionMarkup(report, reportThemes(report), (theme) => themeDescription(report, theme))}${storiesSectionMarkup(variant, [{ recommendations: feature ? [feature] : [] }, { recommendations: additional }, ...presentation.sections.map((section) => ({ recommendations: section.recommendations, label: SECTION_LABELS[section.id] }))], cardContext, reportTitle)}${reportActions}</div>${focusPanelMarkup()}`
+    : `<div class="report-content">${highlightMarkup(report)}${themeResultsMarkup()}<section class="stories-section top-stories" id="top-stories" aria-labelledby="top-stories-heading"><div class="section-heading-row"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${escapeHtml(reportTitle)}</h2></div><span class="story-count">${report.recommendations.length} recommendations</span></div>${feature ? storyMarkup(feature, manifest, true) : '<p>No strong matches were found in the current coverage.</p>'}</section>${additionalMarkup}${optionalSectionsMarkup(manifest, presentation.sections)}${reportActions}</div>`;
+  app.innerHTML = `${reportCoverStyle}${heroMarkup}<div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div>${body}${editSheetMarkup(report)}`;
 
   bindCitationChips(app, window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
   const cover = app.querySelector<HTMLElement>('.report-hero');
@@ -337,6 +347,8 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   window.addEventListener('resize', () => { cancelAnimationFrame(whyFrame); whyFrame = requestAnimationFrame(() => setupWhyToggles(app)); }, { passive: true });
 
   const themeResults = app.querySelector<HTMLElement>('[data-theme-results]');
+  // In the redesigned variants focused reading opens in a panel (sheet on phones, side panel on desktop).
+  const focusPanel: FocusPanel | undefined = variant ? bindFocusPanel(app, documentRef) : undefined;
   // Articles shown by each theme opened on this page, so another theme's results do not repeat them.
   const shownByTheme = new Map<string, string[]>();
   const shownElsewhere = (theme: string) => [...shownByTheme].filter(([key]) => key !== theme).flatMap(([, ids]) => ids).slice(-MAX_SHOWN_THEME_ARTICLE_IDS);
@@ -347,6 +359,7 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
     const originalLabel = button.textContent ?? 'Find stories →';
     button.textContent = 'Finding stories…';
     themeResults.hidden = false;
+    focusPanel?.open(theme, button);
     themeResults.dataset.theme = theme;
     themeResults.setAttribute('aria-busy', 'true');
     themeResults.innerHTML = '<p class="theme-results-status">Finding stories…</p>';
@@ -361,7 +374,9 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
       shownByTheme.delete(normalizeToken(theme));
       shownByTheme.set(normalizeToken(theme), recommendations.map((recommendation) => recommendation.articleId));
       themeResults.dataset.theme = resolvedTheme;
-      themeResults.innerHTML = themeResultsContent(resolvedTheme, report, manifest, briefing, recommendations);
+      themeResults.innerHTML = variant ? focusResultsMarkup(report, briefing, recommendations, cardContext) : themeResultsContent(resolvedTheme, report, manifest, briefing, recommendations);
+      const panelTitle = variant ? app.querySelector<HTMLElement>('#cx-panel-title') : null;
+      if (panelTitle) panelTitle.textContent = focusHeading(resolvedTheme);
       bindStoryClicks(themeResults);
       setupWhyToggles(themeResults);
       analytics.track(createEvent('theme_results_loaded', report.publisherId, report.sessionId, { reportId: report.id, theme: normalizeToken(resolvedTheme), resultCount: briefing.length + recommendations.length }));

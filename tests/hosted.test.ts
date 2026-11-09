@@ -6,7 +6,7 @@ import { createProductionApp } from '../src/server/production';
 import { createPublisherRegistry } from '../src/publishers/registry';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import { MemoryPublisherStore } from '../src/publishers/store';
-import { themeDisplayTitle } from '../src/reports/themes';
+import { themeInlineText } from '../src/reports/themes';
 
 /** Links every theme of a demo report to its first story, so the theme cards (shown only when supported) render. */
 function supportAllThemes<T extends { professionalProfile: { themes?: string[]; themeArticleIds?: Record<string, string[]> }; recommendations: Array<{ articleId: string }> }>(report: T): T {
@@ -169,7 +169,7 @@ describe('hosted professional experience', () => {
     await buttons[0].click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(false);
-    expect(document.querySelector('.theme-results-heading')?.textContent).toBe(`Stories about ${themeDisplayTitle(report.professionalProfile.professionalInterests[0])}`);
+    expect(document.querySelector('.theme-results-heading')?.textContent).toBe(`Stories about ${themeInlineText(report.professionalProfile.professionalInterests[0])}`);
     expect(document.querySelector('.theme-results .story-card')).not.toBeNull();
     // A theme result without an AI explanation has no "Why this matters to you" box; main-report cards keep theirs.
     expect(document.querySelector('.theme-results .why')).toBeNull();

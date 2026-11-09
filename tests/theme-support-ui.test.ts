@@ -51,7 +51,8 @@ describe('theme cards and focused reading', () => {
     expect(document.querySelector<HTMLElement>('[data-theme-search]')?.dataset.themeSearch).toBe('connected fitness');
     document.querySelector<HTMLButtonElement>('[data-theme-search]')!.click();
     await vi.waitFor(() => expect(document.querySelector('[data-theme-results]')?.getAttribute('aria-busy')).toBe('false'));
-    expect(document.querySelector('.theme-results-heading')?.textContent).toBe('Stories about Connected fitness');
+    // Running text keeps the theme in lower case (acronyms and brands aside); the card title is sentence case.
+    expect(document.querySelector('.theme-results-heading')?.textContent).toBe('Stories about connected fitness');
     const briefing = [...document.querySelectorAll<HTMLElement>('[data-theme-group="briefing"] [data-story-card]')].map((card) => card.dataset.storyCard);
     expect(briefing).toEqual([...report.recommendations].sort((left, right) => right.displayScore - left.displayScore).map((item) => item.articleId));
     expect(document.querySelectorAll('[data-theme-group="briefing"] .why')).toHaveLength(0);
