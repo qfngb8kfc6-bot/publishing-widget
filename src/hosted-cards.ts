@@ -46,22 +46,39 @@ function whyMarkup(explanation: string): string {
   return `<div class="why"><span class="why-icon" aria-hidden="true">✦</span><div><strong>Why this matters to you</strong><p class="why-text">${escapeHtml(explanation)}</p><button class="why-toggle" type="button" aria-expanded="false" hidden>More</button></div></div>`;
 }
 
+const KEY_LINE_MIN_WORDS = 4;
 const KEY_LINE_MAX_WORDS = 12;
+const MIN_REMAINING_EXCERPT_WORDS = 6;
+const LONG_KEY_LINE_CHARS = 56;
+
+export interface PanelText {
+  /** The excerpt's first clause, set large on the panel; absent when no 4-12 word clause exists. */
+  keyLine?: string;
+  /** The excerpt shown under the headline: what follows the key line, or nothing when too little is left. */
+  excerpt: string;
+}
+
+const wordCount = (value: string) => value.split(/\s+/).filter(Boolean).length;
 
 /**
- * The line set large on a typographic panel: the first clause of the excerpt (cut at the first sentence end, or at
- * a comma, colon, semicolon or dash once it has four words) when it is short enough to read whole (≤12 words), else
- * the headline. Never truncated with an ellipsis, never split mid-word.
+ * Text for an image-less card. The panel line is the excerpt's first clause (cut at the first sentence end, or at a
+ * comma, colon, semicolon or spaced dash once it has four words) when it is 4-12 words, never truncated; the headline
+ * is never used (it sits right below). So the card does not say the same thing twice, the visible excerpt then
+ * starts after that clause (leading punctuation and "as" trimmed, first letter capitalised), and is left out when
+ * fewer than six words remain. Without a usable clause the panel shows the category instead and the excerpt is whole.
  */
-export function cardKeyLine(article: Pick<ReportRecommendation['article'], 'title' | 'description' | 'summary' | 'contentSnippet'>): string {
-  const title = article.title.trim();
+export function panelText(article: Pick<ReportRecommendation['article'], 'description' | 'summary' | 'contentSnippet'>): PanelText {
   const excerpt = (article.description ?? article.summary ?? article.contentSnippet ?? '').replace(/\s+/g, ' ').trim();
-  if (!excerpt) return title;
-  const sentence = excerpt.split(/(?<=[.!?])\s+/)[0].replace(/[.!?]+$/, '');
+  if (!excerpt) return { excerpt: '' };
+  const sentenceEnd = excerpt.search(/[.!?](?:\s|$)/);
+  const sentence = sentenceEnd < 0 ? excerpt : excerpt.slice(0, sentenceEnd);
   const clause = sentence.match(/^(.+?)\s*(?:[,;:]|\s[\u2013\u2014-])\s/);
-  const candidate = clause && clause[1].split(' ').length >= 4 ? clause[1] : sentence;
-  const words = candidate.split(' ').length;
-  return words >= 4 && words <= KEY_LINE_MAX_WORDS ? candidate : title;
+  const keyLine = (clause && wordCount(clause[1]) >= KEY_LINE_MIN_WORDS ? clause[1] : sentence).trim();
+  const words = wordCount(keyLine);
+  if (words < KEY_LINE_MIN_WORDS || words > KEY_LINE_MAX_WORDS) return { excerpt };
+  const rest = excerpt.slice(excerpt.indexOf(keyLine) + keyLine.length).replace(/^[\s.,;:!?\u2013\u2014-]+/, '').replace(/^as\s+/i, '');
+  const remaining = wordCount(rest) >= MIN_REMAINING_EXCERPT_WORDS ? `${rest.charAt(0).toUpperCase()}${rest.slice(1)}` : '';
+  return { keyLine, excerpt: remaining };
 }
 
 /** Six tints the publisher accent is blended into; each category keeps the same one on every card. */
@@ -75,12 +92,17 @@ export function categoryTint(category: string): number {
 
 /**
  * Without an image: a designed typographic panel in the media slot (same height as an image would be). A gradient
- * from the publisher accent tinted per category, a fine dot texture, the category label and the story's key line in
- * Source Serif 4. Decorative (aria-hidden): the headline and excerpt below carry the same words for screen readers.
+ * from the publisher accent tinted per category, a fine dot texture, a small label and, set large in Source Serif 4,
+ * the excerpt's first clause, or the category itself when there is no usable clause. Decorative (aria-hidden): the
+ * clause is not repeated in the visible excerpt, so the headline and excerpt below still carry the story.
  */
-function typePanelMarkup(article: ReportRecommendation['article'], category: string, context: CardContext): string {
-  const label = category || context.publisherName;
-  return `<div class="cx-type cx-tint-${categoryTint(label)}" aria-hidden="true"><span class="cx-type-label">${escapeHtml(label)}</span><p class="cx-type-line">${escapeHtml(cardKeyLine(article))}</p><span class="cx-type-mark">${escapeHtml(label.charAt(0).toUpperCase())}</span></div>`;
+function typePanelMarkup(keyLine: string | undefined, category: string, context: CardContext): string {
+  const name = category || context.publisherName;
+  const label = keyLine ? name : category ? context.publisherName : '';
+  // A long clause is set smaller so all of it fits (it is never cut off); hyphenated words never break at the hyphen.
+  const size = !keyLine ? ' is-category' : keyLine.length > LONG_KEY_LINE_CHARS ? ' is-long' : '';
+  const line = escapeHtml(keyLine ?? name).replace(/\S+-\S+/g, (word) => `<span class="cx-nb">${word}</span>`);
+  return `<div class="cx-type cx-tint-${categoryTint(name)}${size}" aria-hidden="true">${label ? `<span class="cx-type-label">${escapeHtml(label)}</span>` : '<span></span>'}<p class="cx-type-line">${line}</p><span class="cx-type-mark">${escapeHtml(name.charAt(0).toUpperCase())}</span></div>`;
 }
 
 /**
@@ -93,10 +115,12 @@ export function cardMarkup(recommendation: ReportRecommendation, context: CardCo
   const image = safeImageUrl(article.imageUrl);
   const category = article.categories[0] ?? '';
   const date = cardDate(article.publishedAt);
-  const description = article.description ?? article.summary ?? article.contentSnippet ?? '';
+  // The panel's clause is not repeated in the excerpt (compact cards show a monogram, so they keep the whole text).
+  const panel = !image && !options.compact ? panelText(article) : undefined;
+  const description = panel ? panel.excerpt : article.description ?? article.summary ?? article.contentSnippet ?? '';
   // An explanation that only retold the story is the excerpt's first sentence: the box is left out (as before).
   const showWhy = (options.showWhy ?? true) && !recommendation.rankingMetadata?.explanationRestated && Boolean(recommendation.explanation);
-  const media = image ? `<img class="cx-image" src="${escapeHtml(image)}" alt="" loading="lazy">` : typePanelMarkup(article, category, context);
+  const media = image ? `<img class="cx-image" src="${escapeHtml(image)}" alt="" loading="lazy">` : typePanelMarkup(panel?.keyLine, category, context);
   const meta = [category ? `<span>${escapeHtml(category)}</span>` : '', date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''].filter(Boolean).join('<span class="cx-dot" aria-hidden="true">·</span>');
   const classes = ['cx-card', options.lead ? 'cx-lead' : options.compact ? 'cx-compact' : 'cx-rest-card', image ? 'has-image' : 'no-image'].join(' ');
   return `<article class="${classes}" data-story-card="${escapeHtml(article.id)}"><div class="cx-media">${media}</div><div class="cx-head"><div class="story-meta cx-top"><span class="match-badge cx-match"><b>${recommendation.displayScore}%</b> match</span></div>${options.label ? `<p class="cx-label">${escapeHtml(options.label)}</p>` : ''}<h3 class="cx-title">${escapeHtml(article.title)}</h3>${meta ? `<p class="cx-meta">${meta}</p>` : ''}</div><div class="cx-body">${description ? `<p class="story-summary">${escapeHtml(description)}</p>` : ''}${showWhy ? whyMarkup(recommendation.explanation) : ''}${context.link(article)}</div></article>`;
@@ -259,7 +283,11 @@ export function cardsStyle(): string {
 .cx-tint-1{--tint:#0b3638}.cx-tint-2{--tint:#2e1538}.cx-tint-3{--tint:#123020}.cx-tint-4{--tint:#3a1418}.cx-tint-5{--tint:#1d2431}
 .cx-type-label{display:flex;align-items:center;gap:10px;max-width:100%;color:#fff;font:800 .68rem/1.3 var(--font);letter-spacing:.16em;text-transform:uppercase}
 .cx-type-label::before{content:"";flex:none;width:22px;height:2px;border-radius:2px;background:color-mix(in srgb,var(--brand) 45%,white)}
-.cx-type-line{display:-webkit-box;max-width:22ch;margin:0;overflow:hidden;color:#fff;font:600 clamp(1.15rem,5.4cqi,2rem)/1.14 ${SERIF};letter-spacing:-.015em;text-wrap:balance;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.cx-type-line{display:-webkit-box;max-width:22ch;margin:0;overflow:hidden;color:#fff;font:600 clamp(1.15rem,5.4cqi,2rem)/1.14 ${SERIF};letter-spacing:-.015em;text-wrap:balance;-webkit-box-orient:vertical;-webkit-line-clamp:5}
+.cx-type.is-long .cx-type-line{max-width:28ch;font-size:clamp(1.02rem,4.3cqi,1.6rem);line-height:1.18}
+.cx-type .cx-nb{white-space:nowrap}
+.cx-type.is-category .cx-type-line{max-width:none;font-size:clamp(1.5rem,8cqi,2.6rem);line-height:1.05;letter-spacing:-.02em}
+.cx-card.cx-lead .cx-type.is-category .cx-type-line{font-size:clamp(1.8rem,9cqi,3.2rem)}
 .cx-type-mark{display:none}
 .cx-card .cx-head{grid-area:head;min-width:0;padding:16px 18px 0}
 .cx-card .cx-body{grid-area:body;display:flex;flex-direction:column;min-width:0;padding:8px 18px 14px}
@@ -286,7 +314,7 @@ export function cardsStyle(): string {
 .cx-card.cx-lead .cx-title{font-size:clamp(1.45rem,2.4vw,2.1rem);line-height:1.12;letter-spacing:-.02em}
 .cx-card.cx-lead .story-summary{-webkit-line-clamp:4}
 .cx-card.cx-lead .cx-head{padding:20px 22px 0}.cx-card.cx-lead .cx-body{padding:10px 22px 18px}
-.cx-card.cx-lead .cx-type-line{max-width:20ch;font-size:clamp(1.35rem,6cqi,2.5rem);-webkit-line-clamp:4}
+.cx-card.cx-lead .cx-type-line{max-width:20ch;font-size:clamp(1.35rem,6cqi,2.5rem)}.cx-card.cx-lead .cx-type.is-long .cx-type-line{max-width:26ch;font-size:clamp(1.2rem,4.8cqi,2rem)}
 @media(min-width:900px){.cx-card.cx-lead{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);grid-template-areas:"media head" "media body";grid-template-rows:auto 1fr}.cx-card.cx-lead .cx-media{aspect-ratio:auto;min-height:100%}.cx-card.cx-lead .cx-type{min-height:320px}.cx-card.cx-lead .cx-head{padding:28px 30px 0}.cx-card.cx-lead .cx-body{padding:12px 30px 24px}}
 .cx .cx-grid{display:grid;grid-template-columns:1fr;gap:16px}
 @media(min-width:760px){.cx .cx-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:18px}}

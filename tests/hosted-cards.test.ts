@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { summaryQualityWarnings } from '../src/ai/content-quality';
 import { REPORT_SUMMARY_ONLY_INSTRUCTIONS } from '../src/ai/providers/openai-compatible';
 import { renderHostedRoute } from '../src/hosted';
-import { cardDate, cardKeyLine, categoryTint, displayStories, focusHeading } from '../src/hosted-cards';
+import { cardDate, categoryTint, panelText, displayStories, focusHeading } from '../src/hosted-cards';
 import { createPublisherRegistry } from '../src/publishers/registry';
 import type { ReportRecord, ReportRecommendation } from '../src/reports';
 import { createProductionApp } from '../src/server/production';
@@ -115,6 +115,7 @@ describe('report body (magazine layout)', () => {
 
   it('keeps every card element and gives image-less stories a typographic panel, not an empty block', async () => {
     const report = sgiReport();
+    report.recommendations[1].article.description = 'Garmin is moving adaptive training plans from its phone app onto the watch itself this year.';
     report.recommendations[3].article.description = 'Retailers are cutting packaging waste in their European stores, with new targets for 2027. More follows.';
     await render(report, '');
     const withImage = document.querySelector<HTMLElement>('[data-story-card="s-2"]')!;
@@ -123,9 +124,30 @@ describe('report body (magazine layout)', () => {
     const noImage = document.querySelector<HTMLElement>('[data-story-card="s-3"]')!;
     const panel = noImage.querySelector<HTMLElement>('.cx-media .cx-type')!;
     expect(panel.getAttribute('aria-hidden')).toBe('true');
-    expect(panel.className).toBe(`cx-type cx-tint-${categoryTint('CSR and sustainability')}`);
+    expect(panel.className).toBe(`cx-type cx-tint-${categoryTint('CSR and sustainability')} is-long`);
     expect(panel.querySelector('.cx-type-label')?.textContent).toBe('CSR and sustainability');
     expect(panel.querySelector('.cx-type-line')?.textContent).toBe('Retailers are cutting packaging waste in their European stores');
+    // The excerpt starts after the panel's clause, so the card never says it twice; the headline is never on the panel.
+    expect(noImage.querySelector('.story-summary')?.textContent).toBe('With new targets for 2027. More follows.');
+    for (const card of document.querySelectorAll<HTMLElement>('#top-stories .no-image')) {
+      const line = card.querySelector('.cx-type-line')?.textContent ?? '';
+      expect(line).not.toBe(card.querySelector('.cx-title')?.textContent);
+      expect(card.querySelector('.story-summary')?.textContent ?? '').not.toContain(line);
+    }
+    // No usable clause (a 13-word first sentence): the category is set large, the excerpt stays whole.
+    const categoryPanel = document.querySelector<HTMLElement>('[data-story-card="s-1"] .cx-type')!;
+    expect(categoryPanel.classList.contains('is-category')).toBe(true);
+    expect(categoryPanel.querySelector('.cx-type-line')?.textContent).toBe('Technology');
+    expect(categoryPanel.querySelector('.cx-type-label')?.textContent).toBe('SGI Europe');
+    expect(document.querySelector('[data-story-card="s-1"] .story-summary')?.textContent).toBe('Garmin is moving adaptive training plans from its phone app onto the watch itself this year.');
+    // A long clause is set smaller rather than cut off, and hyphenated words are kept whole.
+    report.recommendations[5].article.description = 'Decathlon is expanding its camera-based self-checkout after a year-long pilot, saying queues fell by a third across its stores.';
+    await render(report, '');
+    const long = document.querySelector<HTMLElement>('[data-story-card="s-5"] .cx-type')!;
+    expect(long.classList.contains('is-long')).toBe(true);
+    expect(long.querySelector('.cx-type-line')?.textContent).toBe('Decathlon is expanding its camera-based self-checkout after a year-long pilot');
+    expect([...long.querySelectorAll('.cx-nb')].map((node) => node.textContent)).toEqual(['camera-based', 'self-checkout', 'year-long']);
+    expect(document.querySelector('[data-story-card="s-5"] .story-summary')?.textContent).toBe('Saying queues fell by a third across its stores.');
     expect(document.querySelector('.story-placeholder, .cx-tile')).toBeNull();
     // Match first and alone in the top row; category and date as one line, untruncated.
     expect(noImage.querySelector('.cx-top .match-badge')?.textContent).toBe('55% match');
@@ -149,6 +171,9 @@ describe('report body (magazine layout)', () => {
     expect(css).toContain('color-mix(in srgb,var(--brand) 30%,var(--tint))');
     expect(css).not.toMatch(/var\(--brand\) (?:3[1-9]|[4-9]\d|100)%,var\(--tint\)/);
     expect(css).toMatch(/\.cx-type-line\{[^}]*font:600 [^}]*'Source Serif 4'/);
+    // The panel line is never clamped to fewer lines than a 12-word clause needs; long clauses are set smaller.
+    expect(css).toMatch(/\.cx-type-line\{[^}]*-webkit-line-clamp:5\}/);
+    expect(css).toContain('.cx-type.is-long .cx-type-line{max-width:28ch;font-size:clamp(1.02rem,4.3cqi,1.6rem)');
     // Excerpt and "why" clamp to three lines on phones (lead included), with More for the why.
     expect(css).toMatch(/\.cx-card \.story-summary\{[^}]*-webkit-line-clamp:3/);
     expect(css).toMatch(/\.cx-card \.why-text\{[^}]*-webkit-line-clamp:3/);
@@ -217,13 +242,21 @@ describe('report body (magazine layout)', () => {
 });
 
 describe('typographic panel helpers', () => {
-  it('takes the key line from the first clause of the excerpt, else the headline, never truncated', () => {
-    const article = { title: 'Nike renegotiates its packaging contracts', description: undefined, summary: undefined, contentSnippet: undefined };
-    expect(cardKeyLine(article)).toBe('Nike renegotiates its packaging contracts');
-    expect(cardKeyLine({ ...article, description: 'Shoe makers face higher freight costs. Rates rose 12%.' })).toBe('Shoe makers face higher freight costs');
-    expect(cardKeyLine({ ...article, description: 'In Q3, suppliers in Vietnam raised prices.' })).toBe('In Q3, suppliers in Vietnam raised prices');
-    expect(cardKeyLine({ ...article, description: 'The group behind several sustainability-led brands says sourcing costs are climbing again across Europe and Asia this year.' })).toBe('Nike renegotiates its packaging contracts');
-    expect(cardKeyLine({ ...article, description: 'Up 4%.' })).toBe('Nike renegotiates its packaging contracts');
+  it('uses the first 4-12 word clause on the panel and starts the visible excerpt after it, never repeating it', () => {
+    const text = (description?: string) => panelText({ description, summary: undefined, contentSnippet: undefined });
+    // The reported case: a 13-word first clause is too long for the panel, so it shows the category and the excerpt stays whole.
+    const rubber = 'Prices for synthetic rubber used in outsoles have risen for a third month, as two Asian producers cut output for maintenance.';
+    expect(text(rubber)).toEqual({ excerpt: rubber });
+    // Clause cut at a comma: the excerpt continues after it, "as" and punctuation trimmed, capitalised.
+    expect(text('Rubber prices have risen for a third month, as two Asian producers cut output for maintenance.')).toEqual({ keyLine: 'Rubber prices have risen for a third month', excerpt: 'Two Asian producers cut output for maintenance.' });
+    // Whole first sentence as the clause: the excerpt is the following sentences.
+    expect(text('Container rates from Asia climbed 12% in October. Carriers removed capacity ahead of the peak season.')).toEqual({ keyLine: 'Container rates from Asia climbed 12% in October', excerpt: 'Carriers removed capacity ahead of the peak season.' });
+    // Fewer than six words left: the excerpt is hidden rather than showing a fragment.
+    expect(text('Puma tests nearshore production in Turkey, for fast lines.')).toEqual({ keyLine: 'Puma tests nearshore production in Turkey', excerpt: '' });
+    expect(text('Shoe makers face higher freight costs.')).toEqual({ keyLine: 'Shoe makers face higher freight costs', excerpt: '' });
+    // Too short a clause or no excerpt at all: no key line (the panel shows the category), the excerpt unchanged.
+    expect(text('Up 4%. Prices rose again across Europe this month.')).toEqual({ excerpt: 'Up 4%. Prices rose again across Europe this month.' });
+    expect(text(undefined)).toEqual({ excerpt: '' });
   });
 
   it('gives each category a stable tint out of six', () => {
