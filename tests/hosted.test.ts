@@ -6,6 +6,13 @@ import { createProductionApp } from '../src/server/production';
 import { createPublisherRegistry } from '../src/publishers/registry';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import { MemoryPublisherStore } from '../src/publishers/store';
+import { themeDisplayTitle } from '../src/reports/themes';
+
+/** Links every theme of a demo report to its first story, so the theme cards (shown only when supported) render. */
+function supportAllThemes<T extends { professionalProfile: { themes?: string[]; themeArticleIds?: Record<string, string[]> }; recommendations: Array<{ articleId: string }> }>(report: T): T {
+  report.professionalProfile.themeArticleIds = Object.fromEntries((report.professionalProfile.themes ?? []).map((theme) => [theme, [report.recommendations[0].articleId]]));
+  return report;
+}
 
 describe('hosted professional experience', () => {
   beforeEach(() => {
@@ -51,6 +58,7 @@ describe('hosted professional experience', () => {
     const report = await reportResponse.json();
     // The small demo archive has one direct match, so its report is flagged limited; this test covers the full page.
     delete report.professionalProfile.coverage;
+    supportAllThemes(report);
     window.history.replaceState({}, '', `/p/demo/${payload.reportId}`);
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
 
@@ -135,6 +143,7 @@ describe('hosted professional experience', () => {
     const { reportId } = await generated.json() as { reportId: string };
     const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json();
     delete report.professionalProfile.coverage;
+    supportAllThemes(report);
     report.themeDescriptions = { [report.professionalProfile.professionalInterests[0]]: 'Two platform teams <b>cut</b> release times by half.' };
     const requests: Array<{ input: string; init?: RequestInit }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -143,7 +152,7 @@ describe('hosted professional experience', () => {
       if (url.includes('/api/analytics/events')) return Response.json({ accepted: true });
       if (url.includes('/themes/')) {
         const theme = decodeURIComponent(url.split('/themes/')[1].split('/search')[0]);
-        return Response.json({ theme, recommendations: theme === report.professionalProfile.professionalInterests[0] ? report.recommendations.slice(1, 2).map((item: { article: Record<string, unknown> }) => ({ ...item, article: { ...item.article, categories: [] } })) : [] });
+        return Response.json({ theme, briefingRecommendations: [], recommendations: theme === report.professionalProfile.professionalInterests[0] ? report.recommendations.slice(1, 2).map((item: { article: Record<string, unknown> }) => ({ ...item, article: { ...item.article, categories: [] } })) : [] });
       }
       return Response.json(report);
     }));
@@ -160,7 +169,7 @@ describe('hosted professional experience', () => {
     await buttons[0].click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.querySelector('[data-theme-results]')?.hasAttribute('hidden')).toBe(false);
-    expect(document.querySelector('.theme-results-heading')?.textContent).toContain(report.professionalProfile.professionalInterests[0]);
+    expect(document.querySelector('.theme-results-heading')?.textContent).toBe(`Stories about ${themeDisplayTitle(report.professionalProfile.professionalInterests[0])}`);
     expect(document.querySelector('.theme-results .story-card')).not.toBeNull();
     // A theme result without an AI explanation has no "Why this matters to you" box; main-report cards keep theirs.
     expect(document.querySelector('.theme-results .why')).toBeNull();
@@ -315,13 +324,13 @@ describe('hosted professional experience', () => {
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
     }));
     const { reportId } = await generated.json() as { reportId: string };
-    const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
+    const report = supportAllThemes(await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any);
     const seed = report.recommendations[0];
     const themed = ['t-1', 't-2', 't-3'].map((id, index) => ({ ...seed, articleId: id, explanation: `Why ${id}`, article: { ...seed.article, id, url: `${seed.article.url}?${id}`, title: `Theme story ${id}` }, rankingMetadata: { ...seed.rankingMetadata, explanationSource: index === 1 ? 'deterministic' : 'ai' } }));
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/analytics/events')) return Response.json({ accepted: true });
-      if (url.includes('/themes/')) return Response.json({ theme: 'x', recommendations: themed });
+      if (url.includes('/themes/')) return Response.json({ theme: 'x', briefingRecommendations: [], recommendations: themed });
       return Response.json(report);
     }));
     window.history.replaceState({}, '', `/p/demo/${reportId}`);

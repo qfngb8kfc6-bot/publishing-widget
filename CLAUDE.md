@@ -60,9 +60,15 @@ qfngb8kfc6-bot/publishing-widget.
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word
   form, concept family or shared report articles) and stored as `professionalProfile.themes`.
+  Each theme's supporting report stories are stored as `professionalProfile.themeArticleIds` (the S call's
+  `themeDescriptions[].articleIds`, else stories naming the theme); themes with none are hidden. Focused reading
+  shows those stories first (`briefingRecommendations`, by score), then on-theme archive results.
+- Explanations that restate the headline/excerpt (>5 consecutive words or ≥70% content-word overlap) are
+  regenerated once (part R); still restated → fallback with the "why" box hidden (`explanationRestated`).
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
-  `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed), `own_company_share`, `report_performance`, `theme_performance`,
+  `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),
+  `explanation_restated` (articleId, part, restatedRule, outcome: regenerated / fallback), `theme_unsupported_removed`, `own_company_share`, `report_performance`, `theme_performance`,
   `slow_span`, `catalogue_refresh_complete`, `index_prebuild_complete`, `heap_usage`.
 
 ## Publishers

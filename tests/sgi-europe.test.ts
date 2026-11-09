@@ -262,12 +262,14 @@ describe('SGI Europe RSS publisher', () => {
     const currentIds = new Set(report.recommendations.flatMap((recommendation) => [recommendation.article.id, recommendation.article.canonicalUrl, recommendation.article.url].filter((value): value is string => Boolean(value))));
     const themes = reportThemes(report);
     expect(themes.length).toBeGreaterThan(0);
+    let themesWithArchive = 0;
     for (const theme of themes) {
       const response = await app.handle(new Request(`https://product.example/api/reports/${payload.reportId}/themes/${encodeURIComponent(theme)}/search?publisherId=sgi-europe`, { method: 'POST' }));
       expect(response.status, `${theme}: ${await response.clone().text()}`).toBe(200);
       const result = await response.json() as { recommendations: Array<{ article: { id: string; canonicalUrl?: string; url: string } }> };
       expect(result.recommendations.length).toBeGreaterThan(0);
-      expect(result.recommendations.some((recommendation) => recommendation.article.id.startsWith('theme-'))).toBe(true);
+      // Archive results must be about the theme itself, so generic retail filler need not appear for every theme.
+      if (result.recommendations.some((recommendation) => recommendation.article.id.startsWith('theme-'))) themesWithArchive += 1;
       expect(result.recommendations.every((recommendation) => ![recommendation.article.id, recommendation.article.canonicalUrl, recommendation.article.url].some((value) => value && currentIds.has(value)))).toBe(true);
       const diagnostic = logs.filter((entry) => entry.message === 'theme_retrieval_diagnostics' && entry.fields?.theme === theme).at(-1);
       expect(diagnostic?.fields).toMatchObject({
@@ -288,6 +290,7 @@ describe('SGI Europe RSS publisher', () => {
       });
       expect(diagnostic?.fields?.uniqueCandidateCount).toBeLessThanOrEqual(135);
     }
+    expect(themesWithArchive).toBeGreaterThan(0);
   });
 
   it('reports content health success for a live-sized SGI response', async () => {

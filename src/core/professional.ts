@@ -100,6 +100,11 @@ export interface ProfessionalProfile {
   /** The report's theme cards, chosen once at generation from the subject vocabulary and the report's articles. */
   themes?: string[];
   /**
+   * Report stories supporting each theme card (article IDs), set at generation: the AI's theme links when it gave
+   * them, else stories whose text names the theme. Focused reading lists these stories first.
+   */
+  themeArticleIds?: Record<string, string[]>;
+  /**
    * Set when the publisher's coverage for this reader is thin (best match below a strong fit, or fewer than three
    * direct matches): the honest note shown at the top of the summary card.
    */

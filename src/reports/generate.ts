@@ -9,13 +9,13 @@ import type { ReportRecord, ReportRecommendation, GenerateReportInput, ReportPer
 import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
-import { MAX_SHOWN_THEME_ARTICLE_IDS, profileForTheme, selectReportThemes } from './themes';
+import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, profileForTheme, selectReportThemes, themeSupport } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
 import { articleRelationship, limitOwnCompanyShare } from './relationship';
 import { collapseNearDuplicates } from './near-duplicates';
-import { explanationQualityWarnings, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
+import { explanationQualityWarnings, explanationRestatement, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
 import { angleForArticle, normalizeAngle } from '../ai/angles';
 import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
@@ -445,6 +445,44 @@ export class ReportGenerationService {
       this.logger?.info('ai_performance', { ...base, aiDurationMs: Math.max(0, clockMs() - startedAt), aiSuccess: false, aiFallbackUsed: true, aiErrorCode: safeLogText(errorCode, 120), aiErrorMessage: safeLogText(error instanceof Error ? error.message : 'unknown', 300), ...aiDiagnosticFields(diagnostics) });
       return { errorCode: safeLogText(errorCode, 120) };
     }
+  }
+
+  /**
+   * Finds explanations that restate their story (more than five consecutive words, or most content words, from the
+   * headline or excerpt), logs explanation_restated for each and regenerates them once in one explanations-only
+   * call. A regenerated explanation that no longer restates replaces the original in `accepted` (in place).
+   * Returns the article IDs still restated afterwards, which get the fallback instead. IDs and rule codes only are
+   * logged, never text.
+   */
+  private async regenerateRestated(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, profile: ReturnType<typeof buildProfessionalProfile>, accepted: Array<{ articleId: string; explanation: string; angle?: string }>, recommendations: ReportContentRequest['recommendations'], articleById: ReadonlyMap<string, NormalizedArticle>, outcomes: ReadonlyArray<{ part: string; request: ReportContentRequest }>): Promise<Set<string>> {
+    const restated = new Map<string, 'consecutive_words' | 'token_overlap'>();
+    for (const item of accepted) {
+      const article = articleById.get(item.articleId);
+      const rule = article ? explanationRestatement(item.explanation, { title: article.title, description: article.description ?? article.summary ?? article.contentSnippet }) : undefined;
+      if (rule) restated.set(item.articleId, rule);
+    }
+    if (!restated.size) return new Set();
+    const partOf = (articleId: string) => outcomes.find((outcome) => outcome.request.recommendations.some((item) => item.article.id === articleId))?.part;
+    const retryable = recommendations.filter((item) => restated.has(item.article.id)).slice(0, EXPLANATION_BATCH_SIZE);
+    const request: ReportContentRequest = { publisherId: input.publisherId, profile, includeSummary: false, rewriteRestated: true, recommendations: retryable };
+    const outcome = retryable.length ? await this.runAI('report_content', async (observe) => {
+      const raw = observe(await (this.ai!.provider as ProfessionalAIProvider).generateReportContent(request));
+      const result = validateReportContent(raw, request);
+      if (!result) throw new Error('invalid_report_content');
+      return result;
+    }, { publisherId: input.publisherId, requestId: input.requestId, part: 'R' }) : {};
+    const stillRestated = new Set<string>();
+    for (const [articleId, rule] of restated) {
+      const article = articleById.get(articleId)!;
+      const rewrite = outcome.value?.explanations?.find((item) => item.articleId === articleId);
+      const fixed = rewrite && !explanationRestatement(rewrite.explanation, { title: article.title, description: article.description ?? article.summary ?? article.contentSnippet });
+      if (fixed) {
+        const index = accepted.findIndex((item) => item.articleId === articleId);
+        accepted[index] = { ...accepted[index], explanation: rewrite.explanation, ...(rewrite.angle ? { angle: rewrite.angle } : {}) };
+      } else stillRestated.add(articleId);
+      this.logger?.info('explanation_restated', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: partOf(articleId), restatedRule: rule, outcome: fixed ? 'regenerated' : 'fallback' });
+    }
+    return stillRestated;
   }
 
   /** One ai_quality_warning line per issue: scope, article ID and code only, never the text. */
@@ -906,7 +944,9 @@ export class ReportGenerationService {
     // Theme results meet the same bar as the report's own stories: never weaker than its weakest recommendation
     // (bounded to the relevance threshold and a strong fit), so fewer results beat a list of 24-28% matches.
     const floor = themeResultFloor(report);
-    const ranked = ranking.ranked.filter((item) => displayRelevanceScore(item.finalScore) >= floor);
+    // Archive results must also be about the theme itself (its words, expansions or concept family in the story or
+    // its matched concepts), not only match the reader's wider role context the focused profile carries.
+    const ranked = ranking.ranked.filter((item) => displayRelevanceScore(item.finalScore) >= floor && articleSupportsTheme(theme, item.article, [...item.directMatches, ...item.adjacentMatches]));
     const failureStage = ranked.length > 0 ? 'complete' : ranking.aiFilteredCount > 0 && ranking.deterministicEligible > 0 ? 'ai_filtered_all' : ranking.deterministicEligible > 0 ? 'final_filter' : 'deterministic_threshold';
     const finalFormattingStartedAt = clockMs();
     const privacy = await this.articleLeads(report.publisherId, ranked.map((item) => item.article), 1, requestId);
@@ -1064,9 +1104,12 @@ export class ReportGenerationService {
     const notReturnedIds = new Map<string, string>();
     // Articles whose explanation batch failed or timed out, by part (E1...).
     const failedBatchIds = new Map<string, string>();
+    // Articles whose explanation still restated the story after one regeneration (shown with the fallback).
+    const restatedFallbackIds = new Set<string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let themeDescriptions: Record<string, string> | undefined;
+    let aiThemeLinks: Record<string, string[]> | undefined;
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
     const aiExplanationStartedAt = clockMs();
     // One query for the selected articles: leads for the AI content call and the subscriberOnly flag.
@@ -1108,6 +1151,7 @@ export class ReportGenerationService {
         this.logQualityWarnings(input, 'summary', summaryQualityWarnings(summaryPart.value.summary, summaryPart.value.citedArticleIds ?? [], { jobTitle: profile.jobTitle, companyName: profile.companyName ?? profile.company.name }, yearSources).map((code) => ({ code })));
       } else summaryFallbackReason = summaryPart.errorCode ?? 'summary_missing';
       themeDescriptions = summaryPart.value?.themeDescriptions;
+      aiThemeLinks = summaryPart.value?.themeArticleIds;
       const explanationOutcomes = outcomes.filter((outcome) => outcome.part !== 'S');
       for (const outcome of explanationOutcomes) if (!outcome.value) for (const recommendation of outcome.request.recommendations) failedBatchIds.set(recommendation.article.id, outcome.part);
       for (const outcome of explanationOutcomes) for (const articleId of outcome.value?.weakArticleIds ?? []) contentWeakIds.add(articleId);
@@ -1119,7 +1163,11 @@ export class ReportGenerationService {
           return outcome.value.explanations ?? [];
         });
         const articleById = new Map(ranked.map((item) => [item.article.id, item.article]));
-        for (const item of accepted) {
+        // An explanation that only retells the headline and excerpt shown above it is weak: regenerate those once
+        // from the reader's side; one still restated (or not returned) falls back like any unexplained story.
+        const restatedIds = await this.regenerateRestated(input, profile, accepted, contentRecommendations, articleById, explanationOutcomes);
+        for (const articleId of restatedIds) restatedFallbackIds.add(articleId);
+        for (const item of accepted.filter((entry) => !restatedIds.has(entry.articleId))) {
           const article = articleById.get(item.articleId);
           explanationById.set(item.articleId, { explanation: item.explanation, angle: article ? angleForArticle(normalizeAngle(item.angle), article) : normalizeAngle(item.angle) });
         }
@@ -1166,7 +1214,7 @@ export class ReportGenerationService {
       for (const item of weakFit.kept) {
         const articleId = item.article.id;
         if (explanationById.has(articleId)) continue;
-        const reason = contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
+        const reason = restatedFallbackIds.has(articleId) ? 'restated' : contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
         this.logger?.info('explanation_fallback', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: notReturnedIds.get(articleId) ?? failedBatchIds.get(articleId), rejectReason: reason });
       }
     }
@@ -1175,6 +1223,7 @@ export class ReportGenerationService {
       rankingMetadata: {
         ...recommendation.rankingMetadata,
         aiProvider: aiRerankUsed || aiExplanationUsed ? this.ai?.provider.providerName : undefined,
+        ...(restatedFallbackIds.has(recommendation.articleId) ? { explanationRestated: true } : {}),
       },
     }));
     const sectionAllocationStartedAt = clockMs();
@@ -1182,10 +1231,17 @@ export class ReportGenerationService {
     const sectionAllocationMs = clockMs() - sectionAllocationStartedAt;
     timing.sectionAllocationMs = sectionAllocationMs;
     const recommendations = allocation.recommendations;
+    // Each theme card lists the report stories that support it (the AI's links, else stories naming the theme); a
+    // theme no story supports is not shown, so its card never promises stories focused reading cannot list.
+    const matchedById = new Map(weakFit.kept.map((item) => [item.article.id, [...item.directMatches, ...item.adjacentMatches]]));
+    const themeArticleIds = themeSupport(themes, recommendations.map((item) => ({ articleId: item.articleId, article: item.article, matchedConcepts: matchedById.get(item.articleId) })), aiThemeLinks);
+    // All chosen themes stay on the profile (focused search accepts them); reportThemes shows only supported ones.
+    const unsupportedThemes = themes.filter((theme) => !themeArticleIds[theme]).length;
+    if (unsupportedThemes) this.logger?.info('theme_unsupported_removed', { requestId: input.requestId, publisherId: input.publisherId, themeCount: themes.length, removedCount: unsupportedThemes });
     const ownCompanyCount = recommendations.filter((recommendation) => articleRelationship(recommendation.article, profile) === 'own_company').length;
     this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ranking.ownCompanyDeferred });
     const report: ReportRecord = {
-      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: { ...profile, themes, ...(ranking.normalizedArticleCount > 0 ? { catalogueArticleCount: ranking.normalizedArticleCount } : {}), ...(coverageNote ? { coverage: { limited: true as const, note: coverageNote } } : {}) }, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: { ...profile, themes, themeArticleIds, ...(ranking.normalizedArticleCount > 0 ? { catalogueArticleCount: ranking.normalizedArticleCount } : {}), ...(coverageNote ? { coverage: { limited: true as const, note: coverageNote } } : {}) }, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
     const persistenceStartedAt = clockMs();
     try { await this.reports.save(report); } catch (error) { annotateGenerationFailure(error, 'report_persistence'); this.logIbiError(input, 'report_persistence', error); throw error; }

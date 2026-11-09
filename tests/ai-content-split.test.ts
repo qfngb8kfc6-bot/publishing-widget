@@ -45,7 +45,7 @@ function app(limit: number, respond: (call: ContentCall, allCalls: ContentCall[]
 function content(call: ContentCall) {
   const reply = call.kind === 'S'
     ? { summary: 'Summary from part S.', citedArticleIds: call.ids.slice(0, 2), themeDescriptions: (call.themes ?? []).map((theme) => ({ theme, description: `Line for ${theme}.` })) }
-    : { explanations: call.ids.map((articleId, index) => ({ articleId, angle: 'market signal', explanation: `Explains ${call.titles[index]}.` })) };
+    : { explanations: call.ids.map((articleId, index) => ({ articleId, angle: 'market signal', explanation: `Your channel plan can borrow from story ${call.titles[index].split(' ').pop()}.` })) };
   return Response.json({ choices: [{ message: { content: JSON.stringify(reply) }, finish_reason: 'stop' }] });
 }
 
@@ -113,7 +113,7 @@ describe('split report content calls', () => {
     expect(calls.filter((call) => call.kind === 'E').flatMap((call) => call.titles).sort()).toEqual(report.recommendations.map((item) => item.article.title).sort());
     expect(report.generatedSummary).toBe('Summary from part S.');
     expect(report.themeDescriptions && Object.keys(report.themeDescriptions)).toEqual(summaryCall.themes);
-    expect(report.recommendations.map((item) => item.explanation)).toEqual(report.recommendations.map((item) => `Explains ${item.article.title}.`));
+    expect(report.recommendations.map((item) => item.explanation)).toEqual(report.recommendations.map((item) => `Your channel plan can borrow from story ${item.article.title.split(' ').pop()}.`));
     expect(report.recommendations.every((item) => item.rankingMetadata.explanationSource === 'ai' && item.rankingMetadata.angle === 'market signal')).toBe(true);
     expect(report.recommendations.filter((item) => item.rankingMetadata.citedInSummary).map((item) => item.rank)).toEqual([1, 2]);
     expect(contentPerformance(logs).map((entry) => [entry.fields.part, entry.fields.aiSuccess]).sort()).toEqual([['E1', true], ['E2', true], ['S', true]]);

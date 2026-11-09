@@ -3,7 +3,7 @@ import type { PublisherRegistry } from '../core';
 import type { ReportGenerationService } from '../reports/generate';
 import type { ReportStore } from '../reports/types';
 import type { ReportPerformanceTiming } from '../reports/types';
-import { findReportTheme, MAX_SHOWN_THEME_ARTICLE_IDS } from '../reports/themes';
+import { findReportTheme, MAX_SHOWN_THEME_ARTICLE_IDS, themeSupportingRecommendations } from '../reports/themes';
 import { GENERATION_STAGES, SAFE_GENERATION_ERROR_CODES, type GenerationJob, type GenerationJobs } from '../reports/generation-jobs';
 
 export interface ReportRouteContext { runtimeMs?: number }
@@ -177,8 +177,11 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
       try { shownArticleIds = await readShownArticleIds(request); } catch { return Response.json({ error: 'invalid_request' }, { status: 400 }); }
       try {
         const timing: ReportPerformanceTiming = { requestId, publisherId, theme, cacheHit: false, cacheAgeMs: 0, catalogueItemCount: 0, runtimeMs: context.runtimeMs ?? 0, companyResolutionMs: 0, profileMs: 0, aiProfileMs: 0, catalogueCacheLookupMs: 0, catalogueSnapshotLookupMs: 0, catalogueRefreshMs: 0, sourceFetchMs: 0, sourceReadMs: 0, sourceParseMs: 0, normalizationMs: 0, preselectionMs: 0, deterministicRankingMs: 0, aiRerankingMs: 0, aiExplanationsMs: 0, briefingSummaryMs: 0, sectionAllocationMs: 0, persistenceMs: 0, totalMs: 0, reportLookupMs: Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - lookupStartedAt) };
+        // briefingRecommendations: the report's own stories that support the theme (what its card was written
+        // from), strongest first. recommendations: further archive stories about the theme, not in the report.
+        const briefingRecommendations = themeSupportingRecommendations(report, theme);
         const recommendations = await generation.searchTheme(report, theme, requestId, timing, shownArticleIds);
-        return withServerTiming(Response.json({ reportId: report.id, publisherId, theme, recommendations }), timing);
+        return withServerTiming(Response.json({ reportId: report.id, publisherId, theme, briefingRecommendations, recommendations }), timing);
       } catch {
         return Response.json({ error: 'theme_search_unavailable' }, { status: 503 });
       }

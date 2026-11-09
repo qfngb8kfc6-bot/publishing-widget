@@ -151,6 +151,7 @@ describe('IBI News publisher onboarding', () => {
     expect(new Set(procurement.recommendations.map((item) => item.articleId))).not.toEqual(new Set(leadership.recommendations.map((item) => item.articleId)));
     const theme = procurement.professionalProfile.professionalInterests.find((value) => /supplier|procurement|sourcing|material/i.test(value)) ?? 'suppliers';
     const focused = await service.searchTheme(procurement, theme);
+    process.stderr.write(`IBIDBG ${theme} ${JSON.stringify(focused.map((item) => item.article.title))}\n`);
     expect(focused.length).toBeLessThanOrEqual(8);
     expect(focused.every((item) => !procurement.recommendations.some((existing) => existing.articleId === item.articleId))).toBe(true);
     expect(focused.some((item) => /supplier|material|component/i.test(`${item.article.title} ${item.article.description ?? ''}`))).toBe(true);

@@ -113,3 +113,28 @@ export function summaryQualityWarnings(summary: string, citedArticleIds: readonl
   if (sources && hasUnsupportedYear(summary, citedArticleIds.flatMap((id) => sources.get(id) ?? []))) warnings.push('unsupported_year');
   return warnings;
 }
+
+/** More than this many consecutive words shared with the headline or excerpt is copying (the LEAD rule's limit). */
+export const MAX_SHARED_CONSECUTIVE_WORDS = 5;
+/** Share of an explanation's content words found in the headline and excerpt above which it only retells them. */
+export const RESTATED_TOKEN_OVERLAP = 0.7;
+const MIN_CONTENT_WORDS_FOR_OVERLAP = 6;
+const RESTATEMENT_STOP_WORDS = new Set([...STOP_WORDS, 'the', 'and', 'for', 'its', 'has', 'had', 'was', 'are', 'but', 'not', 'into', 'per', 'via', 'new']);
+
+/**
+ * Why an explanation only restates the story shown directly above it, or undefined when it does not: it shares
+ * more than five consecutive words with the headline or excerpt, or nearly all its content words come from them.
+ * A reader-first explanation reuses a company or a number, not the story's own sentence.
+ */
+export function explanationRestatement(explanation: string, article: { title: string; description?: string }): 'consecutive_words' | 'token_overlap' | undefined {
+  const text = words(explanation);
+  const sources = [words(article.title), words(article.description ?? '')];
+  const run = MAX_SHARED_CONSECUTIVE_WORDS + 1;
+  const shingles = new Set(sources.flatMap((source) => source.slice(0, Math.max(0, source.length - run + 1)).map((_, index) => source.slice(index, index + run).join(' '))));
+  for (let index = 0; index + run <= text.length; index += 1) if (shingles.has(text.slice(index, index + run).join(' '))) return 'consecutive_words';
+  const content = text.filter((word) => word.length >= 3 && !RESTATEMENT_STOP_WORDS.has(word));
+  if (content.length < MIN_CONTENT_WORDS_FOR_OVERLAP) return undefined;
+  const sourceWords = new Set(sources.flat());
+  const shared = content.filter((word) => sourceWords.has(word)).length;
+  return shared / content.length >= RESTATED_TOKEN_OVERLAP ? 'token_overlap' : undefined;
+}
