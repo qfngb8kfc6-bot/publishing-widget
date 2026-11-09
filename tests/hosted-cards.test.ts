@@ -286,6 +286,18 @@ describe('focused-reading heading and summary opening', () => {
     expect(summaryQualityWarnings('Fitbit and Peloton moved coaching onto devices. Watch prices.', ['a', 'b'], {})).not.toContain('meta_opening');
   });
 
+  it('flags "you are seeing" anywhere in the summary as meta_phrase, a soft warning that keeps the text', () => {
+    expect(REPORT_SUMMARY_ONLY_INSTRUCTIONS).toMatch(/Never write "you are seeing" or "you're seeing" anywhere in the summary/);
+    const mid = summaryQualityWarnings('Nike and Adidas cut wholesale accounts. In China you are seeing distributors hold stock. Watch Q3 orders.', ['a', 'b'], {});
+    expect(mid).toContain('meta_phrase');
+    expect(mid).not.toContain('meta_opening');
+    expect(summaryQualityWarnings("Puma closed 40 stores, and you're seeing rivals follow. Watch rents.", ['a', 'b'], {})).toContain('meta_phrase');
+    expect(summaryQualityWarnings('Puma closed 40 stores, and you’re seeing rivals follow.', ['a', 'b'], {})).toContain('meta_phrase');
+    // A lead that opens with it is meta_opening, not logged twice.
+    expect(summaryQualityWarnings('You are seeing brands move coaching onto devices. Fitbit leads.', ['a', 'b'], {})).not.toContain('meta_phrase');
+    expect(summaryQualityWarnings('Fitbit and Peloton moved coaching onto devices; sightseeing apps lag. Watch prices.', ['a', 'b'], {})).not.toContain('meta_phrase');
+  });
+
   it('names the role in title case in the focused-reading intro ("Head of Retail", not "head of retail")', () => {
     const report = { ...sgiReport(), jobTitle: 'head of retail' };
     const html = focusResultsMarkup(report, [report.recommendations[0]], [], { publisherName: 'SGI Europe', link: (article) => `<a href="${article.url}">Read</a>` });

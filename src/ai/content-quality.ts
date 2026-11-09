@@ -2,7 +2,7 @@
  * Heuristic writing-quality checks for AI briefing text. They only produce warnings: rejecting text for
  * phrasing would bring back the deterministic template, so the text is kept and the warning is logged.
  */
-export type ContentQualityCode = 'meta_opening' | 'banned_phrase' | 'duplicate_opening' | 'too_long' | 'no_specific_fact' | 'too_few_citations' | 'restates_reader' | 'third_person_reader' | 'old_fact_not_dated' | 'unsupported_year' | 'reader_company_subject';
+export type ContentQualityCode = 'meta_opening' | 'banned_phrase' | 'duplicate_opening' | 'too_long' | 'no_specific_fact' | 'too_few_citations' | 'restates_reader' | 'third_person_reader' | 'old_fact_not_dated' | 'unsupported_year' | 'reader_company_subject' | 'meta_phrase';
 
 export const BANNED_EXPLANATION_PHRASES = ['this article', 'this matters', 'relevant because', 'relevant to your work', 'your role as', 'maps to', 'aligns with', 'the profile', 'directly relevant'];
 export const BANNED_SUMMARY_PHRASES = ['the most relevant articles', 'focus on', 'focuses on', 'the profile', 'this briefing'];
@@ -57,6 +57,12 @@ function hasSpecificFact(text: string, title: string): boolean {
 
 /** A lead about the reader or the briefing instead of the news ("You are seeing ..."): a soft warning only. */
 const META_OPENING = /^\s*(?:you(?:'|’| a)re (?:seeing|looking at|reading)|you see\b|here (?:is|are)\b|this (?:week|briefing|report)\b|in this (?:briefing|report)\b)/i;
+
+/**
+ * "you are seeing" / "you're seeing" anywhere in the summary (mid-sentence too): the briefing talking about
+ * itself. A soft warning only, like meta_opening; a lead that opens with it is already meta_opening.
+ */
+const META_PHRASE = /\byou(?:'|’| a)re seeing\b/i;
 
 const YEAR = /\b(?:19[5-9]\d|20\d\d)\b/g;
 
@@ -115,6 +121,7 @@ export function summaryQualityWarnings(summary: string, citedArticleIds: readonl
   if (readerCompanyAsSubject(summary, reader.companyName)) warnings.push('reader_company_subject');
   if (sources && hasUnsupportedYear(summary, citedArticleIds.flatMap((id) => sources.get(id) ?? []))) warnings.push('unsupported_year');
   if (META_OPENING.test(summary)) warnings.push('meta_opening');
+  else if (META_PHRASE.test(summary)) warnings.push('meta_phrase');
   return warnings;
 }
 
