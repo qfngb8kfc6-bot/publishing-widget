@@ -46,7 +46,7 @@ describe('theme cards and focused reading', () => {
     const report = shaped();
     const archived = { ...report.recommendations[0], articleId: 'archive-1', article: { ...report.recommendations[0].article, id: 'archive-1', title: 'Archive story' } };
     await render(report, [archived]);
-    expect([...document.querySelectorAll('.highlight-card h3')].map((node) => node.textContent)).toEqual(['Connected fitness', 'AI coaching']);
+    expect([...document.querySelectorAll('.cx-theme h3')].map((node) => node.textContent)).toEqual(['Connected fitness', 'AI coaching']);
     // The search request still uses the stored theme.
     expect(document.querySelector<HTMLElement>('[data-theme-search]')?.dataset.themeSearch).toBe('connected fitness');
     document.querySelector<HTMLButtonElement>('[data-theme-search]')!.click();
@@ -57,17 +57,17 @@ describe('theme cards and focused reading', () => {
     expect(briefing).toEqual([...report.recommendations].sort((left, right) => right.displayScore - left.displayScore).map((item) => item.articleId));
     expect(document.querySelectorAll('[data-theme-group="briefing"] .why')).toHaveLength(0);
     expect([...document.querySelectorAll<HTMLElement>('[data-theme-group="archive"] [data-story-card]')].map((card) => card.dataset.storyCard)).toEqual(['archive-1']);
-    expect(document.querySelector('[data-theme-group="archive"] .theme-results-group-heading')?.textContent).toBe('More on this theme');
+    expect(document.querySelector('[data-theme-group="archive"] .theme-results-group-heading')?.textContent).toBe('More on this theme 1');
   });
 
-  it('keeps match, category and date on one line by truncating the category, with the full text in its title', async () => {
-    await render(shaped());
-    const category = document.querySelector<HTMLElement>('.story-category')!;
-    expect(category.textContent).toBe('CSR and sustainability');
-    expect(category.title).toBe('CSR and sustainability');
+  it('shows match alone in the top row and category with date on a quiet line that wraps, never truncated', async () => {
+    const report = shaped();
+    await render(report);
+    const meta = document.querySelector<HTMLElement>(`[data-story-card="${report.recommendations[0].articleId}"] .cx-meta`)!;
+    expect(meta.firstElementChild?.textContent).toBe('CSR and sustainability');
+    expect(document.querySelector('.story-category')).toBeNull();
     const css = [...document.querySelectorAll('style')].map((node) => node.textContent).join('');
-    expect(css).toContain('.story-meta{display:flex;flex-wrap:nowrap');
-    expect(css).toContain('.story-meta>.story-category{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}');
+    expect(css).toContain('.cx-card .cx-meta{display:flex;flex-wrap:wrap');
   });
 
   it('leaves out the "why" box only for a story whose explanation retold the news', async () => {

@@ -2,12 +2,12 @@ import { BatchingAnalyticsClient } from './analytics/client';
 import { createEvent, DEFAULT_THEME, normalizeToken, roleSubjectLabel, type PublisherRegistry } from './core';
 import type { PublisherExperienceBranding, PublisherManifest } from './publishers/manifest';
 import type { ReportRecord, ReportRecommendation } from './reports';
-import { MAX_SHOWN_THEME_ARTICLE_IDS, reportThemes, themeDisplayTitle, themeInlineText, themeSupportingRecommendations } from './reports/themes';
+import { MAX_SHOWN_THEME_ARTICLE_IDS, reportThemes, themeInlineText, themeSupportingRecommendations } from './reports/themes';
 import { allocateEditorialSections, articleIdentityKeys, type EditorialSection } from './reports/sections';
 import { generationPageMarkup, runGenerationPage } from './hosted-loading';
 import { generationInputMessage } from './widget/messages';
 import { bindCitationChips, briefHeroMarkup, briefHeroStyle } from './hosted-hero';
-import { bindFocusPanel, cardsStyle, cardsVariant, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext, type FocusPanel } from './hosted-cards';
+import { bindFocusPanel, cardsStyle, displayStories, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext } from './hosted-cards';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&#38;', '<': '&#60;', '>': '&#62;', "'": '&#39;', '"': '&#34;' })[character] ?? character);
@@ -114,35 +114,10 @@ function legalMarkup(manifest: PublisherManifest): string {
   return [manifest.privacyUrl ? `<a href="${escapeHtml(safeUrl(manifest.privacyUrl) || '#')}">Privacy</a>` : '', manifest.termsUrl ? `<a href="${escapeHtml(safeUrl(manifest.termsUrl) || '#')}">Terms</a>` : ''].filter(Boolean).join('<span aria-hidden="true">·</span>');
 }
 
-function formatDate(value?: string): string {
-  if (!value) return '';
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return value.slice(0, 10);
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(timestamp);
-}
-
-function articleImage(article: ReportRecommendation['article'], manifest: PublisherManifest): string {
-  const image = safeUrl(article.imageUrl);
-  // Without an image a compact labelled band stands in, never a large empty block.
-  return image ? `<img class="story-image" src="${escapeHtml(image)}" alt="" loading="lazy">` : `<div class="story-placeholder" aria-hidden="true"><span>${escapeHtml(manifest.name)} coverage</span></div>`;
-}
-
 function articleLink(article: ReportRecommendation['article'], manifest: PublisherManifest): string {
   const href = safeUrl(article.url) || '#';
   const newTab = manifest.branding.articleLinkBehavior !== 'same-tab' && manifest.results.openArticleInNewTab !== false;
   return `<a class="story-link" href="${escapeHtml(href)}" ${newTab ? 'target="_blank" rel="noopener noreferrer"' : ''} data-story-id="${escapeHtml(article.id)}">Read the original story <span aria-hidden="true">↗</span></a>`;
-}
-
-function storyMarkup(recommendation: ReportRecommendation, manifest: PublisherManifest, featured = false, showWhy = true): string {
-  const article = recommendation.article;
-  const title = escapeHtml(article.title);
-  const description = escapeHtml(article.description ?? article.summary ?? article.contentSnippet ?? '');
-  // An explanation that only retold the story falls back to the excerpt's first sentence; showing it would repeat
-  // the excerpt directly above, so the box is left out.
-  if (recommendation.rankingMetadata?.explanationRestated) showWhy = false;
-  const category = article.categories[0] ? escapeHtml(article.categories[0]) : '';
-  const date = formatDate(article.publishedAt);
-  return `<article class="${featured ? 'featured-story' : 'story-card'} ${safeUrl(article.imageUrl) ? 'has-image' : 'no-image'}" data-story-card="${escapeHtml(article.id)}">${articleImage(article, manifest)}<div class="story-body"><div class="story-meta"><span class="match-badge">${recommendation.displayScore}% match</span>${category ? `<span class="story-category" title="${category}">${category}</span>` : ''}${date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''}</div><h3>${title}</h3>${description ? `<p class="story-summary">${description}</p>` : ''}${showWhy ? `<div class="why"><span class="why-icon" aria-hidden="true">✦</span><div><strong>Why this matters to you</strong><p class="why-text">${escapeHtml(recommendation.explanation)}</p><button class="why-toggle" type="button" aria-expanded="false" hidden>More</button></div></div>` : ''}${articleLink(article, manifest)}</div></article>`;
 }
 
 /** The AI-written line for a theme card, or the standard text when AI did not provide one. */
@@ -155,41 +130,7 @@ function themeDescription(report: ReportRecord, theme: string): string {
   return `Relevant to your ${focus} focus and the information needs identified for this briefing.`;
 }
 
-function highlightMarkup(report: ReportRecord): string {
-  const values = reportThemes(report);
-  if (!values.length) return '';
-  return `<section class="highlights-section" aria-labelledby="highlights-heading"><p class="section-kicker">Highlights</p><h2 id="highlights-heading">${report.professionalProfile.coverage?.limited ? 'Closest themes in this coverage' : 'Top themes in your briefing'}</h2><div class="highlight-grid">${values.map((value, index) => `<article class="highlight-card"><span class="highlight-index">${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(themeDisplayTitle(value))}</h3><p>${escapeHtml(themeDescription(report, value))}</p><button class="highlight-action" type="button" data-theme-search="${escapeHtml(value)}">Find stories →</button></article>`).join('')}</div></section>`;
-}
-
-function themeResultsMarkup(): string {
-  return '<section class="theme-results" data-theme-results hidden aria-live="polite" aria-busy="false"></section>';
-}
-
-/**
- * Focused reading for a theme: first the report stories that support it (what its card was written from),
- * strongest match first, then any further archive stories about the theme.
- */
-function themeResultsContent(theme: string, report: ReportRecord, manifest: PublisherManifest, briefing: ReportRecommendation[], archive: ReportRecommendation[]): string {
-  const heading = `<p class="section-kicker">Focused reading</p><h2 class="theme-results-heading">${escapeHtml(focusHeading(theme))}</h2><p class="theme-results-subheading">Selected for your role as ${escapeHtml(report.jobTitle)}</p>`;
-  if (!briefing.length && !archive.length) return `${heading}<p class="theme-results-status">No strong stories were found for this theme in the current coverage.</p>`;
-  // Briefing stories already show their "why" in the report above, so it is not repeated here; archive stories
-  // without an AI explanation show the article's own description only, not a repeat of it.
-  const grid = (items: ReportRecommendation[], showWhy: (item: ReportRecommendation) => boolean) => `<div class="story-grid">${items.map((recommendation) => storyMarkup(recommendation, manifest, false, showWhy(recommendation))).join('')}</div>`;
-  const briefingMarkup = briefing.length ? `<div class="theme-results-group" data-theme-group="briefing"><h3 class="theme-results-group-heading">In your briefing</h3>${grid(briefing, () => false)}</div>` : '';
-  const archiveMarkup = archive.length ? `<div class="theme-results-group" data-theme-group="archive"><h3 class="theme-results-group-heading">${briefing.length ? 'More on this theme' : 'From the archive'}</h3>${grid(archive, (item) => item.rankingMetadata?.explanationSource === 'ai')}</div>` : '';
-  return `${heading}${briefingMarkup}${archiveMarkup}`;
-}
-
 const SECTION_LABELS: Record<string, string> = { 'top-developments': 'Top developments', 'companies-to-watch': 'Companies to watch', 'market-moves': 'Market moves', 'technology-developments': 'Technology developments', 'what-to-watch-next': 'What to watch next', 'from-the-archive': 'From the archive', 'more-relevant-stories': 'More relevant stories' };
-
-function optionalSectionsMarkup(manifest: PublisherManifest, sections: EditorialSection[]): string {
-  const labels = SECTION_LABELS;
-  return (manifest.reportSections ?? []).filter((section) => labels[section]).flatMap((section) => {
-    const allocated = sections.find((item) => item.id === section)?.recommendations ?? [];
-    if (!allocated.length) return [];
-    return `<section class="additional-section stories-section" data-report-section="${escapeHtml(section)}" aria-labelledby="section-${escapeHtml(section)}"><p class="section-kicker">Additional reading</p><h2 class="section-heading" id="section-${escapeHtml(section)}">${escapeHtml(labels[section])}</h2><div class="story-grid">${allocated.map((recommendation) => storyMarkup(recommendation, manifest)).join('')}</div></section>`;
-  }).join('');
-}
 
 function identityLabel(report: ReportRecord): string {
   return `${displayTitle(report.jobTitle)} at ${displayCompany(report)}`;
@@ -242,32 +183,17 @@ export async function renderHostedRoute(documentRef: Document, registry: Publish
 function compactReportStyle(): string {
   // The sticky context bar sits in flow with a negative bottom margin (-58px mobile, -84px desktop); it is only
   // shown once the hero has scrolled away (renderReport), so the content padding set in briefHeroStyle can be
-  // smaller than the bar without the bar covering the HIGHLIGHTS eyebrow.
-  // Story titles are serif by design (the approved production look). They used to get it only from the
-  // marketing page's global h1–h3 rule leaking into the shared HTML shell; it is stated here deliberately.
+  // smaller than the bar without the bar covering the HIGHLIGHTS eyebrow. Story cards are styled in hosted-cards.ts.
   return `<style>
-html{scroll-padding-top:104px}.report-page section,.report-page .theme-results,.report-page [id]{scroll-margin-top:104px}
+html{scroll-padding-top:104px}.report-page section,.report-page [id]{scroll-margin-top:104px}
 .report-page .coverage-note{margin:0 0 12px;padding:9px 12px;border-radius:12px;color:#5b4a12;background:#fff6dc;font-size:.84rem;line-height:1.45}
-.report-page .report-content{padding-top:clamp(96px,8vw,112px)}.report-page .highlights-section{margin-bottom:clamp(48px,6vw,80px)}
-.report-page .highlights-section h2,.report-page .section-heading{font-size:clamp(1.75rem,3vw,2.75rem);line-height:1;letter-spacing:-.05em}
-.report-page .story-placeholder{display:flex;align-items:center;justify-content:center;width:100%;height:48px;min-height:0;padding:0 16px;color:#69707d;background:linear-gradient(135deg,#f2f4f7,#eef1f6);font-size:.66rem;letter-spacing:.12em}
-.report-page .featured-story.no-image{grid-template-columns:1fr}.report-page .featured-story.no-image .story-placeholder{display:none}
-.report-page .featured-story h3,.report-page .story-card h3{font-family:Georgia,serif;font-weight:500;letter-spacing:-.045em}
-.why-toggle{display:none;margin-top:4px;padding:0;border:0;color:#2a2c8f;background:transparent;font-size:.78rem;font-weight:800}
+.report-page .report-content{padding-top:clamp(96px,8vw,112px)}
 @media(max-width:639px){
-html{scroll-padding-top:84px}.report-page section,.report-page .theme-results,.report-page [id]{scroll-margin-top:84px}
+html{scroll-padding-top:84px}.report-page section,.report-page [id]{scroll-margin-top:84px}
 .report-page .coverage-note{font-size:.8rem}
 .report-page .summary-actions{gap:8px;margin-top:14px}.report-page .summary-actions .action-button,.report-page .summary-actions .text-button{min-height:40px;padding:8px 14px;font-size:.8rem}
-.report-page .report-content{padding:76px 14px 0}.report-page .highlights-section h2,.report-page .section-heading{font-size:1.5rem;letter-spacing:-.04em}.report-page .highlights-section{margin-bottom:44px}.report-page .top-stories{margin-bottom:48px}
-.report-page .highlight-grid{display:flex;gap:10px;margin:16px -14px 0;padding:0 14px 6px;overflow-x:auto;scroll-snap-type:x mandatory;scroll-padding:0 14px;scrollbar-width:none}.report-page .highlight-grid::-webkit-scrollbar{display:none}
-.report-page .highlight-card{flex:0 0 78%;min-height:0;padding:16px 16px 46px;border-radius:18px;scroll-snap-align:start}.report-page .highlight-index{display:none}.report-page .highlight-card h3{margin-bottom:8px;font-size:1rem}.report-page .highlight-card p{display:-webkit-box;max-width:none;overflow:hidden;font-size:.8rem;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .highlight-action{left:16px;bottom:14px}
-.report-page .featured-story,.report-page .story-card{border-radius:18px}.report-page .featured-story .story-image,.report-page .story-card .story-image{width:100%;height:auto;min-height:0;max-height:180px;aspect-ratio:16/9}.report-page .story-placeholder{height:36px}
-.report-page .story-body,.report-page .story-card .story-body{min-height:0;padding:14px 16px 16px}.report-page .featured-story h3,.report-page .story-card h3{display:-webkit-box;margin:10px 0 6px;overflow:hidden;font-size:1.25rem;line-height:1.1;-webkit-box-orient:vertical;-webkit-line-clamp:3}
-.report-page .story-summary{display:-webkit-box;overflow:hidden;font-size:.86rem;line-height:1.45;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .story-meta{font-size:.66rem}
-.report-page .why{margin:12px 0;padding:10px 12px}.report-page .why-text{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}.report-page .why.is-expanded .why-text{display:block}.report-page .why-toggle{display:inline-flex}
-.report-page .story-grid{grid-template-columns:1fr;gap:12px}.report-page .also-relevant,.report-page .additional-section{margin-top:48px}
+.report-page .report-content{padding:76px 14px 0}.report-page .top-stories{margin-bottom:48px}
 .report-page .context-bar,.report-page .context-bar.is-visible{top:8px;width:calc(100% - 16px);min-height:46px;margin:12px auto -58px;padding:5px 5px 5px 14px}.report-page .context-bar .hosted-brand{display:none}.report-page .context-bar-inner{min-width:0}.report-page .context-label{overflow:hidden;font-size:.74rem;text-overflow:ellipsis;white-space:nowrap}.report-page .bar-actions{gap:5px}.report-page .bar-actions .action-button,.report-page .bar-actions .text-button{min-height:34px;padding:6px 12px;font-size:.74rem}
-.report-page .theme-results{margin:-12px 0 44px;padding:18px 14px;border-radius:18px}
 }
 </style>`;
 }
@@ -276,22 +202,18 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   const app = documentRef.querySelector<HTMLElement>('#hosted-app');
   if (!app) return;
   const identity = identityLabel(report);
-  const reportCoverStyle = `${compactReportStyle()}<style>.highlight-action{position:absolute;z-index:1;left:22px;bottom:22px;display:inline-flex;padding:0;border:0;color:#2a2c8f;background:transparent;font-size:.8rem;font-weight:800}.highlight-action:hover{text-decoration:underline}.theme-results{max-width:1100px;margin:-58px auto 80px;padding:28px;border:1px solid rgba(20,30,60,.1);border-radius:24px;background:#fff;box-shadow:0 16px 44px rgba(21,26,58,.08)}.theme-results[hidden]{display:none}.theme-results-heading{margin:0;color:#151a3a;font:600 clamp(1.8rem,4vw,3rem)/1 var(--font);letter-spacing:-.055em}.theme-results-subheading{margin:8px 0 22px;color:#69707d;font-size:.9rem}.theme-results-group+.theme-results-group{margin-top:28px}.report-page .theme-results-group-heading{font-family:inherit}.theme-results-group-heading{margin:0 0 14px;color:#5b6170;font-size:.74rem;font-weight:850;letter-spacing:.12em;text-transform:uppercase}.theme-results-status{margin:0;color:#69707d}.theme-results .story-grid{margin-top:20px}@media(max-width:520px){.theme-results{margin:-20px 0 56px;padding:22px 18px}}</style>`;
-  const feature = report.recommendations[0];
+  const reportCoverStyle = compactReportStyle();
   const presentation = reportPresentation(report, manifest);
-  const additional = presentation.additional;
-  const additionalMarkup = additional.length ? `<section class="also-relevant stories-section" aria-labelledby="additional-heading"><p class="section-kicker">Also relevant</p><h2 class="section-heading" id="additional-heading">More stories for your work</h2><div class="story-grid">${additional.map((recommendation) => storyMarkup(recommendation, manifest)).join('')}</div></section>` : '';
   const reportTitle = manifest.results.heading || 'Stories selected for your work';
   app.className = 'report-page';
-  const storiesOnPage = [...(feature ? [feature] : []), ...additional, ...presentation.sections.flatMap((section) => section.recommendations)];
+  // Every story on the page in display order (highest match first); the hero's "Source N" chips use the same order.
+  const feature = report.recommendations[0];
+  const stories = displayStories([{ recommendations: feature ? [feature] : [] }, { recommendations: presentation.additional }, ...presentation.sections.map((section) => ({ recommendations: section.recommendations, label: SECTION_LABELS[section.id] }))]);
+  const storiesOnPage = stories.map((story) => story.recommendation);
   const heroMarkup = `${briefHeroStyle()}${briefHeroMarkup({ report, publisherName: manifest.name, role: displayTitle(report.jobTitle), company: displayCompany(report), themeCount: reportThemes(report).length, storiesOnPage, brand: brandMarkup(manifest) })}`;
-  // ?cards=a / ?cards=b: the redesigned body below the hero (hosted-cards.ts); otherwise the current layout.
-  const variant = cardsVariant(window.location.search);
   const cardContext: CardContext = { publisherName: manifest.name, link: (article) => articleLink(article, manifest) };
   const reportActions = '<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div>';
-  const body = variant
-    ? `${cardsStyle(variant)}<div class="report-content cx cx-${variant}" data-cards="${variant}">${themesSectionMarkup(report, reportThemes(report), (theme) => themeDescription(report, theme))}${storiesSectionMarkup(variant, [{ recommendations: feature ? [feature] : [] }, { recommendations: additional }, ...presentation.sections.map((section) => ({ recommendations: section.recommendations, label: SECTION_LABELS[section.id] }))], cardContext, reportTitle)}${reportActions}</div>${focusPanelMarkup()}`
-    : `<div class="report-content">${highlightMarkup(report)}${themeResultsMarkup()}<section class="stories-section top-stories" id="top-stories" aria-labelledby="top-stories-heading"><div class="section-heading-row"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${escapeHtml(reportTitle)}</h2></div><span class="story-count">${report.recommendations.length} recommendations</span></div>${feature ? storyMarkup(feature, manifest, true) : '<p>No strong matches were found in the current coverage.</p>'}</section>${additionalMarkup}${optionalSectionsMarkup(manifest, presentation.sections)}${reportActions}</div>`;
+  const body = `${cardsStyle()}<div class="report-content cx">${themesSectionMarkup(report, reportThemes(report), (theme) => themeDescription(report, theme))}${storiesSectionMarkup(stories, cardContext, reportTitle)}${reportActions}</div>${focusPanelMarkup()}`;
   app.innerHTML = `${reportCoverStyle}${heroMarkup}<div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div>${body}${editSheetMarkup(report)}`;
 
   bindCitationChips(app, window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
@@ -347,8 +269,8 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   window.addEventListener('resize', () => { cancelAnimationFrame(whyFrame); whyFrame = requestAnimationFrame(() => setupWhyToggles(app)); }, { passive: true });
 
   const themeResults = app.querySelector<HTMLElement>('[data-theme-results]');
-  // In the redesigned variants focused reading opens in a panel (sheet on phones, side panel on desktop).
-  const focusPanel: FocusPanel | undefined = variant ? bindFocusPanel(app, documentRef) : undefined;
+  // Focused reading opens in a panel (sheet on phones, side panel on desktop).
+  const focusPanel = bindFocusPanel(app, documentRef);
   // Articles shown by each theme opened on this page, so another theme's results do not repeat them.
   const shownByTheme = new Map<string, string[]>();
   const shownElsewhere = (theme: string) => [...shownByTheme].filter(([key]) => key !== theme).flatMap(([, ids]) => ids).slice(-MAX_SHOWN_THEME_ARTICLE_IDS);
@@ -374,8 +296,8 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
       shownByTheme.delete(normalizeToken(theme));
       shownByTheme.set(normalizeToken(theme), recommendations.map((recommendation) => recommendation.articleId));
       themeResults.dataset.theme = resolvedTheme;
-      themeResults.innerHTML = variant ? focusResultsMarkup(report, briefing, recommendations, cardContext) : themeResultsContent(resolvedTheme, report, manifest, briefing, recommendations);
-      const panelTitle = variant ? app.querySelector<HTMLElement>('#cx-panel-title') : null;
+      themeResults.innerHTML = focusResultsMarkup(report, briefing, recommendations, cardContext);
+      const panelTitle = app.querySelector<HTMLElement>('#cx-panel-title');
       if (panelTitle) panelTitle.textContent = focusHeading(resolvedTheme);
       bindStoryClicks(themeResults);
       setupWhyToggles(themeResults);
