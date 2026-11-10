@@ -55,7 +55,10 @@ qfngb8kfc6-bot/publishing-widget.
 5. Content calls in parallel, each ≤ ~350 output tokens under its own 5 s cap and fallback: S (summary +
    citedArticleIds + theme card lines) and E1..En (explanations, ≤4 articles per batch, ≤4 batches; ≤5 calls).
 6. Own-company articles held to ~60% when alternatives pass the threshold; sections; transactional persist;
-   analytics in the background.
+   analytics in the background. Market context: a report always has ≥2 stories not naming the reader's company
+   when any score ≥ `RELAXED_MARKET_FLOOR` (threshold − 15 = 9; report threshold unchanged). Candidates (named
+   competitors, then same sector, then score) ride in the E batches like reserves and join only with an accepted
+   AI "why", displacing the lowest own-company stories; only then may own share pass 60% (`nonOwnCompanyRelaxed`).
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word

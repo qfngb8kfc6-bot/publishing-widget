@@ -68,6 +68,37 @@ export function restoreHeldBack<T>(kept: T[], heldBack: readonly T[], pool: read
   return { kept: [...kept, ...restored].sort((left, right) => rank(left) - rank(right)), restored };
 }
 
+/** A briefing always carries at least this many stories that are not about the reader's own company, when any qualify. */
+export const MIN_MARKET_CONTEXT_STORIES = 2;
+
+/** True when the title or description names the reader's own company (whatever the relationship). */
+export function namesOwnCompany(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): boolean {
+  const text = `${article.title} ${article.description ?? ''}`.toLowerCase();
+  return ownCompanyNames(profile).some((name) => mentions(text, name));
+}
+
+/**
+ * How good a market-context story is for this reader: 0 names a competitor or peer the profile knows about,
+ * 1 is in the reader's sector (matches a company-derived concept or names the company's industry or topics),
+ * 2 is other market coverage.
+ */
+export function marketContextTier(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile, matchedConcepts: readonly string[] = []): 0 | 1 | 2 {
+  if (articleRelationship(article, profile) === 'likely_competitor') return 0;
+  const text = `${article.title} ${article.description ?? ''}`.toLowerCase();
+  const companyConcepts = new Set((profile.retrieval?.concepts ?? []).filter((concept) => concept.source === 'company').map((concept) => concept.concept.toLowerCase()));
+  if (matchedConcepts.some((concept) => companyConcepts.has(concept.toLowerCase()))) return 1;
+  const sectorTerms = [profile.company?.industry, ...(profile.company?.topics ?? []), ...(profile.company?.productsServices ?? [])]
+    .filter((term): term is string => Boolean(term && term.trim().length >= 4))
+    .map((term) => term.trim().toLowerCase());
+  return sectorTerms.some((term) => mentions(text, term)) ? 1 : 2;
+}
+
+/** Market-context candidates best first: competitors, then same sector, then the rest; by score within each. */
+export function orderMarketContext<T extends { article: Pick<NormalizedArticle, 'title' | 'description'>; finalScore: number; directMatches?: string[]; adjacentMatches?: string[] }>(candidates: readonly T[], profile: ProfessionalProfile): T[] {
+  const tiers = new Map(candidates.map((item) => [item, marketContextTier(item.article, profile, [...(item.directMatches ?? []), ...(item.adjacentMatches ?? [])])]));
+  return [...candidates].sort((left, right) => tiers.get(left)! - tiers.get(right)! || right.finalScore - left.finalScore);
+}
+
 export function articleRelationship(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): ArticleRelationship {
   const text = `${article.title} ${article.description ?? ''}`.toLowerCase();
   const own = ownCompanyNames(profile);

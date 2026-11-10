@@ -143,6 +143,9 @@ export interface ServerLogFields {
   ownCompanyRestored?: number;
   /** own_company_share: other-company stories eligible to show; when under five, own-company stories may pass 60%. */
   nonOwnCompanyEligible?: number;
+  /** own_company_share: market-context stories (not about the reader's company) added from the relaxed floor
+   * (report threshold minus 15) so a briefing has at least two when any qualify. */
+  nonOwnCompanyRelaxed?: number;
   /** own_company_share: true when own-company stories are more than 60% of the report (only allowed with nonOwnCompanyEligible < 5). */
   ownCompanyCapExceeded?: boolean;
   /** duplicates_collapsed: near-duplicate stories removed before the AI calls, and "removedId>keptId" pairs. */
