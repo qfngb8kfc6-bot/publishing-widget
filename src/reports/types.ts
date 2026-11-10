@@ -27,6 +27,8 @@ export interface ReportRecommendation {
     explanationSource?: 'ai' | 'deterministic';
     /** Two or three words naming why the AI explanation says the article matters. */
     angle?: string;
+    /** True when the server-side image probe found the story image is a logo (shown whole, not cover-cropped). */
+    imageIsLogo?: boolean;
     /** True when the AI briefing summary cites this article. */
     citedInSummary?: boolean;
     /** Flagged as a weak fit but kept so the report has a minimum number of recommendations. */

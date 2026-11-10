@@ -9,6 +9,8 @@ import type { ReportRecord, ReportRecommendation, GenerateReportInput, ReportPer
 import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
+import { ImageProbe } from './image-probe';
+import type { PublisherManifest } from '../publishers/manifest';
 import { buildCompanyNameIndex, suggestCompany, type CompanyNameIndex } from './company-suggestion';
 import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, consolidateThemes, dropDeniedThemes, profileForTheme, selectReportThemes, themeSupport } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
@@ -290,6 +292,16 @@ function removeWeakFits(ranked: RankedCandidate[], weakIds: ReadonlySet<string>)
  * score-based weak-fit floor: weak fits are kept by count, MIN_REPORT_RECOMMENDATIONS, not by score.) Used only
  * to guarantee a report some stories beyond the reader's own company; the report threshold itself is unchanged.
  */
+/** How long the report waits, after its AI calls, for logo probes still running (they started before those calls). */
+export const LOGO_PROBE_FINAL_WAIT_MS = 300;
+
+/** Hosts story images may be probed on: the manifest's imageHostnames, else the content source's own hosts. */
+export function imageHostsFor(manifest: PublisherManifest | undefined): string[] {
+  if (manifest?.imageHostnames?.length) return [...manifest.imageHostnames];
+  const source = manifest?.contentSource as { allowedHostnames?: string[]; imageHostnames?: string[]; rss?: { allowedHostnames?: string[] } } | undefined;
+  return [...new Set([...(source?.allowedHostnames ?? []), ...(source?.imageHostnames ?? []), ...(source?.rss?.allowedHostnames ?? [])].map((host) => host.toLowerCase()))];
+}
+
 export const RELAXED_MARKET_FLOOR = RELEVANCE_THRESHOLDS.candidate - 15;
 
 /** Candidates kept for the market-context guarantee: enough for the needed stories and their spares. */
@@ -344,7 +356,7 @@ export class ReportGenerationService {
   private readonly enrichedProfileInFlight = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
   private readonly enrichmentRetries = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
 
-  constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver, private readonly catalogueCache = new PublisherCatalogueCache(), private readonly fullText?: FullTextLookup) {
+  constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver, private readonly catalogueCache = new PublisherCatalogueCache(), private readonly fullText?: FullTextLookup, private readonly imageProbe?: ImageProbe) {
     this.companyResolver = companyResolver ?? new BoundedCompanyInputResolver();
   }
 
@@ -383,6 +395,25 @@ export class ReportGenerationService {
    * Resolves the company input (name or URL) with the same failure annotation and logging as generate. Asynchronous
    * generation calls it before creating the job, so an unknown company is reported to the widget, not the loader.
    */
+  /**
+   * Starts header-only logo probes for the stories' images (allowlisted image hosts only, cached per URL) and
+   * returns a function that waits at most `ms` more for them. Stories whose probe has not finished, failed or
+   * is not allowed keep the browser-side behaviour; the report is never held up for longer than that.
+   */
+  private startLogoProbes(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, articles: readonly NormalizedArticle[]): (ms: number) => Promise<Set<string>> {
+    const logos = new Set<string>();
+    const hosts = imageHostsFor(definition.manifest);
+    const withImages = articles.filter((article) => article.imageUrl);
+    if (!this.imageProbe || !hosts.length || !withImages.length) return async () => logos;
+    const all = Promise.all(withImages.map((article) => this.imageProbe!.isLogo(article.imageUrl!, hosts).then((logo) => { if (logo) logos.add(article.id); }, () => undefined)));
+    return async (ms) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([all, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+      if (timer) clearTimeout(timer);
+      return new Set(logos);
+    };
+  }
+
   /** Company-name indexes per cached catalogue (dropped with it when the catalogue is refreshed). */
   private readonly companyNameIndexes = new WeakMap<readonly NormalizedArticle[], CompanyNameIndex>();
 
@@ -1036,8 +1067,11 @@ export class ReportGenerationService {
     const ranked = ranking.ranked.filter((item) => displayRelevanceScore(item.finalScore) >= floor && articleSupportsTheme(theme, item.article, [...item.directMatches, ...item.adjacentMatches]));
     const failureStage = ranked.length > 0 ? 'complete' : ranking.aiFilteredCount > 0 && ranking.deterministicEligible > 0 ? 'ai_filtered_all' : ranking.deterministicEligible > 0 ? 'final_filter' : 'deterministic_threshold';
     const finalFormattingStartedAt = clockMs();
+    const themeLogoProbes = this.startLogoProbes(definition, ranked.map((item) => item.article));
     const privacy = await this.articleLeads(report.publisherId, ranked.map((item) => item.article), 1, requestId);
-    const recommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, ranked, undefined, undefined, undefined, (item) => factualLine(item.article)), privacy);
+    const themeLogoIds = await themeLogoProbes(LOGO_PROBE_FINAL_WAIT_MS);
+    const recommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, ranked, undefined, undefined, undefined, (item) => factualLine(item.article)), privacy)
+      .map((recommendation) => (themeLogoIds.has(recommendation.articleId) ? { ...recommendation, rankingMetadata: { ...recommendation.rankingMetadata, imageIsLogo: true } } : recommendation));
     timing.cacheHit = ranking.timings.catalogueCacheHit && (ranking.timings.sourceFetchMs ?? 0) === 0 && (ranking.timings.sourceParseMs ?? 0) === 0 && (ranking.timings.normalizationMs ?? 0) === 0;
     timing.cacheAgeMs = ranking.timings.catalogueCacheAgeMs;
     timing.catalogueStale = ranking.timings.catalogueStale;
@@ -1231,6 +1265,8 @@ export class ReportGenerationService {
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
     const aiExplanationStartedAt = clockMs();
     // One query for the selected articles: leads for the AI content call and the subscriberOnly flag.
+    // Logo probes run alongside the AI content calls and are only waited on briefly at the end.
+    const logoProbes = this.startLogoProbes(definition, [...contentRanked, ...explainedOnly].map((item) => item.article));
     const articleTexts = await this.articleLeads(input.publisherId, [...contentRanked, ...explainedOnly].map((item) => item.article), AI_LEAD_CHARS, input.requestId);
     if (aiAvailable && ranked.length > 0) {
       // Parallel calls, each under its own AI time cap and falling back independently: S (summary, cited IDs, theme
@@ -1363,12 +1399,14 @@ export class ReportGenerationService {
         this.logger?.info('explanation_fallback', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: notReturnedIds.get(articleId) ?? failedBatchIds.get(articleId), rejectReason: reason });
       }
     }
+    const logoIds = await logoProbes(LOGO_PROBE_FINAL_WAIT_MS);
     const rawRecommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds), articleTexts).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
         ...recommendation.rankingMetadata,
         aiProvider: aiRerankUsed || aiExplanationUsed ? this.ai?.provider.providerName : undefined,
         ...(restatedFallbackIds.has(recommendation.articleId) ? { explanationRestated: true } : {}),
+        ...(logoIds.has(recommendation.articleId) ? { imageIsLogo: true } : {}),
       },
     }));
     const sectionAllocationStartedAt = clockMs();
