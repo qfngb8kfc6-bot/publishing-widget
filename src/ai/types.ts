@@ -39,6 +39,8 @@ export interface EnrichedIntent extends Intent {
   /** Generic titled roles: the title subject the reader works on, and its vocabulary. */
   subject?: string;
   subjectTerms?: string[];
+  /** The reader runs the business (CEO, MD, GM, founder, president, COO, CFO). */
+  executive?: boolean;
 }
 
 export interface SemanticCandidate {

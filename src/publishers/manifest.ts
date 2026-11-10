@@ -44,6 +44,11 @@ export interface PublisherManifest {
   };
   /** Optional declarative source metadata. Runtime secrets stay server-side. */
   contentSource?: ContentSourceConfig;
+  /**
+   * Hosts whose story images may be probed (first bytes only) to tell logos from photos. Default: the content
+   * source's own hosts. Subdomains of a listed host are included.
+   */
+  imageHostnames?: string[];
   results: PublisherConfig['results'];
   ranking?: {
     mode: 'deterministic' | 'hybrid';

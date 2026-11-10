@@ -62,6 +62,10 @@ qfngb8kfc6-bot/publishing-widget.
    Own-company story (`isOwnCompanyStory`, `relationship.ts`): the company (entered/resolved name, without legal
    form, or domain label) is the subject — whole word in the headline (not "Nike supplier…"), or the actor in the
    excerpt's first sentence (first 5 words, not after "of/for/with…"). Checked before supplier/partner words.
+- Executive roles (`isExecutiveTitle`: CEO, MD, GM, founder, president, COO, CFO; not VP) get `role.executive` and
+  `EXECUTIVE_MARKET_CONCEPTS` (results, trading, revenue, profit, investors, acquisition, expansion, sales…, source
+  `market`): direct only when the story shows the company's sector (a company concept or named peer), else adjacent.
+  The rerank intent carries `executive: true`. `own_company_share` also logs `nonOwnCompanyRerankWeak`.
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word
@@ -83,8 +87,13 @@ qfngb8kfc6-bot/publishing-widget.
   at generation (`theme_unsupported_dropped`) and hidden by `reportThemes` on older reports.
 - Role titles are displayed with `displayRoleTitle` (`src/core/role-title.ts`): CEO, CFO, VP, HR, ESG… stay capitals.
 - Logo-like story images (≥2.4:1, a "logo" file name, mostly white or white edges) get `is-logo`: contain on a tint.
+  Server side (`src/reports/image-probe.ts`): at generation the first 64 KB of each story image is read (Range GET,
+  1.5 s timeout, allowlisted hosts only: manifest `imageHostnames`, else the content source hosts plus its
+  `imageHostnames` — SGI: `"imageHostnames": ["d1f00kj7ad54bu.cloudfront.net"]` in the admin Content source JSON; cached per URL)
+  and wide / transparent or palette PNG / GIF / SVG / logo-named images get `rankingMetadata.imageIsLogo`. Probes
+  run alongside the AI calls and are waited on ≤300 ms; on failure the browser check applies as before.
 - Company typo hint: `GET /api/publishers/:id/company-suggestion?company=` (`src/reports/company-suggestion.ts`, cached
-  catalogue only) → "Did you mean Nike?" under the company field of the widget and edit forms; never blocks.
+  catalogue only) → "Did you mean Nike?" under the company field of the widget, edit forms and admin Test report; never blocks.
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),

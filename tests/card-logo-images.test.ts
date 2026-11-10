@@ -86,3 +86,15 @@ describe('bindCardImages', () => {
     expect(image.classList.contains('is-logo')).toBe(true);
   });
 });
+
+describe('server-side logo flag', () => {
+  it('renders an image the server marked as a logo with contain from the start', async () => {
+    const { cardMarkup } = await import('../src/hosted-cards');
+    const recommendation = { articleId: 'a1', rank: 1, rawScore: 70, displayScore: 70, explanation: 'Why.', article: { id: 'a1', publisherId: 'sgi-europe', title: 'Decathlon', description: 'Decathlon.', url: 'https://www.sgieurope.com/a1.article', imageUrl: 'https://www.sgieurope.com/Pictures/decathlon.png', categories: [], tags: [] }, rankingMetadata: { relevanceSignals: [], rankingMode: 'deterministic', rankingVersion: '1.7', imageIsLogo: true } } as never;
+    document.body.innerHTML = cardMarkup(recommendation, { publisherName: 'SGI Europe', link: () => '' }, { lead: true });
+    expect(document.querySelector('.cx-media')?.classList.contains('is-logo')).toBe(true);
+    const image = document.querySelector<HTMLImageElement>('img.cx-image')!;
+    expect(image.classList.contains('is-logo')).toBe(true);
+    expect(image.dataset.imageKind).toBe('logo');
+  });
+});

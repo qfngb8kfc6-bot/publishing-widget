@@ -22,3 +22,5 @@ label { display: block; margin: 17px 0 7px; color: #3f4860; font-size: .77rem; f
 .source-kind small{grid-column:2;color:#66737f}
 [data-source-kinds][hidden]{display:none}
 #source-test-output{margin-top:16px}
+.form-hint { margin: 7px 0 0; color: #667085; font-size: .78rem; }
+.form-hint .company-suggestion-button { padding: 0; border: 0; color: #3037ad; background: none; font: inherit; font-weight: 750; text-decoration: underline; cursor: pointer; }

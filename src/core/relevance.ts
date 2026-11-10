@@ -268,14 +268,30 @@ export function createProfessionalScorer(profile: ProfessionalProfile): Professi
   // as adjacent. An article must therefore match the subject to be direct.
   const onSubject = profile.role ? subjectMatcher(profile.role) : undefined;
   const isDirect = (concept: RetrievalConcept) => concept.relevanceType === 'direct' && (!onSubject || onSubject(concept.concept));
-  const directConcepts = concepts.filter(isDirect).map((concept) => ({ concept, normalized: normalizeToken(concept.concept) }));
-  const adjacentConcepts = concepts.filter((concept) => !isDirect(concept)).map((concept) => ({ concept, normalized: normalizeToken(concept.concept) }));
+  const prepareConcept = (concept: RetrievalConcept) => ({ concept, normalized: normalizeToken(concept.concept) });
+  // An executive's market vocabulary (source "market") is direct only in a story that shows the company's sector:
+  // a company concept (industry, topics, products) or a named peer in its text. Elsewhere it is adjacent.
+  const isMarket = (concept: RetrievalConcept) => concept.source === 'market';
+  const directConcepts = concepts.filter((concept) => isDirect(concept) && !isMarket(concept)).map(prepareConcept);
+  const adjacentConcepts = concepts.filter((concept) => !isDirect(concept) && !isMarket(concept)).map(prepareConcept);
+  const marketConcepts = concepts.filter(isMarket).map(prepareConcept);
+  const ownNames = new Set(tokenize(`${profile.companyName ?? ''} ${profile.companyDomain?.split('.')[0] ?? ''}`).map(normalizeToken));
+  const sectorTerms = marketConcepts.length
+    ? [...concepts.filter((concept) => concept.source === 'company').map((concept) => concept.concept), ...(profile.entities ?? [])]
+      .map(normalizeToken).filter((term) => term.length >= 3 && !ownNames.has(term))
+    : [];
+  const withMarketDirect = { directConcepts: [...directConcepts, ...marketConcepts], adjacentConcepts };
+  const withMarketAdjacent = { directConcepts, adjacentConcepts: [...adjacentConcepts, ...marketConcepts] };
   const exclusions = (profile.excludedConcepts?.length ? profile.excludedConcepts : profile.retrieval?.exclusions ?? []).map(prepareTerm);
   const roleConcepts = concepts.filter((concept) => concept.source === 'role');
   const companyTerms = tokenize(`${profile.companyName ?? ''} ${profile.companyDomain}`).map(prepareTerm);
   const companyLabel = normalizeToken(profile.companyName ?? profile.companyDomain);
   const peopleMovesNeedTitle = profile.role ? peopleMovesNeedTitleMatch(profile.role) : false;
-  return (article, fields = professionalFieldIndexes(article)) => scorePreparedProfessionalArticle(article, profile, fields, { directConcepts, adjacentConcepts, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored: Boolean(onSubject), peopleMovesNeedTitle });
+  return (article, fields = professionalFieldIndexes(article)) => {
+    const inSector = marketConcepts.length > 0 && sectorTerms.some((term) => normalizedConceptMatches(term, fields.title) || normalizedConceptMatches(term, fields.metadata) || normalizedConceptMatches(term, fields.body));
+    const conceptSets = !marketConcepts.length ? { directConcepts, adjacentConcepts } : inSector ? withMarketDirect : withMarketAdjacent;
+    return scorePreparedProfessionalArticle(article, profile, fields, { ...conceptSets, exclusions, roleConcepts, companyTerms, companyLabel, subjectAnchored: Boolean(onSubject), peopleMovesNeedTitle });
+  };
 }
 
 /** Version-independent deterministic professional score used by persisted reports. */

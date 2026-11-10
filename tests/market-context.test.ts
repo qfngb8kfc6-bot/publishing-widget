@@ -9,8 +9,10 @@ import { createStructuredLogger } from '../src/server/logging';
 import { company } from './ranking-fixtures';
 
 const AI_ENDPOINT = 'https://ai.example.test/v1/chat/completions';
-// CEO at Decathlon: six Decathlon stories pass the threshold; the market stories carry only weak leadership
-// evidence (below the threshold, above the relaxed floor); one story has no evidence at all.
+// Executive Director at Decathlon: a leadership role that is not an executive one, so the relaxed floor is what
+// brings market stories in (CEO is covered in exec-market-balance.test.ts). Six Decathlon stories pass the
+// threshold; the market stories carry only weak leadership evidence (below the threshold, above the relaxed
+// floor); one story has no evidence at all.
 const decathlon = [
   ['Decathlon chief executive on leadership and risk in 2027', 'Decathlon CEO discusses leadership, risk and regulation.'],
   ['Decathlon reports record revenue as CEO outlines growth strategy', 'Decathlon said revenue rose and set out a strategy for growth.'],
@@ -49,7 +51,7 @@ async function generate(respond: (call: Call) => unknown, entities: string[] = [
     companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Decathlon', industry: 'sporting goods', description: 'Decathlon', topics: [], entities, source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
     logger: { info: (message, fields) => logs.push({ message, fields: (fields ?? {}) as Record<string, unknown> }), error: () => undefined },
   });
-  const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'decathlon.com', jobTitle: 'CEO' }) }));
+  const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'decathlon.com', jobTitle: 'Executive Director' }) }));
   expect(response.status).toBe(201);
   const { reportId } = await response.json() as { reportId: string };
   return { report: (await app.reportStore.get(reportId, 'sgi-europe'))!, logs, calls };

@@ -1,7 +1,7 @@
 import { normalizeToken, tokenize } from './intent';
 
-export const PROFESSIONAL_PROFILE_VERSION = '1.9';
-export const RANKING_VERSION = '1.6';
+export const PROFESSIONAL_PROFILE_VERSION = '1.10';
+export const RANKING_VERSION = '1.7';
 
 export interface CompanyContext {
   domain: string;
@@ -54,10 +54,29 @@ export interface RoleContext {
   outsideDomain?: boolean;
   /** Reader-facing subject of an out-of-domain role ("software engineering"). */
   subjectLabel?: string;
+  /**
+   * The reader runs the business (CEO, MD, GM, founder, president, COO, CFO): competitor and market stories in the
+   * company's sector are direct evidence for them (see EXECUTIVE_MARKET_CONCEPTS).
+   */
+  executive?: boolean;
 }
 
 export type RelevanceType = 'direct' | 'adjacent';
-export type RetrievalConceptSource = 'role' | 'company';
+/** market: an executive's market vocabulary, direct only in a story with sector evidence (see the scorer). */
+export type RetrievalConceptSource = 'role' | 'company' | 'market';
+
+const EXECUTIVE_TITLE = /\b(?:ceo|chief executive(?: officer)?|md|managing director|gm|general manager|(?:co-?)?founder|president|coo|chief operating officer|cfo|chief financial officer)\b/i;
+
+/** CEO, MD, GM, founder, president, COO, CFO (not "Vice President" or "VP"). */
+export function isExecutiveTitle(title: string): boolean {
+  return EXECUTIVE_TITLE.test(title.replace(/\b(?:vice|deputy)[\s-]+president\b/gi, ' '));
+}
+
+/**
+ * What an executive reads about competitors and the market: trading, results, deals and expansion. Direct only
+ * when the story also shows the company's sector (a company concept or a named peer); otherwise adjacent.
+ */
+export const EXECUTIVE_MARKET_CONCEPTS = ['results', 'trading', 'revenue', 'profit', 'earnings', 'investors', 'market share', 'acquisition', 'acquires', 'merger', 'competitors', 'expansion', 'store openings', 'sales'];
 
 export interface RetrievalConcept {
   concept: string;
@@ -287,7 +306,7 @@ export function analyzeRole(jobTitle: string): RoleContext {
   // Its responsibility is the subject itself, not the catch-all "strategic planning, organisational decisions"
   // and not invented compounds ("legal reporting") that would surface as themes.
   const responsibilities = topics.length ? topics : match.responsibilities;
-  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics, subjectTerms: topics } : {}), ...(match.outsideDomain ? { outsideDomain: true, subjectLabel: match.outsideDomain.subjectLabel } : {}) };
+  return { rawTitle, normalizedTitle: normalizeToken(rawTitle), function: match.function, responsibilities, professionalThemes: [...directThemes, ...adjacentThemes], directThemes, adjacentThemes, confidence: rule ? 'high' : 'inferred', roleSource: generic ? 'generic' : 'dedicated', ...(topics.length ? { titleTopics: topics, subjectTerms: topics } : {}), ...(match.outsideDomain ? { outsideDomain: true, subjectLabel: match.outsideDomain.subjectLabel } : {}), ...(isExecutiveTitle(rawTitle) ? { executive: true } : {}) };
 }
 
 function ruleFor(role: RoleContext): RoleRule {
@@ -327,8 +346,10 @@ function buildConcepts(role: RoleContext, company: CompanyContext, directInteres
     ...directInterests.filter((concept) => !roleDirect.some((item) => normalizeToken(item) === normalizeToken(concept))).map((concept) => ({ concept, weight: 0.9, relevanceType: 'direct' as const, source: 'company' as const })),
     ...adjacentInterests.map((concept) => ({ concept, weight: 0.55, relevanceType: 'adjacent' as const, source: 'company' as const })),
   ];
+  // Executives: competitor and same-sector market stories are direct (sector-gated in the scorer).
+  const marketConcepts = role.executive ? EXECUTIVE_MARKET_CONCEPTS.map((concept) => ({ concept, weight: 1.1, relevanceType: 'direct' as const, source: 'market' as const })) : [];
   const excluded = new Set(exclusions.map(normalizeToken));
-  return [...roleConcepts, ...companyConceptsForProfile].filter((item, index, values) => !excluded.has(normalizeToken(item.concept)) && values.findIndex((candidate) => normalizeToken(candidate.concept) === normalizeToken(item.concept)) === index);
+  return [...roleConcepts, ...companyConceptsForProfile, ...marketConcepts].filter((item, index, values) => !excluded.has(normalizeToken(item.concept)) && values.findIndex((candidate) => normalizeToken(candidate.concept) === normalizeToken(item.concept)) === index);
 }
 
 /** "nike" → "Nike": an all-lowercase company name is shown title-cased; any other casing is the company's own. */

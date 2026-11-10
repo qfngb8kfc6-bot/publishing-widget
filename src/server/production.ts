@@ -27,6 +27,7 @@ import { buildProfessionalProfile } from '../core';
 import { AdminAuth } from './admin-auth';
 import { createAdminRoutes } from './admin-routes';
 import { PublisherCatalogueCache } from '../reports/catalogue-cache';
+import { ImageProbe } from '../reports/image-probe';
 import { GenerationJobs, MemoryGenerationJobStore, type GenerationJobStore } from '../reports/generation-jobs';
 import type { ArticleTextStore, WvcCatalogueStore } from '../reports/article-texts';
 import { inspectWvcCatalogue, wvcCatalogueConfigErrors, wvcCatalogueFetchConfig, wvcCatalogueParseOptions, type WvcCatalogueSourceConfig } from '../publishers/content';
@@ -217,7 +218,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   };
   let catalogueRescan: ReturnType<typeof setInterval> | undefined;
   const textEnrichmentStatus = async (publisherId: string) => textSyncs.get(publisherId)?.status(catalogueSyncs.has(publisherId) || textEnrichmentEnabled);
-  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache, textEnrichmentEnabled && articleTextStore ? { covers: (publisherId) => Boolean(enrichmentSourceFor(publisherId)), leads: (publisherId, storyCodes, maxChars) => articleTextStore.leads(publisherId, storyCodes, maxChars) } : undefined);
+  const reportGeneration = new ReportGenerationService(registry, companyContextProvider, reportStore, analyticsStore, reportAI, logger, (publisherId) => { const diagnostics = publisherRuntime.describe(publisherId); return { ...diagnostics, maxResponseBytes: diagnostics.maxBytes }; }, companyInputResolver, catalogueCache, textEnrichmentEnabled && articleTextStore ? { covers: (publisherId) => Boolean(enrichmentSourceFor(publisherId)), leads: (publisherId, storyCodes, maxChars) => articleTextStore.leads(publisherId, storyCodes, maxChars) } : undefined, new ImageProbe({ fetchImpl: options.fetchImpl }));
   const generationJobs = new GenerationJobs({
     store: options.generationJobStore ?? new MemoryGenerationJobStore(),
     onPersistError: (error) => logger.error('generation_status_write_failed', { errorName: error instanceof Error ? error.name : 'unknown', errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation status write failed.', 240) }),
