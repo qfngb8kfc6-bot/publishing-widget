@@ -76,10 +76,19 @@ qfngb8kfc6-bot/publishing-widget.
   (e.g. the old "More relevant stories") show no label.
 - Explanations that restate the headline/excerpt (>5 consecutive words or ≥70% content-word overlap) are
   regenerated once (part R); still restated → fallback with the "why" box hidden (`explanationRestated`).
+- Own-company stories carry `ownCompany:true` in the AI content payload (with `reader.company`); the summary and
+  explanations frame them as your company / your team. An own-company "why" with singular competitor/rival wording is
+  regenerated once in part R (`own_company_misframed`); still misframed → first-sentence fallback.
+- A theme whose AI line says no article covers it ("No supplied article directly addresses regulation") is dropped
+  at generation (`theme_unsupported_dropped`) and hidden by `reportThemes` on older reports.
+- Role titles are displayed with `displayRoleTitle` (`src/core/role-title.ts`): CEO, CFO, VP, HR, ESG… stay capitals.
+- Logo-like story images (≥2.4:1, a "logo" file name, mostly white or white edges) get `is-logo`: contain on a tint.
+- Company typo hint: `GET /api/publishers/:id/company-suggestion?company=` (`src/reports/company-suggestion.ts`, cached
+  catalogue only) → "Did you mean Nike?" under the company field of the widget and edit forms; never blocks.
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),
-  `explanation_restated` (articleId, part, restatedRule, outcome: regenerated / fallback), `theme_unsupported_removed`, `own_company_share`, `report_performance`, `theme_performance`,
+  `explanation_restated` (articleId, part, restatedRule, outcome: regenerated / fallback), `own_company_misframed` (articleId, part, outcome), `theme_unsupported_removed`, `theme_unsupported_dropped`, `own_company_share`, `report_performance`, `theme_performance`,
   `slow_span`, `catalogue_refresh_complete`, `index_prebuild_complete`, `heap_usage`.
 
 ## Publishers
