@@ -124,10 +124,11 @@ describe('rerank_dropped log', () => {
       ? { results: call.ids.slice(1).map((id, index) => ({ id, score: index === 0 ? 0 : 90 - index })) }
       : call.operation === 'report-content' ? content(call) : {}));
     const drops = logs.filter((entry) => entry.message === 'rerank_dropped');
-    expect(drops.some((entry) => entry.fields.rejectReason === 'not_returned')).toBe(true);
+    expect(drops.some((entry) => entry.fields.rejectReason === 'not_returned' && entry.fields.stage === 'report')).toBe(true);
     for (const entry of drops) {
       expect(Object.keys(entry.fields).sort()).toEqual(['articleId', 'publisherId', 'rejectReason', 'requestId', 'stage']);
-      expect(entry.fields.stage).toBe('report');
+      // report: the AI rerank; content: a content call flagged it weak or skipped it.
+      expect(['report', 'content']).toContain(entry.fields.stage);
       expect(['not_returned', 'keep_false', 'below_threshold', 'weak_removed']).toContain(entry.fields.rejectReason);
     }
   });

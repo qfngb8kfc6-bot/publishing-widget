@@ -113,6 +113,7 @@ function readerContext(profile: ReportContentRequest['profile']) {
     industry: profile.company?.industry,
     companyDescription: clipText(profile.company?.description, 300),
     priorities: profile.directInterests?.slice(0, 8),
+    ...(profile.role?.executive ? { executive: true } : {}),
   };
 }
 
@@ -133,6 +134,8 @@ const FIT_RULE = 'FIT: if an article does not genuinely help this reader, return
 const SUMMARY_FIT_RULE = 'FIT: do not build the summary on an article that does not genuinely help this reader. Never stretch a weak fit into a justification.';
 const GROUNDING_RULE = 'GROUNDING: use only facts stated in each article\'s title, description and lead (the opening of the article body, when supplied). Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.';
 const OWN_COMPANY_RULE = 'OWN COMPANY: reader.company is the company the reader works for. An article with ownCompany:true is about the reader\'s own company: frame it as news about your company and your team ("Your two new Nuremberg stores ...", "your team\'s rollout"), never as a competitor\'s or rival\'s move, and never call reader.company a competitor or rival. Only an article with ownCompany:false can describe a competitor.';
+/** Executive readers (CEO, MD, CFO...): the same context the rerank gets through enrichedIntent.executive. */
+const EXECUTIVE_RULE = 'EXECUTIVE READER: when reader.executive is true, the reader runs the company. Results, trading updates, profit, investor news, strategy, deals, acquisitions, expansion and market data of competitors and other companies in the same sector (reader.industry) genuinely help them: they benchmark your own plans. Never mark such an article weak, and never leave it out of the summary, just because it is about another company; frame it as a benchmark or signal for your company.';
 const DATES_RULE = 'DATES: each article has published (its year) and older:true when it is more than 18 months old (today is reader.today). For an older article, anchor the fact in time ("In 2019, Decathlon ...") and present it as precedent or context, never as a current plan or current news.';
 const FIGURES_RULE = 'FIGURE PERIODS: an article\'s published year is when it was written, not the period its figures describe. A market report published in 2025 often gives 2024 data. State the period the article itself gives for each figure ("2024 sales rose 2.1%", "in the year to March"), and if it gives none, attribute the figure to the article without a year ("Acme reported sales up 4%"). Never relabel a figure with the published year. When two articles give figures for different periods, present them as different periods, newest last, and never let an older figure read as contradicting a newer one.';
 const SUMMARY_RULE = 'SUMMARY: 3-4 short sentences, at most 90 words in total, like an analyst\'s briefing note, addressed to the reader directly (you, your team), never in the third person ("for a retailer", "for a product manager"). Never make the reader\'s own company (reader.company) the subject of a sentence ("Nike is facing ...", "For Nike, ...", "Nike should ..."): say you or your team instead. The company may appear only as context ("your Nike stores", "brands competing with Nike"). Build the opening pattern primarily from articles that are not older; use older articles only as supporting context, dated. Open with the strongest pattern across the articles in a first sentence of about 25 words at most (it is shown on its own as the lead); start it with the news itself (a company, market or trend), never with the reader or the briefing ("You are seeing", "You\'re seeing", "Here is", "This week"), backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. Keep each sentence short; cut adjectives before facts. Never write "you are seeing" or "you\'re seeing" anywhere in the summary, mid-sentence included. citedArticleIds lists every article the summary draws on.';
@@ -149,7 +152,7 @@ const EXPLANATION_EXAMPLES = [
 const THEMES_RULE = 'THEMES: when themes are supplied, return themeDescriptions with one entry per theme, theme copied exactly as supplied. description is one line of at most 18 words saying what the supplied articles show about that theme, naming a company, number or fact from them (for example "Acme Apparel and Northwind Sports both cut PFAS from outerwear ahead of EU limits"). articleIds lists every supplied article that line draws on or that is genuinely about that theme, strongest first; never name a company in the line that is not in one of those articles. Do not address the reader, restate their role or write "relevant to". When no supplied article is about a theme, leave that theme out instead of saying so. Omit themeDescriptions when no themes are supplied.';
 
 /** Writing rules shared by every content call that writes explanations. Grounding rules come first and are absolute. */
-const REPORT_CONTENT_RULES = [COMPLETENESS_RULE, FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, EXPLANATION_RULE, BANNED_PHRASES_RULE, ...EXPLANATION_EXAMPLES];
+const REPORT_CONTENT_RULES = [COMPLETENESS_RULE, FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, EXECUTIVE_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, EXPLANATION_RULE, BANNED_PHRASES_RULE, ...EXPLANATION_EXAMPLES];
 
 /** Summary plus explanations in one call (kept for single-call clients; the report pipeline splits into S and E). */
 export const REPORT_CONTENT_INSTRUCTIONS = [
@@ -163,7 +166,7 @@ export const REPORT_CONTENT_INSTRUCTIONS = [
 export const REPORT_SUMMARY_ONLY_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
   'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "themeDescriptions": [{"theme": "...", "description": "...", "articleIds": ["a1"]}]}. Do not write explanations.',
-  SUMMARY_FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
+  SUMMARY_FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, EXECUTIVE_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
   THEMES_RULE,
 ].join(' ');
 
@@ -171,7 +174,7 @@ export const REPORT_SUMMARY_ONLY_INSTRUCTIONS = [
 export const REPORT_SUMMARY_LIMITED_COVERAGE_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
   'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "themeDescriptions": [{"theme": "...", "description": "...", "articleIds": ["a1"]}]}. Do not write explanations.',
-  SUMMARY_FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, DATES_RULE, FIGURES_RULE, LIMITED_COVERAGE_SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
+  SUMMARY_FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, EXECUTIVE_RULE, DATES_RULE, FIGURES_RULE, LIMITED_COVERAGE_SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
   LIMITED_COVERAGE_THEMES_RULE,
 ].join(' ');
 
