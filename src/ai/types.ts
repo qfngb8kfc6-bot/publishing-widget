@@ -127,6 +127,8 @@ export interface ReportContentRequest {
   coverage?: 'limited';
   /** true for the one regeneration of explanations that only retold their story (explanations-only call). */
   rewriteRestated?: boolean;
+  /** true when the regeneration includes own-company stories whose explanation called the reader's company a competitor. */
+  rewriteOwnCompany?: boolean;
   profile: ProfessionalProfile;
   recommendations: Array<{
     article: Pick<NormalizedArticle, 'id' | 'title' | 'description' | 'categories' | 'tags' | 'contentSnippet' | 'publishedAt' | 'publisherId'> & Partial<Pick<NormalizedArticle, 'category' | 'summary'>>;

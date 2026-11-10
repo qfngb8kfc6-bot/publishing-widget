@@ -15,7 +15,7 @@ import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
 import { articleRelationship, limitOwnCompanyShare, MIN_MARKET_CONTEXT_STORIES, namesOwnCompany, orderMarketContext, OWN_COMPANY_MAX_SHARE, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
 import { collapseNearDuplicates } from './near-duplicates';
-import { explanationQualityWarnings, explanationRestatement, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
+import { explanationQualityWarnings, explanationRestatement, ownCompanyMisframed, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
 import { angleForArticle, normalizeAngle } from '../ai/angles';
 import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
@@ -487,41 +487,58 @@ export class ReportGenerationService {
   }
 
   /**
-   * Finds explanations that restate their story (more than five consecutive words, or most content words, from the
-   * headline or excerpt), logs explanation_restated for each and regenerates them once in one explanations-only
-   * call. A regenerated explanation that no longer restates replaces the original in `accepted` (in place).
-   * Returns the article IDs still restated afterwards, which get the fallback instead. IDs and rule codes only are
-   * logged, never text.
+   * Finds explanations to regenerate once, in one explanations-only call (part R):
+   * - restated: more than five consecutive words, or most content words, from the headline or excerpt
+   *   (explanation_restated);
+   * - misframed: an own-company story (the reader's own company is its subject) whose explanation uses competitor
+   *   or rival wording (own_company_misframed).
+   * A regenerated explanation that passes both checks replaces the original in `accepted` (in place). Returns the
+   * article IDs still failing afterwards, with the reason, which get the fallback instead. IDs and rule codes only
+   * are logged, never text.
    */
-  private async regenerateRestated(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, profile: ReturnType<typeof buildProfessionalProfile>, accepted: Array<{ articleId: string; explanation: string; angle?: string }>, recommendations: ReportContentRequest['recommendations'], articleById: ReadonlyMap<string, NormalizedArticle>, outcomes: ReadonlyArray<{ part: string; request: ReportContentRequest }>): Promise<Set<string>> {
+  private async regenerateExplanations(input: Pick<GenerateReportInput, 'publisherId' | 'requestId'>, profile: ReturnType<typeof buildProfessionalProfile>, accepted: Array<{ articleId: string; explanation: string; angle?: string }>, recommendations: ReportContentRequest['recommendations'], articleById: ReadonlyMap<string, NormalizedArticle>, outcomes: ReadonlyArray<{ part: string; request: ReportContentRequest }>): Promise<Map<string, 'restated' | 'misframed'>> {
+    const ownCompanyIds = new Set(recommendations.filter((item) => item.relationship === 'own_company').map((item) => item.article.id));
+    const restatedRule = (articleId: string, explanation: string) => {
+      const article = articleById.get(articleId);
+      return article ? explanationRestatement(explanation, { title: article.title, description: article.description ?? article.summary ?? article.contentSnippet }) : undefined;
+    };
+    const misframed = (articleId: string, explanation: string) => ownCompanyIds.has(articleId) && ownCompanyMisframed(explanation);
     const restated = new Map<string, 'consecutive_words' | 'token_overlap'>();
+    const misframedIds = new Set<string>();
     for (const item of accepted) {
-      const article = articleById.get(item.articleId);
-      const rule = article ? explanationRestatement(item.explanation, { title: article.title, description: article.description ?? article.summary ?? article.contentSnippet }) : undefined;
+      const rule = restatedRule(item.articleId, item.explanation);
       if (rule) restated.set(item.articleId, rule);
+      if (misframed(item.articleId, item.explanation)) misframedIds.add(item.articleId);
     }
-    if (!restated.size) return new Set();
+    if (!restated.size && !misframedIds.size) return new Map();
     const partOf = (articleId: string) => outcomes.find((outcome) => outcome.request.recommendations.some((item) => item.article.id === articleId))?.part;
-    const retryable = recommendations.filter((item) => restated.has(item.article.id)).slice(0, EXPLANATION_BATCH_SIZE);
-    const request: ReportContentRequest = { publisherId: input.publisherId, profile, includeSummary: false, rewriteRestated: true, recommendations: retryable };
+    // Misframed own-company stories first: they are the more visible error.
+    const retryable = [
+      ...recommendations.filter((item) => misframedIds.has(item.article.id)),
+      ...recommendations.filter((item) => restated.has(item.article.id) && !misframedIds.has(item.article.id)),
+    ].slice(0, EXPLANATION_BATCH_SIZE);
+    const request: ReportContentRequest = { publisherId: input.publisherId, profile, includeSummary: false, ...(retryable.some((item) => restated.has(item.article.id)) ? { rewriteRestated: true } : {}), ...(retryable.some((item) => misframedIds.has(item.article.id)) ? { rewriteOwnCompany: true } : {}), recommendations: retryable };
     const outcome = retryable.length ? await this.runAI('report_content', async (observe) => {
       const raw = observe(await (this.ai!.provider as ProfessionalAIProvider).generateReportContent(request));
       const result = validateReportContent(raw, request);
       if (!result) throw new Error('invalid_report_content');
       return result;
     }, { publisherId: input.publisherId, requestId: input.requestId, part: 'R' }) : {};
-    const stillRestated = new Set<string>();
-    for (const [articleId, rule] of restated) {
-      const article = articleById.get(articleId)!;
+    const failed = new Map<string, 'restated' | 'misframed'>();
+    for (const articleId of new Set([...misframedIds, ...restated.keys()])) {
       const rewrite = outcome.value?.explanations?.find((item) => item.articleId === articleId);
-      const fixed = rewrite && !explanationRestatement(rewrite.explanation, { title: article.title, description: article.description ?? article.summary ?? article.contentSnippet });
+      const stillRestated = !rewrite || Boolean(restatedRule(articleId, rewrite.explanation));
+      const stillMisframed = !rewrite || misframed(articleId, rewrite.explanation);
+      const fixed = !stillRestated && !stillMisframed;
       if (fixed) {
         const index = accepted.findIndex((item) => item.articleId === articleId);
         accepted[index] = { ...accepted[index], explanation: rewrite.explanation, ...(rewrite.angle ? { angle: rewrite.angle } : {}) };
-      } else stillRestated.add(articleId);
-      this.logger?.info('explanation_restated', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: partOf(articleId), restatedRule: rule, outcome: fixed ? 'regenerated' : 'fallback' });
+      } else failed.set(articleId, misframedIds.has(articleId) || stillMisframed ? 'misframed' : 'restated');
+      const rule = restated.get(articleId);
+      if (rule) this.logger?.info('explanation_restated', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: partOf(articleId), restatedRule: rule, outcome: fixed ? 'regenerated' : 'fallback' });
+      if (misframedIds.has(articleId)) this.logger?.info('own_company_misframed', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: partOf(articleId), outcome: fixed ? 'regenerated' : 'fallback' });
     }
-    return stillRestated;
+    return failed;
   }
 
   /** One rerank_dropped line per article the AI rerank took out of the ranking: article ID and reason only. */
@@ -1183,6 +1200,8 @@ export class ReportGenerationService {
     const failedBatchIds = new Map<string, string>();
     // Articles whose explanation still restated the story after one regeneration (shown with the fallback).
     const restatedFallbackIds = new Set<string>();
+    // Own-company stories whose explanation still framed the reader's company as a competitor after one regeneration.
+    const misframedFallbackIds = new Set<string>();
     let aiSummaryUsed = false;
     let aiExplanationUsed = false;
     let themeDescriptions: Record<string, string> | undefined;
@@ -1245,9 +1264,10 @@ export class ReportGenerationService {
         const articleById = new Map([...ranked, ...explainedOnly].map((item) => [item.article.id, item.article]));
         // An explanation that only retells the headline and excerpt shown above it is weak: regenerate those once
         // from the reader's side; one still restated (or not returned) falls back like any unexplained story.
-        const restatedIds = await this.regenerateRestated(input, profile, accepted, explainedRecommendations, articleById, explanationOutcomes);
-        for (const articleId of restatedIds) restatedFallbackIds.add(articleId);
-        for (const item of accepted.filter((entry) => !restatedIds.has(entry.articleId))) {
+        // An own-company story whose "why" calls the reader's company a competitor is regenerated in the same call.
+        const regenerationFailed = await this.regenerateExplanations(input, profile, accepted, explainedRecommendations, articleById, explanationOutcomes);
+        for (const [articleId, reason] of regenerationFailed) (reason === 'misframed' ? misframedFallbackIds : restatedFallbackIds).add(articleId);
+        for (const item of accepted.filter((entry) => !regenerationFailed.has(entry.articleId))) {
           const article = articleById.get(item.articleId);
           explanationById.set(item.articleId, { explanation: item.explanation, angle: article ? angleForArticle(normalizeAngle(item.angle), article) : normalizeAngle(item.angle) });
         }
@@ -1317,7 +1337,7 @@ export class ReportGenerationService {
       for (const item of weakFit.kept) {
         const articleId = item.article.id;
         if (explanationById.has(articleId)) continue;
-        const reason = restatedFallbackIds.has(articleId) ? 'restated' : contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
+        const reason = misframedFallbackIds.has(articleId) ? 'own_company_misframed' : restatedFallbackIds.has(articleId) ? 'restated' : contentWeakIds.has(articleId) ? 'weak_kept' : notReturnedIds.has(articleId) ? 'not_returned_kept' : failedBatchIds.has(articleId) ? 'batch_failed' : 'no_explanation';
         this.logger?.info('explanation_fallback', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(articleId, 200), part: notReturnedIds.get(articleId) ?? failedBatchIds.get(articleId), rejectReason: reason });
       }
     }

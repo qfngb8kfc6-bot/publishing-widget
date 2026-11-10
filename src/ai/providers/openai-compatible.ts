@@ -132,6 +132,7 @@ const COMPLETENESS_RULE = 'COMPLETENESS: you MUST return exactly one explanation
 const FIT_RULE = 'FIT: if an article does not genuinely help this reader, return {"articleId": "...", "fit": "weak"} for it instead of an explanation, and do not build the summary on it. Never stretch a weak fit into a justification.';
 const SUMMARY_FIT_RULE = 'FIT: do not build the summary on an article that does not genuinely help this reader. Never stretch a weak fit into a justification.';
 const GROUNDING_RULE = 'GROUNDING: use only facts stated in each article\'s title, description and lead (the opening of the article body, when supplied). Never invent numbers, companies, places, people or events. Use only the supplied article ids. relationship (own_company, likely_competitor, supplier_partner, wider_market) is a hint; confirm it from the article text before relying on it.';
+const OWN_COMPANY_RULE = 'OWN COMPANY: reader.company is the company the reader works for. An article with ownCompany:true is about the reader\'s own company: frame it as news about your company and your team ("Your two new Nuremberg stores ...", "your team\'s rollout"), never as a competitor\'s or rival\'s move, and never call reader.company a competitor or rival. Only an article with ownCompany:false can describe a competitor.';
 const DATES_RULE = 'DATES: each article has published (its year) and older:true when it is more than 18 months old (today is reader.today). For an older article, anchor the fact in time ("In 2019, Decathlon ...") and present it as precedent or context, never as a current plan or current news.';
 const FIGURES_RULE = 'FIGURE PERIODS: an article\'s published year is when it was written, not the period its figures describe. A market report published in 2025 often gives 2024 data. State the period the article itself gives for each figure ("2024 sales rose 2.1%", "in the year to March"), and if it gives none, attribute the figure to the article without a year ("Acme reported sales up 4%"). Never relabel a figure with the published year. When two articles give figures for different periods, present them as different periods, newest last, and never let an older figure read as contradicting a newer one.';
 const SUMMARY_RULE = 'SUMMARY: 3-4 short sentences, at most 90 words in total, like an analyst\'s briefing note, addressed to the reader directly (you, your team), never in the third person ("for a retailer", "for a product manager"). Never make the reader\'s own company (reader.company) the subject of a sentence ("Nike is facing ...", "For Nike, ...", "Nike should ..."): say you or your team instead. The company may appear only as context ("your Nike stores", "brands competing with Nike"). Build the opening pattern primarily from articles that are not older; use older articles only as supporting context, dated. Open with the strongest pattern across the articles in a first sentence of about 25 words at most (it is shown on its own as the lead); start it with the news itself (a company, market or trend), never with the reader or the briefing ("You are seeing", "You\'re seeing", "Here is", "This week"), backed by 2-3 concrete facts from different articles (which company did what, with numbers where the articles give them). Then give one commercial implication for the reader\'s role. End with one specific thing to watch. Name at least 3 specific companies or facts. Keep each sentence short; cut adjectives before facts. Never write "you are seeing" or "you\'re seeing" anywhere in the summary, mid-sentence included. citedArticleIds lists every article the summary draws on.';
@@ -148,7 +149,7 @@ const EXPLANATION_EXAMPLES = [
 const THEMES_RULE = 'THEMES: when themes are supplied, return themeDescriptions with one entry per theme, theme copied exactly as supplied. description is one line of at most 18 words saying what the supplied articles show about that theme, naming a company, number or fact from them (for example "Acme Apparel and Northwind Sports both cut PFAS from outerwear ahead of EU limits"). articleIds lists every supplied article that line draws on or that is genuinely about that theme, strongest first; never name a company in the line that is not in one of those articles. Do not address the reader, restate their role or write "relevant to". When no supplied article is about a theme, leave that theme out instead of saying so. Omit themeDescriptions when no themes are supplied.';
 
 /** Writing rules shared by every content call that writes explanations. Grounding rules come first and are absolute. */
-const REPORT_CONTENT_RULES = [COMPLETENESS_RULE, FIT_RULE, GROUNDING_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, EXPLANATION_RULE, BANNED_PHRASES_RULE, ...EXPLANATION_EXAMPLES];
+const REPORT_CONTENT_RULES = [COMPLETENESS_RULE, FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, EXPLANATION_RULE, BANNED_PHRASES_RULE, ...EXPLANATION_EXAMPLES];
 
 /** Summary plus explanations in one call (kept for single-call clients; the report pipeline splits into S and E). */
 export const REPORT_CONTENT_INSTRUCTIONS = [
@@ -162,7 +163,7 @@ export const REPORT_CONTENT_INSTRUCTIONS = [
 export const REPORT_SUMMARY_ONLY_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
   'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "themeDescriptions": [{"theme": "...", "description": "...", "articleIds": ["a1"]}]}. Do not write explanations.',
-  SUMMARY_FIT_RULE, GROUNDING_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
+  SUMMARY_FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, DATES_RULE, FIGURES_RULE, SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
   THEMES_RULE,
 ].join(' ');
 
@@ -170,7 +171,7 @@ export const REPORT_SUMMARY_ONLY_INSTRUCTIONS = [
 export const REPORT_SUMMARY_LIMITED_COVERAGE_INSTRUCTIONS = [
   'You write a briefing note for one professional reader, using only the supplied articles.',
   'Return ONLY JSON: {"summary": "...", "citedArticleIds": ["a1"], "themeDescriptions": [{"theme": "...", "description": "...", "articleIds": ["a1"]}]}. Do not write explanations.',
-  SUMMARY_FIT_RULE, GROUNDING_RULE, DATES_RULE, FIGURES_RULE, LIMITED_COVERAGE_SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
+  SUMMARY_FIT_RULE, GROUNDING_RULE, OWN_COMPANY_RULE, DATES_RULE, FIGURES_RULE, LIMITED_COVERAGE_SUMMARY_RULE, LEAD_RULE, BANNED_PHRASES_RULE,
   LIMITED_COVERAGE_THEMES_RULE,
 ].join(' ');
 
@@ -185,6 +186,13 @@ const RESTATED_RULE = 'RESTATED: the earlier explanations for these articles onl
 
 /** The one regeneration of explanations that restated their story: the explanation rules plus the RESTATED rule. */
 export const REPORT_EXPLANATIONS_RESTATED_INSTRUCTIONS = [REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS, RESTATED_RULE].join(' ');
+
+const OWN_COMPANY_REWRITE_RULE = 'OWN COMPANY REWRITE: the earlier explanations for the articles marked ownCompany:true called the reader\'s own company (reader.company) a competitor or rival. Rewrite each of them as news about your company and your team: what it means for your plans, backed by one fact from the article. Never describe your company or its moves as a competitor or rival.';
+
+/** The regeneration of explanations, with the RESTATED and/or OWN COMPANY REWRITE rules for the articles it carries. */
+function explanationRewriteInstructions(input: Pick<ReportContentRequest, 'rewriteRestated' | 'rewriteOwnCompany'>): string {
+  return [input.rewriteRestated ? REPORT_EXPLANATIONS_RESTATED_INSTRUCTIONS : REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS, ...(input.rewriteOwnCompany ? [OWN_COMPANY_REWRITE_RULE] : [])].join(' ');
+}
 
 const STAGE_BY_OPERATION: Record<string, keyof AIStageMaxTokens> = {
   'professional-profile-enrichment': 'profile',
@@ -303,10 +311,10 @@ export class OpenAICompatibleProvider implements AIProvider, ProfessionalAIProvi
       articles: input.recommendations.map((recommendation, index) => {
         const { articleId: _articleId, ...projection } = projectArticle(recommendation.article, recommendation.matchedConcepts, recommendation.score);
         const lead = recommendation.leadExcerpt?.slice(0, MAX_LEAD_CHARS);
-        return { id: `a${index + 1}`, ...projection, relationship: recommendation.relationship, ...(lead ? { lead } : {}) };
+        return { id: `a${index + 1}`, ...projection, relationship: recommendation.relationship, ownCompany: recommendation.relationship === 'own_company', ...(lead ? { lead } : {}) };
       }),
       ...(input.includeSummary !== false && input.themes?.length ? { themes: input.themes } : {}),
-    }, input.includeSummary === false ? (input.rewriteRestated ? REPORT_EXPLANATIONS_RESTATED_INSTRUCTIONS : REPORT_EXPLANATIONS_ONLY_INSTRUCTIONS) : input.includeExplanations === false ? (input.coverage === 'limited' ? REPORT_SUMMARY_LIMITED_COVERAGE_INSTRUCTIONS : REPORT_SUMMARY_ONLY_INSTRUCTIONS) : REPORT_CONTENT_INSTRUCTIONS);
+    }, input.includeSummary === false ? explanationRewriteInstructions(input) : input.includeExplanations === false ? (input.coverage === 'limited' ? REPORT_SUMMARY_LIMITED_COVERAGE_INSTRUCTIONS : REPORT_SUMMARY_ONLY_INSTRUCTIONS) : REPORT_CONTENT_INSTRUCTIONS);
     return attachAIResponseDiagnostics(resolveContentAliases(raw, aliases), aiResponseDiagnostics(raw) ?? {});
   }
 
