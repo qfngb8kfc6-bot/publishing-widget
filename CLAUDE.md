@@ -92,7 +92,7 @@ qfngb8kfc6-bot/publishing-widget.
   and wide / transparent or palette PNG / GIF / SVG / logo-named images get `rankingMetadata.imageIsLogo`. Probes
   run alongside the AI calls and are waited on ≤300 ms; on failure the browser check applies as before.
 - Company typo hint: `GET /api/publishers/:id/company-suggestion?company=` (`src/reports/company-suggestion.ts`, cached
-  catalogue only) → "Did you mean Nike?" under the company field of the widget and edit forms; never blocks.
+  catalogue only) → "Did you mean Nike?" under the company field of the widget, edit forms and admin Test report; never blocks.
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),
