@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { summaryQualityWarnings } from '../src/ai/content-quality';
 import { REPORT_SUMMARY_ONLY_INSTRUCTIONS } from '../src/ai/providers/openai-compatible';
 import { renderHostedRoute } from '../src/hosted';
-import { cardDate, categoryTint, panelText, displayStories, focusHeading } from '../src/hosted-cards';
+import { cardDate, categoryTint, panelText, displayStories, displayTitle, focusHeading, focusResultsMarkup } from '../src/hosted-cards';
 import { createPublisherRegistry } from '../src/publishers/registry';
 import type { ReportRecord, ReportRecommendation } from '../src/reports';
 import { createProductionApp } from '../src/server/production';
@@ -214,6 +214,13 @@ describe('report body (magazine layout)', () => {
     expect([...panel.querySelectorAll('.theme-results-group-heading')].map((node) => node.textContent)).toEqual(['In your briefing 2', 'More on this theme 1']);
     expect(storyIdsIn(panel, 'briefing')).toEqual(['s-2', 's-0']);
     expect(storyIdsIn(panel, 'archive')).toEqual(['archive-1']);
+    // Archive results carry the theme search's own % as a quieter "Theme match" pill; briefing stories keep their
+    // report % and the normal "match" pill.
+    const pill = (group: string) => [...panel.querySelectorAll(`[data-theme-group="${group}"] .match-badge`)];
+    expect(pill('archive').map((node) => node.textContent)).toEqual(['70% Theme match']);
+    expect(pill('archive').every((node) => node.classList.contains('cx-theme-match'))).toBe(true);
+    expect(pill('briefing').map((node) => node.textContent)).toEqual(['60% match', '70% match']);
+    expect(pill('briefing').some((node) => node.classList.contains('cx-theme-match'))).toBe(false);
     // Briefing stories do not repeat their "why"; the stories section stays where it was (nothing inserted above it).
     expect(panel.querySelectorAll('[data-theme-group="briefing"] .why')).toHaveLength(0);
     expect(document.querySelector('.cx-themes + #top-stories')).not.toBeNull();
@@ -284,5 +291,24 @@ describe('focused-reading heading and summary opening', () => {
     expect(REPORT_SUMMARY_ONLY_INSTRUCTIONS).toMatch(/never with the reader or the briefing \("You are seeing"/);
     expect(summaryQualityWarnings('You are seeing brands move coaching onto devices. Fitbit and Peloton lead.', ['a', 'b'], {})).toContain('meta_opening');
     expect(summaryQualityWarnings('Fitbit and Peloton moved coaching onto devices. Watch prices.', ['a', 'b'], {})).not.toContain('meta_opening');
+  });
+
+  it('flags "you are seeing" anywhere in the summary as meta_phrase, a soft warning that keeps the text', () => {
+    expect(REPORT_SUMMARY_ONLY_INSTRUCTIONS).toMatch(/Never write "you are seeing" or "you're seeing" anywhere in the summary/);
+    const mid = summaryQualityWarnings('Nike and Adidas cut wholesale accounts. In China you are seeing distributors hold stock. Watch Q3 orders.', ['a', 'b'], {});
+    expect(mid).toContain('meta_phrase');
+    expect(mid).not.toContain('meta_opening');
+    expect(summaryQualityWarnings("Puma closed 40 stores, and you're seeing rivals follow. Watch rents.", ['a', 'b'], {})).toContain('meta_phrase');
+    expect(summaryQualityWarnings('Puma closed 40 stores, and you’re seeing rivals follow.', ['a', 'b'], {})).toContain('meta_phrase');
+    // A lead that opens with it is meta_opening, not logged twice.
+    expect(summaryQualityWarnings('You are seeing brands move coaching onto devices. Fitbit leads.', ['a', 'b'], {})).not.toContain('meta_phrase');
+    expect(summaryQualityWarnings('Fitbit and Peloton moved coaching onto devices; sightseeing apps lag. Watch prices.', ['a', 'b'], {})).not.toContain('meta_phrase');
+  });
+
+  it('names the role in title case in the focused-reading intro ("Head of Retail", not "head of retail")', () => {
+    const report = { ...sgiReport(), jobTitle: 'head of retail' };
+    const html = focusResultsMarkup(report, [report.recommendations[0]], [], { publisherName: 'SGI Europe', link: (article) => `<a href="${article.url}">Read</a>` });
+    expect(html).toContain('Selected for your role as Head of Retail<');
+    expect(displayTitle('VP of CRM and loyalty')).toBe('VP of CRM and Loyalty');
   });
 });

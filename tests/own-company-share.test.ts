@@ -9,11 +9,32 @@ const other = (id: string) => ({ id, own: false });
 const ids = (items: Array<{ id: string }>) => items.map((item) => item.id);
 
 describe('limitOwnCompanyShare', () => {
-  it('holds own-company items to about 60% when alternatives exist, keeping rank order', () => {
+  it('holds own-company items to at most 60% (rounded down) when alternatives exist, keeping rank order', () => {
     const ranked = [own('n1'), own('n2'), own('n3'), own('n4'), own('n5'), own('n6'), own('n7'), own('n8'), other('o1'), other('o2'), other('o3'), other('o4')];
-    const { selected, deferred } = limitOwnCompanyShare(ranked, 8, (item) => item.own);
-    expect(ids(selected)).toEqual(['n1', 'n2', 'n3', 'n4', 'n5', 'o1', 'o2', 'o3']);
-    expect(deferred).toBe(3);
+    const { selected, deferred, capExceeded } = limitOwnCompanyShare(ranked, 8, (item) => item.own);
+    // Before: round(8 × 0.6) = 5, so 5 of 8 (62.5%). Now 4 of 8.
+    expect(ids(selected)).toEqual(['n1', 'n2', 'n3', 'n4', 'o1', 'o2', 'o3', 'o4']);
+    expect(deferred).toBe(4);
+    expect(capExceeded).toBe(false);
+  });
+
+  it('never passes 60% while five or more other-company items are available, even if places stay empty', () => {
+    const many = [own('n1'), own('n2'), own('n3'), own('n4'), own('n5'), own('n6'), other('o1'), other('o2'), other('o3'), other('o4'), other('o5')];
+    for (const limit of [3, 5, 6, 8]) {
+      const { selected, capExceeded } = limitOwnCompanyShare(many, limit, (item) => item.own);
+      expect(selected.filter((item) => item.own).length).toBeLessThanOrEqual(selected.length * 0.6);
+      expect(capExceeded).toBe(false);
+    }
+    // Six places: round(3.6) = 4 of 6 before; now 3 of 6.
+    expect(ids(limitOwnCompanyShare(many, 6, (item) => item.own).selected)).toEqual(['n1', 'n2', 'n3', 'o1', 'o2', 'o3']);
+  });
+
+  it('lets own-company items pass 60% only when fewer than five other-company items exist, and says so', () => {
+    // CEO at Decathlon: one other-company story passed the threshold, so 4 of 5 is the exception.
+    const ranked = [own('d1'), own('d2'), own('d3'), other('m1'), own('d4')];
+    const result = limitOwnCompanyShare(ranked, 8, (item) => item.own);
+    expect(ids(result.selected)).toEqual(['d1', 'd2', 'd3', 'm1', 'd4']);
+    expect(result).toMatchObject({ nonOwnEligible: 1, capExceeded: true });
   });
 
   it('never lowers the bar: own-company items fill slots when there are not enough alternatives', () => {
@@ -26,7 +47,7 @@ describe('limitOwnCompanyShare', () => {
 
   it('is a plain top-N when the share is already within the cap', () => {
     const ranked = [other('o1'), own('n1'), other('o2'), own('n2'), other('o3')];
-    expect(limitOwnCompanyShare(ranked, 4, (item) => item.own)).toEqual({ selected: ranked.slice(0, 4), deferred: 0 });
+    expect(limitOwnCompanyShare(ranked, 4, (item) => item.own)).toEqual({ selected: ranked.slice(0, 4), deferred: 0, heldBack: [], nonOwnEligible: 3, capExceeded: false });
   });
 });
 

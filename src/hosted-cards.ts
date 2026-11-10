@@ -40,6 +40,11 @@ export interface CardOptions {
   showWhy?: boolean;
   /** Compact list card inside the focused-reading panel. */
   compact?: boolean;
+  /**
+   * A focused-reading archive result: its % comes from the theme search (the theme weighted in), not the report's
+   * scale, so it is labelled "Theme match" in a quieter outline pill rather than the report's filled "match" pill.
+   */
+  themeMatch?: boolean;
 }
 
 function whyMarkup(explanation: string): string {
@@ -123,7 +128,7 @@ export function cardMarkup(recommendation: ReportRecommendation, context: CardCo
   const media = image ? `<img class="cx-image" src="${escapeHtml(image)}" alt="" loading="lazy">` : typePanelMarkup(panel?.keyLine, category, context);
   const meta = [category ? `<span>${escapeHtml(category)}</span>` : '', date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''].filter(Boolean).join('<span class="cx-dot" aria-hidden="true">·</span>');
   const classes = ['cx-card', options.lead ? 'cx-lead' : options.compact ? 'cx-compact' : 'cx-rest-card', image ? 'has-image' : 'no-image'].join(' ');
-  return `<article class="${classes}" data-story-card="${escapeHtml(article.id)}"><div class="cx-media">${media}</div><div class="cx-head"><div class="story-meta cx-top"><span class="match-badge cx-match"><b>${recommendation.displayScore}%</b> match</span></div>${options.label ? `<p class="cx-label">${escapeHtml(options.label)}</p>` : ''}<h3 class="cx-title">${escapeHtml(article.title)}</h3>${meta ? `<p class="cx-meta">${meta}</p>` : ''}</div><div class="cx-body">${description ? `<p class="story-summary">${escapeHtml(description)}</p>` : ''}${showWhy ? whyMarkup(recommendation.explanation) : ''}${context.link(article)}</div></article>`;
+  return `<article class="${classes}" data-story-card="${escapeHtml(article.id)}"><div class="cx-media">${media}</div><div class="cx-head"><div class="story-meta cx-top">${options.themeMatch ? `<span class="match-badge cx-match cx-theme-match" title="How closely this story fits the theme"><b>${recommendation.displayScore}%</b> Theme match</span>` : `<span class="match-badge cx-match"><b>${recommendation.displayScore}%</b> match</span>`}</div>${options.label ? `<p class="cx-label">${escapeHtml(options.label)}</p>` : ''}<h3 class="cx-title">${escapeHtml(article.title)}</h3>${meta ? `<p class="cx-meta">${meta}</p>` : ''}</div><div class="cx-body">${description ? `<p class="story-summary">${escapeHtml(description)}</p>` : ''}${showWhy ? whyMarkup(recommendation.explanation) : ''}${context.link(article)}</div></article>`;
 }
 
 export interface StoryGroup {
@@ -175,6 +180,17 @@ export function themesSectionMarkup(report: ReportRecord, themes: string[], desc
   return `<section class="highlights-section cx-themes" aria-labelledby="highlights-heading"><div class="cx-section-head"><div><p class="section-kicker">Highlights</p><h2 id="highlights-heading">${limited ? 'Closest themes in this coverage' : 'Top themes in your briefing'}</h2></div><p class="cx-section-note cx-theme-total">${themes.length} ${themes.length === 1 ? 'theme' : 'themes'}${themes.length > 1 ? '<span class="cx-swipe"> · swipe for more</span>' : ''}</p></div><div class="cx-theme-row" tabindex="0" aria-label="Themes">${cards}</div></section>`;
 }
 
+const SMALL_WORDS = new Set(['a', 'an', 'and', 'at', 'for', 'in', 'of', 'on', 'or', 'the', 'to']);
+
+/** The role or company as a title: "head of retail" → "Head of Retail"; acronyms ("VP", "CTO") stay as typed. */
+export function displayTitle(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().split(' ').map((word, index) => {
+    if (/^[A-Z\d-]{2,}$/.test(word)) return word;
+    if (index > 0 && SMALL_WORDS.has(word.toLowerCase())) return word.toLowerCase();
+    return word.length ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+  }).join(' ');
+}
+
 /** The focused-reading panel: a bottom sheet on phones, a side panel on desktop. Its body is [data-theme-results]. */
 export function focusPanelMarkup(): string {
   return `<div class="cx-backdrop" data-focus-backdrop hidden></div><div class="cx-panel" data-focus-panel role="dialog" aria-modal="true" aria-labelledby="cx-panel-title" hidden><div class="cx-panel-head"><div><p class="section-kicker">Focused reading</p><h2 class="theme-results-heading" id="cx-panel-title" tabindex="-1">Stories</h2></div><button class="cx-close" type="button" data-focus-close aria-label="Close focused reading"><span aria-hidden="true">×</span></button></div><div class="cx-panel-body theme-results" data-theme-results aria-live="polite" aria-busy="false"></div></div>`;
@@ -187,11 +203,12 @@ export function focusHeading(theme: string): string {
 
 /** Panel contents: "In your briefing" first (no repeated "why"), then "More on this theme". */
 export function focusResultsMarkup(report: ReportRecord, briefing: ReportRecommendation[], archive: ReportRecommendation[], context: CardContext): string {
-  const intro = `<p class="theme-results-subheading">Selected for your role as ${escapeHtml(report.jobTitle)}</p>`;
+  const intro = `<p class="theme-results-subheading">Selected for your role as ${escapeHtml(displayTitle(report.jobTitle))}</p>`;
   if (!briefing.length && !archive.length) return `${intro}<p class="theme-results-status">No strong stories were found for this theme in the current coverage.</p>`;
-  const list = (items: ReportRecommendation[], showWhy: (item: ReportRecommendation) => boolean) => `<div class="cx-focus-list">${items.map((item) => cardMarkup(item, context, { compact: true, showWhy: showWhy(item) })).join('')}</div>`;
-  const briefingMarkup = briefing.length ? `<div class="theme-results-group" data-theme-group="briefing"><h3 class="theme-results-group-heading">In your briefing <span>${briefing.length}</span></h3>${list(briefing, () => false)}</div>` : '';
-  const archiveMarkup = archive.length ? `<div class="theme-results-group" data-theme-group="archive"><h3 class="theme-results-group-heading">${briefing.length ? 'More on this theme' : 'From the archive'} <span>${archive.length}</span></h3>${list(archive, (item) => item.rankingMetadata?.explanationSource === 'ai')}</div>` : '';
+  const list = (items: ReportRecommendation[], showWhy: (item: ReportRecommendation) => boolean, themeMatch: boolean) => `<div class="cx-focus-list">${items.map((item) => cardMarkup(item, context, { compact: true, showWhy: showWhy(item), themeMatch })).join('')}</div>`;
+  // Briefing stories keep their report % and pill; archive results carry the theme search's own % as "Theme match".
+  const briefingMarkup = briefing.length ? `<div class="theme-results-group" data-theme-group="briefing"><h3 class="theme-results-group-heading">In your briefing <span>${briefing.length}</span></h3>${list(briefing, () => false, false)}</div>` : '';
+  const archiveMarkup = archive.length ? `<div class="theme-results-group" data-theme-group="archive"><h3 class="theme-results-group-heading">${briefing.length ? 'More on this theme' : 'From the archive'} <span>${archive.length}</span></h3>${list(archive, (item) => item.rankingMetadata?.explanationSource === 'ai', true)}</div>` : '';
   return `${intro}${briefingMarkup}${archiveMarkup}`;
 }
 
@@ -294,6 +311,8 @@ export function cardsStyle(): string {
 .cx-card .story-meta.cx-top{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0;color:inherit;font-size:inherit;font-weight:inherit;letter-spacing:0;text-transform:none;white-space:normal}
 .cx-card .cx-match{display:inline-flex;align-items:baseline;gap:4px;padding:4px 10px;border-radius:999px;color:var(--brand);background:var(--secondary,#eef1f6);font-size:.74rem;font-weight:700;line-height:1.2;white-space:nowrap}
 .cx-card .cx-match b{font-size:1.02rem;font-weight:850;letter-spacing:-.01em}
+.cx-card .cx-theme-match{color:var(--palette-muted,#5b6472);background:transparent;box-shadow:inset 0 0 0 1px var(--palette-border,#d9dee7);font-weight:600}
+.cx-card .cx-theme-match b{font-size:.9rem;font-weight:700}
 .cx-card .source-tag{padding:2px 8px;font-size:.66rem;line-height:1.4;white-space:nowrap}
 .cx-card .cx-label{margin:10px 0 0;color:var(--brand);font-size:.68rem;font-weight:850;letter-spacing:.1em;text-transform:uppercase}
 .cx-card .cx-title{margin:8px 0 6px;color:#151a3a;font:600 1.18rem/1.22 ${SERIF};letter-spacing:-.01em}

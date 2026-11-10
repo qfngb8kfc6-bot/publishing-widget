@@ -43,6 +43,8 @@ const THEME_FAMILIES: string[][] = [
   ['circularity', 'circular economy', 'recycling', 'recycled materials', 'resale', 'reuse'],
   ['due diligence', 'human rights', 'forced labour', 'forced labor', 'supply chain transparency'],
   ['chemicals', 'pfas', 'hazardous substances'],
+  // Physical retail: "stores" and "store openings" are one theme card, not two.
+  ['stores', 'store openings', 'store opening', 'store closures', 'retail locations', 'physical retail', 'flagship', 'retail footprint'],
 ];
 
 /** Two articles in four or more matching both candidates mark them as one subtopic in this report. */
@@ -72,15 +74,30 @@ type ThemeArticle = { title: string; description?: string };
  */
 function distinctSubjectThemes(topics: string[], subjectTerms: string[], articles: ThemeArticle[]): string[] {
   const topicKeys = new Set(topics.map(normalizeToken));
+  const vocabulary = unique(subjectTerms).filter((term) => !topicKeys.has(normalizeToken(term)) && !isAmbiguousSingleWord(term));
+  const coverage = themeCoverage(articles);
+  const grounded = vocabulary.filter((term) => coverage(term).size > 0);
+  return distinctThemes([...grounded, ...vocabulary.filter((term) => !grounded.includes(term)), ...unique(topics)], articles);
+}
+
+/** The indexes of the articles whose title or description names the theme or a member of its concept family. */
+function themeCoverage(articles: ThemeArticle[]): (theme: string) => Set<number> {
   const articleWords = articles.map((article) => words(`${article.title} ${article.description ?? ''}`));
-  const coverage = (theme: string): Set<number> => {
+  return (theme: string): Set<number> => {
     const family = themeFamily(theme);
     const terms = family >= 0 ? [theme, ...THEME_FAMILIES[family]] : [theme];
     return new Set(articleWords.flatMap((text, index) => (terms.some((term) => containsTerm(text, term)) ? [index] : [])));
   };
-  const vocabulary = unique(subjectTerms).filter((term) => !topicKeys.has(normalizeToken(term)) && !isAmbiguousSingleWord(term));
-  const grounded = vocabulary.filter((term) => coverage(term).size > 0);
-  const candidates = [...grounded, ...vocabulary.filter((term) => !grounded.includes(term)), ...unique(topics)];
+}
+
+/**
+ * Up to four candidates in order, each rejected as a near-synonym of one already chosen when it is a word form of
+ * it or contains it ("retail operations" after "retail", "trademark law" after "trademark"), sits in the same
+ * concept family ("store openings" after "stores", "lawsuit" after "litigation"), or matches nearly the same
+ * report articles.
+ */
+function distinctThemes(candidates: string[], articles: ThemeArticle[]): string[] {
+  const coverage = themeCoverage(articles);
   const chosen: Array<{ theme: string; family: number; articles: Set<number> }> = [];
   for (const theme of candidates) {
     if (chosen.length === 4) break;
@@ -112,7 +129,36 @@ export function selectReportThemes(profile: ProfessionalProfile, articles: Theme
     return distinctSubjectThemes(profile.role.titleTopics ?? [], subjectTerms, articles);
   }
   // A lone ambiguous word ("infrastructure", "platforms") would search for the wrong sense in trade coverage.
-  return unique([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes]).filter((theme) => !isAmbiguousSingleWord(theme)).slice(0, 4);
+  // Dedicated roles get the same near-synonym check: "retail" and "retail operations" are one card.
+  return distinctThemes(unique([...profile.professionalInterests, ...profile.likelyInformationNeeds, ...profile.role.professionalThemes]).filter((theme) => !isAmbiguousSingleWord(theme)), articles);
+}
+
+/**
+ * The themes a report shows, once each has its supporting stories: a theme whose stories are the same as another
+ * theme's, or all among them and at least 75% of them, is merged into it (the theme with more stories stays; on a
+ * tie the earlier one), and there are never more themes than stories. A small subtopic inside an umbrella theme
+ * that backs every story ("omnichannel": 2 of the 8 "stores" stories) stays its own card. Order is kept; themes with no supporting story are left to
+ * reportThemes, which hides them.
+ */
+export function consolidateThemes(themes: readonly string[], support: Readonly<Record<string, readonly string[]>>, storyCount: number): { themes: string[]; support: Record<string, string[]>; merged: number } {
+  const supported = themes.filter((theme) => support[theme]?.length);
+  const sets = new Map(supported.map((theme) => [theme, new Set(support[theme])]));
+  const within = (inner: Set<string>, outer: Set<string>) => [...inner].every((id) => outer.has(id));
+  const kept = supported.filter((theme, index) => !supported.some((other, otherIndex) => {
+    if (other === theme) return false;
+    const mine = sets.get(theme)!;
+    const theirs = sets.get(other)!;
+    if (!within(mine, theirs)) return false;
+    // Equal sets: the earlier theme stays. A strict subset merges into the larger theme when it is most of it.
+    if (mine.size === theirs.size) return otherIndex < index;
+    return mine.size / theirs.size >= THEME_ARTICLE_OVERLAP;
+  })).slice(0, Math.max(0, storyCount));
+  const keptSet = new Set(kept);
+  return {
+    themes: [...kept, ...themes.filter((theme) => !support[theme]?.length)],
+    support: Object.fromEntries(kept.map((theme) => [theme, [...support[theme]]])),
+    merged: supported.length - keptSet.size,
+  };
 }
 
 type ThemeReport = Pick<ReportRecord, 'professionalProfile' | 'recommendations'>;

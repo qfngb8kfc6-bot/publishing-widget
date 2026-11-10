@@ -21,28 +21,51 @@ function ownCompanyNames(profile: ProfessionalProfile): string[] {
  * partner relationship, another company the profile knows about (a likely competitor), or the wider market.
  * Uses only profile and company data already gathered; the model is told to confirm it from the article text.
  */
-/** Own-company articles make up at most about this share of a main report while alternatives exist. */
+/** Own-company articles make up at most this share of a main report while alternatives exist. */
 export const OWN_COMPANY_MAX_SHARE = 0.6;
 
+/** Below this many stories a report is thin: held-back own-company stories come back before it is shown. */
+export const THIN_REPORT_STORIES = 5;
+
 /**
- * Takes the first `limit` items of a ranked list, holding articles about the reader's own company to about 60%
- * of the result while other articles that already passed the normal threshold are available. Thresholds are
- * never lowered: when there are not enough alternatives the best own-company articles fill the remaining slots.
- * Rank order is preserved. `deferred` counts own-company articles moved out of the plain top `limit`.
+ * Takes the first `limit` items of a ranked list, holding articles about the reader's own company to at most 60%
+ * of the result (rounded down: 4 of 8, 3 of 5, never 5 of 8). Only when fewer than five other articles passed the
+ * threshold may own-company articles fill the remaining places (`capExceeded`); thresholds are never lowered.
+ * Rank order is preserved. `deferred` counts own-company articles moved out of the plain top `limit`; `heldBack`
+ * lists them, best first. `nonOwnEligible` counts the other articles in the input.
  */
-export function limitOwnCompanyShare<T>(ranked: T[], limit: number, isOwnCompany: (item: T) => boolean): { selected: T[]; deferred: number } {
+export function limitOwnCompanyShare<T>(ranked: T[], limit: number, isOwnCompany: (item: T) => boolean): { selected: T[]; deferred: number; heldBack: T[]; nonOwnEligible: number; capExceeded: boolean } {
   const size = Math.min(limit, ranked.length);
-  const maxOwn = Math.round(size * OWN_COMPANY_MAX_SHARE);
+  const maxOwn = Math.floor(size * OWN_COMPANY_MAX_SHARE);
   const own = ranked.map(isOwnCompany);
+  const nonOwnEligible = own.filter((isOwn) => !isOwn).length;
   const chosen = new Set<number>();
   let ownCount = 0;
   for (let index = 0; index < ranked.length && chosen.size < size; index += 1) {
     if (!own[index]) chosen.add(index);
     else if (ownCount < maxOwn) { chosen.add(index); ownCount += 1; }
   }
-  for (let index = 0; index < ranked.length && chosen.size < size; index += 1) chosen.add(index);
+  // Too few alternatives: the best remaining own-company articles fill the places rather than leave them empty.
+  // With five or more alternatives the cap holds, even if that leaves the report shorter.
+  if (nonOwnEligible < THIN_REPORT_STORIES) for (let index = 0; index < ranked.length && chosen.size < size; index += 1) chosen.add(index);
+  const selected = ranked.filter((_, index) => chosen.has(index));
   const deferred = own.slice(0, size).filter((isOwn, index) => isOwn && !chosen.has(index)).length;
-  return { selected: ranked.filter((_, index) => chosen.has(index)), deferred };
+  // Own-company articles the cap moved out of the plain top `limit`, best first: restored when the report thins out.
+  const heldBack = ranked.slice(0, size).filter((_, index) => own[index] && !chosen.has(index));
+  const selectedOwn = selected.filter(isOwnCompany).length;
+  return { selected, deferred, heldBack, nonOwnEligible, capExceeded: selectedOwn > selected.length * OWN_COMPANY_MAX_SHARE };
+}
+
+/**
+ * Restores held-back own-company articles (best first) until the report has `minimum` stories, keeping the
+ * pool's rank order. Held-back articles already passed the threshold and the rerank; nothing else is added.
+ */
+export function restoreHeldBack<T>(kept: T[], heldBack: readonly T[], pool: readonly T[], minimum = THIN_REPORT_STORIES): { kept: T[]; restored: T[] } {
+  const restored = heldBack.filter((item) => !kept.includes(item)).slice(0, Math.max(0, minimum - kept.length));
+  if (!restored.length) return { kept, restored };
+  const position = new Map(pool.map((item, index) => [item, index]));
+  const rank = (item: T) => position.get(item) ?? Number.MAX_SAFE_INTEGER;
+  return { kept: [...kept, ...restored].sort((left, right) => rank(left) - rank(right)), restored };
 }
 
 export function articleRelationship(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): ArticleRelationship {

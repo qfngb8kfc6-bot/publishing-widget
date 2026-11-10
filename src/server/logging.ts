@@ -113,10 +113,13 @@ export interface ServerLogFields {
   aiErrorMessage?: string;
   /** Article the rejected AI explanation was for (an ID, never explanation text). */
   articleId?: string;
+  /** Also rerank_dropped: not_returned / keep_false / below_threshold / weak_removed (with articleId and stage). */
   rejectReason?: string;
   /** theme_unsupported_removed: themes chosen, and those dropped for having no supporting report story. */
   themeCount?: number;
   removedCount?: number;
+  /** theme_unsupported_removed: themes merged into another whose supporting stories include theirs, or over the story count. */
+  mergedCount?: number;
   /** explanation_restated: which overlap rule fired, and what happened (regenerated / fallback). */
   restatedRule?: 'consecutive_words' | 'token_overlap';
   outcome?: string;
@@ -136,6 +139,12 @@ export interface ServerLogFields {
   ownCompanyCount?: number;
   recommendationCount?: number;
   ownCompanyDeferred?: number;
+  /** own_company_share: held-back own-company articles restored because the report fell under five stories. */
+  ownCompanyRestored?: number;
+  /** own_company_share: other-company stories eligible to show; when under five, own-company stories may pass 60%. */
+  nonOwnCompanyEligible?: number;
+  /** own_company_share: true when own-company stories are more than 60% of the report (only allowed with nonOwnCompanyEligible < 5). */
+  ownCompanyCapExceeded?: boolean;
   /** duplicates_collapsed: near-duplicate stories removed before the AI calls, and "removedId>keptId" pairs. */
   duplicatesCollapsed?: number;
   duplicatePairs?: string;
@@ -145,7 +154,7 @@ export interface ServerLogFields {
   weakFromContent?: number;
   weakRemoved?: number;
   weakKeptLowerConfidence?: number;
-  /** ai_quality_warning code: banned_phrase, duplicate_opening, too_long, no_specific_fact, too_few_citations, restates_reader, third_person_reader, old_fact_not_dated, unsupported_year, reader_company_subject (too_long also applies to summaries over ~100 words). */
+  /** ai_quality_warning code: banned_phrase, duplicate_opening, too_long, no_specific_fact, too_few_citations, restates_reader, third_person_reader, old_fact_not_dated, unsupported_year, reader_company_subject, meta_opening, meta_phrase (too_long also applies to summaries over ~100 words). */
   qualityCode?: string;
   /** Index prebuild: articles indexed, synchronous time spent and number of event-loop slices. */
   articleCount?: number;
@@ -190,7 +199,7 @@ export function logHeapUsage(logger: StructuredLogger | undefined, stage: string
 export function createStructuredLogger(environment: 'development' | 'test' | 'production' = 'production'): StructuredLogger {
   const write = (level: 'info' | 'error', message: string, fields: ServerLogFields = {}) => {
     const payload = { timestamp: new Date().toISOString(), level, message, ...fields };
-    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'duplicates_collapsed', 'explanation_fallback', 'explanation_restated', 'theme_unsupported_removed', 'not_returned_treated_as_weak', 'own_company_share', 'enrichment_retry', 'heap_usage', 'report_performance', 'theme_performance', 'slow_span', 'wvc_sync_progress', 'wvc_catalogue_sync_started', 'lead_index_update'].includes(message);
+    const safeProductionDiagnostic = ['ai_performance', 'ai_explanation_rejected', 'ai_quality_warning', 'catalogue_refresh_complete', 'index_prebuild_complete', 'weak_fit_removed', 'duplicates_collapsed', 'explanation_fallback', 'explanation_restated', 'theme_unsupported_removed', 'not_returned_treated_as_weak', 'own_company_share', 'rerank_dropped', 'enrichment_retry', 'heap_usage', 'report_performance', 'theme_performance', 'slow_span', 'wvc_sync_progress', 'wvc_catalogue_sync_started', 'lead_index_update'].includes(message);
     if (level === 'error' || environment !== 'production' || safeProductionDiagnostic) console[level]('[publisher-widget]', JSON.stringify(payload));
   };
   return { info: (message, fields) => write('info', message, fields), error: (message, fields) => write('error', message, fields) };
