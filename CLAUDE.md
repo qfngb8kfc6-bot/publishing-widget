@@ -65,7 +65,14 @@ qfngb8kfc6-bot/publishing-widget.
 - Executive roles (`isExecutiveTitle`: CEO, MD, GM, founder, president, COO, CFO; not VP) get `role.executive` and
   `EXECUTIVE_MARKET_CONCEPTS` (results, trading, revenue, profit, investors, acquisition, expansion, sales…, source
   `market`): direct only when the story shows the company's sector (a company concept or named peer), else adjacent.
-  The rerank intent carries `executive: true`. `own_company_share` also logs `nonOwnCompanyRerankWeak`.
+  The rerank intent carries `executive: true`; the S and E content calls get `reader.executive` and the EXECUTIVE READER
+  rule (competitor/peer results, strategy and market data are never weak for being about another company).
+  `own_company_share` also logs `nonOwnCompanyRerankWeak`.
+- Executives after the content calls (`keepMarketWeakFits`): weak-fit removal never leaves <2 market stories nor own
+  >60% while removed market stories exist; the best stay as lower confidence. Restore order (all roles): market
+  candidates (relaxed, accepted "why") before own-company reserves; only executives let relaxed candidates and then
+  remaining market weak fits fill a thin report's places, and own-company stories are then trimmed to 60%
+  (≥2 market stories, ≥3 stories). Other roles take relaxed candidates only for the two-story floor (unchanged).
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word
@@ -97,6 +104,8 @@ qfngb8kfc6-bot/publishing-widget.
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),
+  `rerank_dropped` (stage report / theme / content: content-call weak or not returned), `selection_trace` (one per
+  report: `articleId|stage|outcome|reason;…`, shown stories first, ≤4,000 chars, IDs and codes only),
   `explanation_restated` (articleId, part, restatedRule, outcome: regenerated / fallback), `own_company_misframed` (articleId, part, outcome), `theme_unsupported_removed`, `theme_unsupported_dropped`, `own_company_share`, `report_performance`, `theme_performance`,
   `slow_span`, `catalogue_refresh_complete`, `index_prebuild_complete`, `heap_usage`.
 
