@@ -5,6 +5,7 @@
  * modules here.
  */
 import type { ReportRecommendation, ReportRecord } from './reports';
+import { displayRoleTitle } from './core/role-title';
 import { themeDisplayTitle, themeInlineText, themeSupportingRecommendations } from './reports/themes';
 
 const SERIF = "'Source Serif 4',Georgia,serif";
@@ -191,6 +192,98 @@ export function displayTitle(value: string): string {
   }).join(' ');
 }
 
+/** Wider than this (width / height) is a banner or wordmark logo, not a photo. */
+export const LOGO_ASPECT_RATIO = 2.4;
+/** Share of near-white (or transparent) pixels overall, or along the edges, that marks a logo on a white box. */
+export const LOGO_WHITE_SHARE = 0.6;
+export const LOGO_EDGE_WHITE_SHARE = 0.9;
+const SAMPLE_SIZE = 24;
+const LOGO_FILE_NAME = /(?:^|[/_.-])logos?(?:[_.-]|$)/i;
+
+/**
+ * "logo" for an image that cover-cropping would ruin: a very wide one, a mostly white one, or one whose edges are
+ * all near-white (a logo on a blank box). `pixels` is RGBA for a size×size downscale, when the image can be read.
+ */
+export function classifyCardImage(image: { width: number; height: number }, pixels?: ArrayLike<number>, size = SAMPLE_SIZE): 'logo' | 'photo' {
+  if (image.width > 0 && image.height > 0 && image.width / image.height >= LOGO_ASPECT_RATIO) return 'logo';
+  if (!pixels || pixels.length < size * size * 4) return 'photo';
+  let white = 0;
+  let edge = 0;
+  let edgeWhite = 0;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const offset = (y * size + x) * 4;
+      const isWhite = pixels[offset + 3] < 16 || (pixels[offset] >= 235 && pixels[offset + 1] >= 235 && pixels[offset + 2] >= 235);
+      if (isWhite) white += 1;
+      if (x === 0 || y === 0 || x === size - 1 || y === size - 1) {
+        edge += 1;
+        if (isWhite) edgeWhite += 1;
+      }
+    }
+  }
+  return white / (size * size) >= LOGO_WHITE_SHARE || edgeWhite / edge >= LOGO_EDGE_WHITE_SHARE ? 'logo' : 'photo';
+}
+
+/** RGBA of the image scaled to size×size, or undefined when it cannot be read (no canvas, or a cross-origin image). */
+function samplePixels(image: HTMLImageElement, documentRef: Document, size = SAMPLE_SIZE): Uint8ClampedArray | undefined {
+  try {
+    const canvas = documentRef.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return undefined;
+    context.drawImage(image, 0, 0, size, size);
+    return context.getImageData(0, 0, size, size).data;
+  } catch {
+    return undefined;
+  }
+}
+
+function markLogo(image: HTMLImageElement): void {
+  image.classList.add('is-logo');
+  image.closest('.cx-media')?.classList.add('is-logo');
+}
+
+function classifyLoadedImage(image: HTMLImageElement, documentRef: Document): void {
+  if (image.dataset.imageKind || !image.naturalWidth) return;
+  const dimensions = { width: image.naturalWidth, height: image.naturalHeight };
+  const decide = (pixels?: ArrayLike<number>) => {
+    const kind = classifyCardImage(dimensions, pixels);
+    image.dataset.imageKind = kind;
+    if (kind === 'logo') markLogo(image);
+  };
+  // A file named as a logo ("fabletics-logo.png") is one, whatever its pixels.
+  if (LOGO_FILE_NAME.test(image.currentSrc || image.src)) {
+    image.dataset.imageKind = 'logo';
+    return markLogo(image);
+  }
+  if (classifyCardImage(dimensions) === 'logo') return decide();
+  const pixels = samplePixels(image, documentRef);
+  if (pixels) return decide(pixels);
+  // A cross-origin image cannot be read from the page: try a CORS copy; without CORS it stays a cover photo.
+  const view = documentRef.defaultView;
+  if (!view?.Image) return decide();
+  image.dataset.imageKind = 'pending';
+  const probe = new view.Image();
+  probe.crossOrigin = 'anonymous';
+  probe.onload = () => { delete image.dataset.imageKind; decide(samplePixels(probe, documentRef)); };
+  probe.onerror = () => { delete image.dataset.imageKind; decide(); };
+  probe.src = image.currentSrc || image.src;
+}
+
+/**
+ * Story images that are logos (very wide, mostly white or with near-white edges) are shown whole (contain) on a
+ * light tinted background with padding instead of cover-cropped. Covers cards rendered later (focused reading):
+ * load events are captured on the scope.
+ */
+export function bindCardImages(scope: HTMLElement, documentRef: Document): void {
+  scope.addEventListener('load', (event) => {
+    const target = event.target;
+    if (target instanceof documentRef.defaultView!.HTMLImageElement && target.classList.contains('cx-image')) classifyLoadedImage(target, documentRef);
+  }, true);
+  for (const image of scope.querySelectorAll<HTMLImageElement>('img.cx-image')) if (image.complete) classifyLoadedImage(image, documentRef);
+}
+
 /** The focused-reading panel: a bottom sheet on phones, a side panel on desktop. Its body is [data-theme-results]. */
 export function focusPanelMarkup(): string {
   return `<div class="cx-backdrop" data-focus-backdrop hidden></div><div class="cx-panel" data-focus-panel role="dialog" aria-modal="true" aria-labelledby="cx-panel-title" hidden><div class="cx-panel-head"><div><p class="section-kicker">Focused reading</p><h2 class="theme-results-heading" id="cx-panel-title" tabindex="-1">Stories</h2></div><button class="cx-close" type="button" data-focus-close aria-label="Close focused reading"><span aria-hidden="true">×</span></button></div><div class="cx-panel-body theme-results" data-theme-results aria-live="polite" aria-busy="false"></div></div>`;
@@ -203,7 +296,7 @@ export function focusHeading(theme: string): string {
 
 /** Panel contents: "In your briefing" first (no repeated "why"), then "More on this theme". */
 export function focusResultsMarkup(report: ReportRecord, briefing: ReportRecommendation[], archive: ReportRecommendation[], context: CardContext): string {
-  const intro = `<p class="theme-results-subheading">Selected for your role as ${escapeHtml(displayTitle(report.jobTitle))}</p>`;
+  const intro = `<p class="theme-results-subheading">Selected for your role as ${escapeHtml(displayRoleTitle(report.jobTitle))}</p>`;
   if (!briefing.length && !archive.length) return `${intro}<p class="theme-results-status">No strong stories were found for this theme in the current coverage.</p>`;
   const list = (items: ReportRecommendation[], showWhy: (item: ReportRecommendation) => boolean, themeMatch: boolean) => `<div class="cx-focus-list">${items.map((item) => cardMarkup(item, context, { compact: true, showWhy: showWhy(item), themeMatch })).join('')}</div>`;
   // Briefing stories keep their report % and pill; archive results carry the theme search's own % as "Theme match".
@@ -293,6 +386,7 @@ export function cardsStyle(): string {
 .cx-card{position:relative;display:grid;grid-template-rows:auto auto 1fr;grid-template-areas:"media" "head" "body";min-width:0;overflow:hidden;border:1px solid rgba(20,30,60,.1);border-radius:18px;background:#fff;box-shadow:0 8px 24px rgba(21,26,58,.05)}
 .cx-card .cx-media{grid-area:media;position:relative;min-width:0;overflow:hidden;aspect-ratio:16/9;background:#eef1f6;container-type:inline-size}
 .cx-card .cx-image{display:block;width:100%;height:100%;object-fit:cover}
+.cx-card .cx-media.is-logo{background:#f4f6fa}.cx-card .cx-image.is-logo{box-sizing:border-box;padding:clamp(14px,8%,40px);object-fit:contain}
 /* Typographic panel for stories without an image. */
 .cx-type{--tint:#10203f;position:relative;isolation:isolate;display:flex;flex-direction:column;justify-content:space-between;gap:12px;width:100%;height:100%;padding:clamp(16px,5.5cqi,30px);overflow:hidden;color:#fff;background:linear-gradient(155deg,color-mix(in srgb,var(--brand) 30%,var(--tint)) 0%,color-mix(in srgb,var(--brand) 16%,var(--tint)) 48%,color-mix(in srgb,var(--tint) 62%,#05060c) 100%)}
 .cx-type::before{content:"";position:absolute;inset:0;z-index:-1;background-image:radial-gradient(rgba(255,255,255,.1) .8px,transparent 1.3px);background-size:11px 11px;-webkit-mask-image:linear-gradient(200deg,#000 0%,transparent 62%);mask-image:linear-gradient(200deg,#000 0%,transparent 62%)}

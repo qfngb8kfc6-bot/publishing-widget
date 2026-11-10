@@ -260,6 +260,17 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
         if ((url.searchParams.get('q') ?? '').length > 500) return jsonError('invalid_query', 400, requestId);
         return withHeaders(await publisherSearchRoute(request), request, manifest, environment, requestId);
       }
+      // "Did you mean Nike?" for the profile forms: a hint only, from the cached catalogue; it never blocks generation.
+      if (url.pathname.match(/^\/api\/publishers\/[^/]+\/company-suggestion$/) && request.method === 'GET') {
+        if (!publisherId || !manifest || registry.get(publisherId)?.manifest?.enabled === false) return jsonError('publisher_not_found', 404, requestId);
+        if (!originAllowed(manifest, request.headers.get('Origin'), environment, hostedOriginPolicy)) return jsonError('origin_not_allowed', 403, requestId);
+        const decision = publisherLimiter.check(requestRateLimitKey(request, 'company-suggestion', publisherId, trustedProxy));
+        if (!decision.allowed) return new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } });
+        const company = url.searchParams.get('company') ?? '';
+        if (company.length > 253) return jsonError('invalid_company', 400, requestId);
+        const suggestion = reportGeneration.companySuggestion(publisherId, company);
+        return withHeaders(Response.json(suggestion ? { suggestion } : {}, { headers: { 'Cache-Control': 'no-store' } }), request, manifest, environment, requestId, hostedOriginPolicy);
+      }
       if (url.pathname === '/api/analytics/events') {
         const decision = analyticsLimiter.check(requestRateLimitKey(request, 'analytics', 'global', trustedProxy));
         if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, undefined, environment, requestId);

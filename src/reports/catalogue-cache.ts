@@ -288,6 +288,11 @@ export class PublisherCatalogueCache {
     return result;
   }
 
+  /** The publisher's cached articles, if any, without loading or refreshing anything. */
+  peek(publisherId: string): readonly NormalizedArticle[] | undefined {
+    return this.entries.get(publisherId)?.articles;
+  }
+
   invalidatePublisher(publisherId: string): void {
     this.entries.get(publisherId)?.index.cancel();
     this.entries.delete(publisherId);

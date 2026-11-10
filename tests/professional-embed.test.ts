@@ -31,7 +31,7 @@ describe('professional embed mode', () => {
     widget.openWidget();
     const form = widget.shadowRoot?.querySelector<HTMLFormElement>('form.briefing-bar');
     if (!form) throw new Error('briefing bar not rendered');
-    const mainChildren = [...form.children].filter((element) => !element.matches('.profile-error'));
+    const mainChildren = [...form.children].filter((element) => !element.matches('.profile-error, .company-suggestion'));
     expect(mainChildren.map((element) => element.className)).toEqual([
       'briefing-label',
       'briefing-field briefing-field--company',

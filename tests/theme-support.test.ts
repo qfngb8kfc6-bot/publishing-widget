@@ -5,7 +5,7 @@ import { validateReportContent } from '../src/ai/validation';
 import { buildProfessionalProfile } from '../src/core';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import { MemoryPublisherStore } from '../src/publishers/store';
-import { articleSupportsTheme, findReportTheme, reportThemes, themeDisplayTitle, themeInlineText, themeSupport, themeSupportingRecommendations } from '../src/reports/themes';
+import { articleSupportsTheme, dropDeniedThemes, findReportTheme, themeLineDeniesCoverage, reportThemes, themeDisplayTitle, themeInlineText, themeSupport, themeSupportingRecommendations } from '../src/reports/themes';
 import type { ReportRecommendation, ReportRecord } from '../src/reports';
 import { createProductionApp } from '../src/server/production';
 import { company } from './ranking-fixtures';
@@ -100,7 +100,7 @@ const stories: Array<[string, string]> = [
 ];
 const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>SGI</title>${stories.map(([title, description], index) => `<item><title>${title}</title><link>https://www.sgieurope.com/news/t-${index}/4100${index}.article</link><guid>https://www.sgieurope.com/news/t-${index}/4100${index}.article</guid><description>${description}</description><pubDate>Mon, 0${index + 1} Nov 2026 10:00:00 GMT</pubDate></item>`).join('')}</channel></rss>`;
 
-function app(retryRestates: boolean) {
+function app(retryRestates: boolean, denyWearables = false) {
   const logs: Array<{ message: string; fields: Record<string, unknown> }> = [];
   const contentCalls: string[] = [];
   const instance = createProductionApp({
@@ -120,7 +120,7 @@ function app(retryRestates: boolean) {
       const alias = (prefix: string) => articles.find((item) => item.title.startsWith(prefix))?.id;
       if (system.includes('Do not write explanations')) {
         contentCalls.push('S');
-        return reply({ summary: 'Peloton and Fitbit both moved coaching onto their devices; watch subscription prices.', citedArticleIds: [alias('Peloton'), alias('Fitbit')], themeDescriptions: (payload.themes as string[]).map((theme) => ({ theme, description: theme === 'connected fitness' ? 'Peloton and Fitbit put AI coaching on their devices.' : 'Garmin grew wearables revenue 20%.', articleIds: theme === 'connected fitness' ? [alias('Peloton'), alias('Fitbit')] : [alias('Garmin')] })) });
+        return reply({ summary: 'Peloton and Fitbit both moved coaching onto their devices; watch subscription prices.', citedArticleIds: [alias('Peloton'), alias('Fitbit')], themeDescriptions: (payload.themes as string[]).map((theme) => ({ theme, description: theme === 'connected fitness' ? 'Peloton and Fitbit put AI coaching on their devices.' : denyWearables ? 'No supplied article directly addresses wearables.' : 'Garmin grew wearables revenue 20%.', articleIds: theme === 'connected fitness' ? [alias('Peloton'), alias('Fitbit')] : [alias('Garmin')] })) });
       }
       const retry = system.includes('RESTATED:');
       contentCalls.push(retry ? `R:${articles.length}` : 'E');
@@ -183,5 +183,55 @@ describe('themes and explanations through the report pipeline', () => {
     expect(target.logs.find((entry) => entry.message === 'explanation_fallback' && entry.fields.articleId === fitbit.articleId)?.fields).toMatchObject({ rejectReason: 'restated' });
     // No second regeneration.
     expect(target.contentCalls.filter((call) => call.startsWith('R'))).toHaveLength(1);
+  });
+
+  it('drops a theme whose AI line says no story covers it, even when text matching found support, and logs theme_unsupported_dropped', async () => {
+    const target = app(false, true);
+    const report = await target.generate();
+    expect(report.professionalProfile.themes).toContain('wearables');
+    expect(report.professionalProfile.themeArticleIds?.wearables).toBeUndefined();
+    expect(report.themeDescriptions?.wearables).toBeUndefined();
+    expect(reportThemes(report)).not.toContain('wearables');
+    expect(reportThemes(report)).toContain('connected fitness');
+    const dropped = target.logs.filter((entry) => entry.message === 'theme_unsupported_dropped');
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].fields).toMatchObject({ removedCount: 1 });
+    expect(JSON.stringify(dropped)).not.toMatch(/No supplied article/);
+    // Without the denial the theme keeps its card.
+    const normal = await app(false).generate();
+    expect(reportThemes(normal)).toContain('wearables');
+  });
+});
+
+describe('theme lines that say no story covers the theme', () => {
+  it('recognises denials and leaves ordinary theme lines alone', () => {
+    for (const line of [
+      'No supplied article directly addresses regulation.',
+      'None of the stories cover regulation.',
+      'No articles specifically discuss tariffs here.',
+      'The supplied articles do not mention regulation.',
+      'These stories don’t directly address ESG reporting.',
+      'Regulation is not directly covered in the supplied articles.',
+      'No direct coverage of regulation in this briefing.',
+    ]) expect(themeLineDeniesCoverage(line), line).toBe(true);
+    for (const line of [
+      'Decathlon and Intersport both face new EU packaging rules from 2027.',
+      'No retailer has yet matched Nike’s DTC margins, the stories show.',
+      'Stores reopen in Nuremberg as Decathlon expands.',
+      'Brands with no stores in Asia rely on wholesale partners.',
+      undefined,
+    ]) expect(themeLineDeniesCoverage(line), String(line)).toBe(false);
+  });
+
+  it('removes denied themes from the support map and the lines', () => {
+    const result = dropDeniedThemes(['regulation', 'stores'], { regulation: ['a'], stores: ['b'] }, { regulation: 'No supplied article directly addresses regulation.', stores: 'Decathlon opened two stores.' });
+    expect(result).toEqual({ support: { stores: ['b'] }, descriptions: { stores: 'Decathlon opened two stores.' }, dropped: ['regulation'] });
+    expect(dropDeniedThemes(['stores'], { stores: ['b'] }, undefined)).toEqual({ support: { stores: ['b'] }, dropped: [] });
+  });
+
+  it('hides a stored theme whose line denies coverage on older reports', () => {
+    const profile = { ...buildProfessionalProfile(company('ldsystems.uk', 'LD Systems', 'software', []), 'CEO'), themes: ['stores', 'regulation'], themeArticleIds: { stores: ['fitbit'], regulation: ['fitbit'] } };
+    const report = { professionalProfile: profile, recommendations: [rec('fitbit', 'Fitbit', 'Fitbit.', 50, 1)], themeDescriptions: { regulation: 'No supplied article directly addresses regulation.' } } as unknown as ReportRecord;
+    expect(reportThemes(report)).toEqual(['stores']);
   });
 });

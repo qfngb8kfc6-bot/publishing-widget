@@ -137,6 +137,21 @@ const RESTATEMENT_STOP_WORDS = new Set([...STOP_WORDS, 'the', 'and', 'for', 'its
  * more than five consecutive words with the headline or excerpt, or nearly all its content words come from them.
  * A reader-first explanation reuses a company or a number, not the story's own sentence.
  */
+/**
+ * Wording that makes the story's subject a competitor: singular "competitor"/"rival" ("a major competitor",
+ * "the rival's stores") or "competitive threat". Plural "rivals"/"competitors" is left alone: "ahead of rivals"
+ * frames the reader's company correctly.
+ */
+const COMPETITOR_WORDING = /\b(?:competitor|rival)(?:['’]s)?\b|\bcompetitive threats?\b/i;
+
+/**
+ * True when an explanation for an own-company story frames the reader's company as a competitor or rival
+ * ("investment from a major competitor. Decathlon is opening..." when the reader works at Decathlon).
+ */
+export function ownCompanyMisframed(explanation: string): boolean {
+  return COMPETITOR_WORDING.test(explanation);
+}
+
 export function explanationRestatement(explanation: string, article: { title: string; description?: string }): 'consecutive_words' | 'token_overlap' | undefined {
   const text = words(explanation);
   const sources = [words(article.title), words(article.description ?? '')];
