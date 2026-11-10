@@ -2,6 +2,7 @@ import { ConsoleAnalytics, createEvent, createSessionId, DEFAULT_THEME, type Ana
 import type { AIRecommendationLayer } from '../ai/types';
 import { widgetStyles } from './styles';
 import { generationInputMessage } from './messages';
+import { companySuggestionUrl, CompanySuggestionLookup, suggestionMarkup } from './company-suggestion';
 
 type WidgetState = 'intro' | 'error';
 
@@ -56,6 +57,16 @@ export class ContentDiscoveryWidget extends HTMLElement {
   private readonly handlePageShow = (event: PageTransitionEvent) => { if (event.persisted) this.resetAfterHandOff(); };
   private readonly handleVisibility = () => { if (document.visibilityState === 'visible' && this.starting && !this.requestInFlight) this.resetAfterHandOff(); };
   private inputError = '';
+  /** "Did you mean Nike?" for the typed company: a hint only, never a reason to hold back the submit. */
+  private companySuggestion?: string;
+  private readonly suggestionLookup = new CompanySuggestionLookup((company) => {
+    const publisherId = this.dataset.publisher ?? 'demo';
+    try { return companySuggestionUrl(new URL(this.dataset.generationEndpoint ?? '/api/reports/generate', window.location.href), publisherId, company); } catch { return undefined; }
+  }, (company, suggestion) => {
+    if (this.companyUrl.trim() !== company || this.companySuggestion === suggestion) return;
+    this.companySuggestion = suggestion;
+    this.updateSuggestionHint();
+  });
   private lastScrollY = 0;
   private scrollSettleTimer?: number;
   /** Mobile only: the minimised pill steps aside while the reader scrolls down so it never sits on publisher CTAs. */
@@ -94,7 +105,11 @@ export class ContentDiscoveryWidget extends HTMLElement {
       // Typed values survive re-renders (minimise/expand, Back) without a submit.
       this.root.addEventListener('input', (event) => {
         const field = (event.target as HTMLElement).closest<HTMLInputElement>('[data-profile-field]');
-        if (field?.dataset.profileField === 'companyUrl') this.companyUrl = field.value;
+        if (field?.dataset.profileField === 'companyUrl') {
+          this.companyUrl = field.value;
+          if (this.companySuggestion) { this.companySuggestion = undefined; this.updateSuggestionHint(); }
+          this.suggestionLookup.update(field.value);
+        }
         if (field?.dataset.profileField === 'jobTitle') this.jobTitle = field.value;
       });
       this.root.addEventListener('submit', (event) => {
@@ -118,6 +133,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
     window.removeEventListener('scroll', this.handleScroll);
     window.clearTimeout(this.scrollSettleTimer);
     document.removeEventListener('visibilitychange', this.handleVisibility);
+    this.suggestionLookup.cancel();
   }
 
   /** Returns a widget left in "Starting your briefing…" (or its error state) to the editable form. */
@@ -189,6 +205,16 @@ export class ContentDiscoveryWidget extends HTMLElement {
 
   private handleClick(event: Event): void {
     const target = event.target as HTMLElement;
+    const suggested = target.closest<HTMLElement>('[data-use-company-suggestion]')?.dataset.useCompanySuggestion;
+    if (suggested) {
+      this.companyUrl = suggested;
+      this.companySuggestion = undefined;
+      this.suggestionLookup.cancel();
+      const field = this.root.querySelector<HTMLInputElement>('[data-profile-field="companyUrl"]');
+      if (field) { field.value = suggested; field.focus(); }
+      this.updateSuggestionHint();
+      return;
+    }
     const action = target.closest<HTMLElement>('[data-action]')?.dataset.action;
     if (action === 'close') this.close();
     if (action === 'expand') this.setMinimised(false);
@@ -283,7 +309,14 @@ export class ContentDiscoveryWidget extends HTMLElement {
     if (this.state === 'error') return `${minimise}<div class="error-state" id="ld-briefing-panel" role="alert"><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="briefing-submit" data-action="retry">Try again</button></div>`;
     return `${minimise}<form class="briefing-bar" id="ld-briefing-panel" data-profile-form role="dialog" aria-modal="true" aria-label="Build your professional briefing"><span class="briefing-label">I work at</span><label class="briefing-field briefing-field--company"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5.5h9V20M14 9h5v11M8 8.5h2M8 12h2M8 15.5h2M16.5 12h1M16.5 15.5h1M3 20h18" /></svg><input type="text" inputmode="text" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="Nike or nike.com" autocomplete="organization" spellcheck="false" data-focus-start aria-label="Company or website"${this.inputError ? ' aria-invalid="true" aria-describedby="profile-error"' : ''}${this.starting ? ' readonly' : ''}></label><span class="briefing-label">as a</span><label class="briefing-field briefing-field--role"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16v11H4zM8 8.5V6h8v2.5M8 13h8M12 13v2" /></svg><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role"${this.starting ? ' readonly' : ''}></label><span class="briefing-arrow" aria-hidden="true">→</span>${this.starting
       ? '<button class="briefing-submit" type="submit" data-action="generate" aria-busy="true" aria-disabled="true"><span class="briefing-spinner" aria-hidden="true"></span>Starting your briefing…</button><p class="ss-visually-hidden" role="status" data-starting-status>Starting your briefing…</p>'
-      : '<button class="briefing-submit" type="submit" data-action="generate"><span class="briefing-spark" aria-hidden="true">✦</span>Build my briefing</button>'}<p class="profile-error" id="profile-error" data-profile-error role="alert">${escapeHtml(this.inputError)}</p></form>`;
+      : '<button class="briefing-submit" type="submit" data-action="generate"><span class="briefing-spark" aria-hidden="true">✦</span>Build my briefing</button>'}<p class="profile-error" id="profile-error" data-profile-error role="alert">${escapeHtml(this.inputError)}</p><p class="company-suggestion" data-company-suggestion aria-live="polite">${this.companySuggestion && !this.starting ? suggestionMarkup(this.companySuggestion, escapeHtml) : ''}</p></form>`;
+  }
+
+  /** Updates the hint in place, so typing keeps focus and caret. */
+  private updateSuggestionHint(): void {
+    const hint = this.root.querySelector<HTMLElement>('[data-company-suggestion]');
+    if (!hint) return;
+    hint.innerHTML = this.companySuggestion && !this.starting ? suggestionMarkup(this.companySuggestion, escapeHtml) : '';
   }
 
   private trapFocus(event: KeyboardEvent): void {

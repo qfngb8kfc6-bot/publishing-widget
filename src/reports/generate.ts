@@ -9,6 +9,7 @@ import type { ReportRecord, ReportRecommendation, GenerateReportInput, ReportPer
 import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
+import { buildCompanyNameIndex, suggestCompany, type CompanyNameIndex } from './company-suggestion';
 import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, consolidateThemes, dropDeniedThemes, profileForTheme, selectReportThemes, themeSupport } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
@@ -381,6 +382,26 @@ export class ReportGenerationService {
    * Resolves the company input (name or URL) with the same failure annotation and logging as generate. Asynchronous
    * generation calls it before creating the job, so an unknown company is reported to the widget, not the loader.
    */
+  /** Company-name indexes per cached catalogue (dropped with it when the catalogue is refreshed). */
+  private readonly companyNameIndexes = new WeakMap<readonly NormalizedArticle[], CompanyNameIndex>();
+
+  /**
+   * "Did you mean Nike?": a frequent catalogue company one edit from a typed company name the catalogue rarely
+   * names. Uses the cached catalogue only (never loads one) and never blocks generation. Names only, not URLs.
+   */
+  companySuggestion(publisherId: string, typed: string): string | undefined {
+    const value = typed.replace(/\s+/g, ' ').trim();
+    if (!value || classifyCompanyInput(value) !== 'company_name') return undefined;
+    const articles = this.catalogueCache.peek(publisherId);
+    if (!articles?.length) return undefined;
+    let index = this.companyNameIndexes.get(articles);
+    if (!index) {
+      index = buildCompanyNameIndex(articles);
+      this.companyNameIndexes.set(articles, index);
+    }
+    return suggestCompany(index, value);
+  }
+
   async resolveCompanyInput(input: Pick<GenerateReportInput, 'publisherId' | 'requestId' | 'companyUrl'>): Promise<ResolvedCompanyInput> {
     const inputType = classifyCompanyInput(input.companyUrl);
     try {
