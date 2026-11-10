@@ -74,9 +74,34 @@ describe('report themes', () => {
     expect(themes.map((theme) => candidates.indexOf(theme))).toEqual([...themes.map((theme) => candidates.indexOf(theme))].sort((a, b) => a - b));
   });
 
-  it('keeps dedicated roles whose themes are already distinct unchanged', () => {
+  it('treats procurement, suppliers, vendors, sourcing and purchasing as one family', () => {
     const profile = buildProfessionalProfile(company('nike.com', 'Nike', 'sporting goods', []), 'Head of Procurement');
-    expect(themesFor(profile)).toEqual(['procurement', 'suppliers', 'sourcing', 'vendors']);
+    // Before: ['procurement', 'suppliers', 'sourcing', 'vendors']. With no stories to tell them apart, one card;
+    // "supply chains" is not read as "suppliers" and stays its own theme.
+    expect(themesFor(profile)).toEqual(['procurement', 'supply chains', 'materials', 'lifecycle']);
+  });
+
+  it('merges "suppliers" and "vendors" cards when 75% or more of their supporting stories are shared, subset or not', () => {
+    const ids = (letters: string) => letters.split('');
+    // 6 of 8 shared, neither inside the other. Before: both cards shown.
+    expect(consolidateThemes(['procurement', 'suppliers', 'vendors'], { procurement: ['p'], suppliers: ids('abcdefg'), vendors: ids('bcdefgh') }, 8).themes).toEqual(['procurement', 'suppliers']);
+    // Clearly different stories (2 of 6 shared): both stay.
+    expect(consolidateThemes(['suppliers', 'vendors'], { suppliers: ids('abcd'), vendors: ids('cdef') }, 6).themes).toEqual(['suppliers', 'vendors']);
+    // Other themes keep the existing subset rule: overlapping but not nested stays two cards.
+    expect(consolidateThemes(['retail', 'omnichannel'], { retail: ids('abcdefg'), omnichannel: ids('bcdefgh') }, 8).themes).toEqual(['retail', 'omnichannel']);
+  });
+
+  it('shows "suppliers" and "vendors" both only when their own stories clearly differ (<75% overlap)', () => {
+    const story = (title: string) => ({ title, description: '' });
+    const procurementStory = story('Procurement teams adopt e-auctions');
+    const same = [procurementStory, story('Suppliers and vendors face audits'), story('Brands cut suppliers and vendors'), story('Vendors and suppliers hit by tariffs')];
+    const sameThemes = selectReportThemes(buildProfessionalProfile(company('nike.com', 'Nike', 'sporting goods', []), 'Head of Procurement'), same);
+    expect(sameThemes.slice(0, 2)).toEqual(['procurement', 'suppliers']);
+    expect(sameThemes).not.toContain('vendors');
+    const different = [procurementStory, story('Nike cuts suppliers in Vietnam'), story('Footwear suppliers warn of order cuts'), story('Brands review software vendors'), story('Vendors of RFID tags consolidate')];
+    const themes = selectReportThemes(buildProfessionalProfile(company('nike.com', 'Nike', 'sporting goods', []), 'Head of Procurement'), different);
+    expect(themes).toContain('suppliers');
+    expect(themes).toContain('vendors');
   });
 });
 

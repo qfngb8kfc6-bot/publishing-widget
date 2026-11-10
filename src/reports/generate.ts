@@ -13,7 +13,7 @@ import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, consolidateThemes, p
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
-import { articleRelationship, limitOwnCompanyShare, OWN_COMPANY_MAX_SHARE, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
+import { articleRelationship, limitOwnCompanyShare, MIN_MARKET_CONTEXT_STORIES, namesOwnCompany, orderMarketContext, OWN_COMPANY_MAX_SHARE, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
 import { collapseNearDuplicates } from './near-duplicates';
 import { explanationQualityWarnings, explanationRestatement, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
 import { angleForArticle, normalizeAngle } from '../ai/angles';
@@ -281,6 +281,39 @@ function removeWeakFits(ranked: RankedCandidate[], weakIds: ReadonlySet<string>)
   const retainedWeak = weak.slice(0, Math.max(0, MIN_REPORT_RECOMMENDATIONS - strong.length));
   const retained = new Set([...strong, ...retainedWeak]);
   return { kept: ranked.filter((item) => retained.has(item)), removed: weak.filter((item) => !retained.has(item)), lowerConfidenceIds: new Set(retainedWeak.map((item) => item.article.id)) };
+}
+
+/**
+ * Lowest score a market-context story may have: the report threshold minus 15 points. (There is no separate
+ * score-based weak-fit floor: weak fits are kept by count, MIN_REPORT_RECOMMENDATIONS, not by score.) Used only
+ * to guarantee a report some stories beyond the reader's own company; the report threshold itself is unchanged.
+ */
+export const RELAXED_MARKET_FLOOR = RELEVANCE_THRESHOLDS.candidate - 15;
+
+/** Candidates kept for the market-context guarantee: enough for the needed stories and their spares. */
+const RELAXED_POOL_LIMIT = 40;
+
+/**
+ * Candidates outside the ranked report pool scoring at least RELAXED_MARKET_FLOOR, best first: deterministic
+ * candidates the rerank dropped (with their blended score; never keep:false) or that were past its limit, then
+ * below-threshold candidates with some direct or adjacent evidence. Near-duplicates of ranked stories leave.
+ */
+function relaxedMarketPool<T extends RankedCandidate & { result: RelevanceResult }>(allScored: readonly T[], deterministicRanked: readonly RankedCandidate[], ranked: readonly RankedCandidate[], keepFalseIds: ReadonlySet<string>, blendedScores: ReadonlyMap<string, number>): RankedCandidate[] {
+  const rankedIds = new Set(ranked.map((item) => item.article.id));
+  const dropped = deterministicRanked
+    .filter((item) => !rankedIds.has(item.article.id) && !keepFalseIds.has(item.article.id))
+    .map((item) => { const blended = blendedScores.get(item.article.id); return blended === undefined ? item : { ...item, finalScore: blended }; });
+  const below = allScored
+    .filter((item) => !passesRelevanceThreshold(item.result) && (item.result.relevanceType === 'direct' || item.result.relevanceType === 'adjacent' || item.result.relevanceType === 'weak'))
+    .map(({ result, ...item }): RankedCandidate => ({ ...item, relevanceType: result.relevanceType === 'direct' ? 'direct' : 'adjacent' }));
+  const candidates = [...dropped, ...below]
+    .filter((item) => item.finalScore >= RELAXED_MARKET_FLOOR)
+    .sort((left, right) => right.finalScore - left.finalScore)
+    .slice(0, RELAXED_POOL_LIMIT * 2);
+  // Ranked stories first, so a candidate that repeats one of them (either way round) is the one that leaves.
+  const { collapsed } = collapseNearDuplicates([...ranked, ...candidates], ranked.length + candidates.length);
+  const duplicateIds = new Set(collapsed.flatMap((pair) => (rankedIds.has(pair.keptId) ? [pair.removedId] : rankedIds.has(pair.removedId) ? [pair.keptId] : [pair.removedId])));
+  return candidates.filter((item) => !duplicateIds.has(item.article.id)).slice(0, RELAXED_POOL_LIMIT);
 }
 
 /** Outcome of an optional AI stage: a validated value, or the reason it fell back. */
@@ -650,7 +683,7 @@ export class ReportGenerationService {
     }
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string, articlesSearched?: number) => void, fullPool = false): Promise<{ ranked: RankedCandidate[]; finalLimit: number; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string, articlesSearched?: number) => void, fullPool = false): Promise<{ ranked: RankedCandidate[]; relaxedPool: RankedCandidate[]; finalLimit: number; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     const runtimeInfo = this.runtimeDiagnostics?.(publisherId);
@@ -789,11 +822,12 @@ export class ReportGenerationService {
     const finalLimit = Math.min(definition.config.results.maximumRecommendations, definition.config.content.resultLimit);
     const aiAvailable = this.canUseAI(definition);
     const deterministicStartedAt = clockMs();
-    const scored: RankedCandidate[] = preselected
+    const allScored = preselected
       .map((article) => {
         const result = preselectionScores.get(article) ?? scoreArticle(article, catalogueIndex?.professionalFields(article));
         return { article, relevanceSignals: result.relevanceSignals, deterministicScore: result.score, semanticSignals: [], finalScore: result.score, rankingMode: 'deterministic' as const, relevanceType: result.relevanceType === 'adjacent' ? 'adjacent' as const : 'direct' as const, confidence: result.confidence, directMatches: result.directMatches ?? [], adjacentMatches: result.adjacentMatches ?? [], scoreComponents: result.scoreComponents, result };
-      })
+      });
+    const scored: RankedCandidate[] = allScored
       .filter((item) => passesRelevanceThreshold(item.result))
       .sort((a, b) => (a.relevanceType === b.relevanceType
         ? b.deterministicScore - a.deterministicScore
@@ -814,6 +848,8 @@ export class ReportGenerationService {
     let ranked = limitRanked(deterministicRanked);
     let aiRerankUsed = false;
     let aiFilteredCount = 0;
+    const rerankKeepFalseIds = new Set<string>();
+    const rerankBlendedScores = new Map<string, number>();
     const aiStartedAt = clockMs();
     if (aiAvailable && deterministicRanked.length > 0) {
       try {
@@ -846,10 +882,10 @@ export class ReportGenerationService {
           const semantic = semanticById.get(result.article.id);
           if (!semantic) { rerankDrops.push({ articleId: result.article.id, reason: 'not_returned' }); return []; }
           const semanticScore = semantic.semanticScore ?? result.deterministicScore;
-          if (semantic.keep === false) { rerankDrops.push({ articleId: result.article.id, reason: 'keep_false' }); return []; }
+          if (semantic.keep === false) { rerankDrops.push({ articleId: result.article.id, reason: 'keep_false' }); rerankKeepFalseIds.add(result.article.id); return []; }
           const relevanceType = result.relevanceType === 'adjacent' ? 'adjacent' as const : semantic.relevanceType ?? result.relevanceType;
           const finalScore = calibrateRelevanceScore(combineHybridScore(result.deterministicScore, semanticScore, { deterministic: deterministicWeight, semantic: semanticWeight }), relevanceType);
-          if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) { rerankDrops.push({ articleId: result.article.id, reason: 'below_threshold' }); return []; }
+          if (!passesRelevanceThreshold({ score: finalScore, relevanceSignals: result.relevanceSignals, relevanceType })) { rerankDrops.push({ articleId: result.article.id, reason: 'below_threshold' }); rerankBlendedScores.set(result.article.id, finalScore); return []; }
           return [{ ...result, semanticScore, semanticSignals: semantic.signals ?? [], finalScore, rankingMode: 'hybrid' as const, ...(semantic.weak ? { weakFit: true } : {}), relevanceType, confidence: semantic.confidence ?? result.confidence, index }];
         });
         const aiRanked = aiRankedCandidates
@@ -875,11 +911,15 @@ export class ReportGenerationService {
       } catch { /* deterministic ranking remains authoritative */ }
     }
     const aiRerankMs = clockMs() - aiStartedAt;
+    // Main report only: other candidates at or above the relaxed market-context floor, best first, for the
+    // market-context guarantee (never the report's own places). Rerank drops count with their blended score;
+    // a story the reranker marked keep:false is left out, and near-duplicates of ranked stories are removed.
+    const relaxedPool = fullPool ? relaxedMarketPool(allScored, deterministicRanked, ranked, rerankKeepFalseIds, rerankBlendedScores) : [];
     onStage?.('ranking_complete');
     this.logIbi({ publisherId, requestId }, 'ibi_generation_ranking_output', { stage: 'ranking', deterministicEligible: deterministicRanked.length, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, finalRecommendations: ranked.length });
     const finalFormattingStartedAt = clockMs();
     const timings = { ...catalogueDiagnostics, normalizationMs: catalogueDiagnostics.normalizationMs ?? normalizationMs, cataloguePreparationMs: catalogueDiagnostics.cataloguePreparationMs ?? (clockMs() - catalogueLoadStartedAt), catalogueCacheLookupMs, catalogueSelectionMs, currentReportExclusionMs, preselectionMs, deterministicRankingMs, aiRerankMs, finalFormattingMs: clockMs() - finalFormattingStartedAt };
-    return { ranked, finalLimit, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
+    return { ranked, relaxedPool, finalLimit, retrievedCount: candidates.length, normalizedCount: unique.length, normalizedArticleCount, preselectionInputCount, preselectionOutputCount, rawCandidateCount: candidates.length, normalizedCandidateCount: normalizedCandidates.length, excludedArticleCount, uniqueCandidateCount: unique.length, thresholdInputCount: preselected.length, deterministicEligible: deterministicRanked.length, aiEligibleCount, aiInputCount: aiEligibleCount, aiFilteredCount, aiRerankSurvivors: aiRerankUsed ? ranked.length : 0, aiRerankUsed, timings };
   }
 
   /** Leads and privacy for the given articles, in one query. Empty when not enriched, slow or failing. */
@@ -1100,6 +1140,24 @@ export class ReportGenerationService {
     // call), so a restored story has its own AI "why" like the others; unused explanations are discarded.
     const reserves = ownCompanyCap.heldBack.filter((item) => !rerankWeakIds.has(item.article.id)).slice(0, THIN_REPORT_STORIES - MIN_REPORT_RECOMMENDATIONS);
     const reserveIds = new Set(reserves.map((item) => item.article.id));
+    // Market context: a briefing always has at least two stories not about the reader's own company when any
+    // score at or above the relaxed floor. When the report's places hold fewer, the best candidates (competitors,
+    // then same sector, then by score) ride in the explanation batches like the reserves, with up to as many
+    // spares, and join after the content call only with an accepted AI "why". With just enough planned beside
+    // own-company stories, two spares ride along in case the content call finds a planned one weak.
+    const namesOwn = (item: RankedCandidate) => namesOwnCompany(item.article, profile);
+    const plannedMarket = contentRanked.filter((item) => !namesOwn(item)).length;
+    const marketNeededBefore = Math.max(0, MIN_MARKET_CONTEXT_STORIES - plannedMarket);
+    const marketSpares = marketNeededBefore ? marketNeededBefore * 2 : plannedMarket === MIN_MARKET_CONTEXT_STORIES && plannedMarket < contentRanked.length ? MIN_MARKET_CONTEXT_STORIES : 0;
+    const plannedIds = new Set([...contentRanked, ...reserves].map((item) => item.article.id));
+    // Candidates: stories that passed everything but found no place first, then rerank weak fits, then the
+    // relaxed pool; only stories that do not name the reader's company.
+    const marketCandidates = marketSpares
+      ? orderMarketContext([...afterRerank.kept, ...afterRerank.removed, ...ranking.relaxedPool].filter((item) => !plannedIds.has(item.article.id) && !namesOwn(item)), profile).slice(0, marketSpares)
+      : [];
+    const marketCandidateIds = new Set(marketCandidates.map((item) => item.article.id));
+    const extraIds = new Set([...reserveIds, ...marketCandidateIds]);
+    const explainedOnly = [...reserves, ...marketCandidates];
     const contentRecommendation = (item: RankedCandidate) => ({
       article: item.article,
       deterministicExplanation: factualLine(item.article),
@@ -1110,7 +1168,7 @@ export class ReportGenerationService {
       relationship: articleRelationship(item.article, profile),
     });
     const deterministicRecommendations = contentRanked.map(contentRecommendation);
-    const reserveRecommendations = reserves.map(contentRecommendation);
+    const reserveRecommendations = explainedOnly.map(contentRecommendation);
     const themes = selectReportThemes(profile, contentRanked.map((item) => item.article));
     // Thin coverage for this reader (best match below a strong fit, or fewer than three direct matches): the summary
     // call is told so and writes a short, hedged note instead of building a pattern out of weak matches.
@@ -1132,7 +1190,7 @@ export class ReportGenerationService {
     let summaryFallbackReason: string | undefined = !aiAvailable ? 'ai_unavailable' : ranked.length === 0 ? 'no_recommendations' : undefined;
     const aiExplanationStartedAt = clockMs();
     // One query for the selected articles: leads for the AI content call and the subscriberOnly flag.
-    const articleTexts = await this.articleLeads(input.publisherId, [...contentRanked, ...reserves].map((item) => item.article), AI_LEAD_CHARS, input.requestId);
+    const articleTexts = await this.articleLeads(input.publisherId, [...contentRanked, ...explainedOnly].map((item) => item.article), AI_LEAD_CHARS, input.requestId);
     if (aiAvailable && ranked.length > 0) {
       // Parallel calls, each under its own AI time cap and falling back independently: S (summary, cited IDs, theme
       // lines) only affects the summary and theme cards; a failed E batch only affects its own articles.
@@ -1143,7 +1201,7 @@ export class ReportGenerationService {
         return leadExcerpt ? { ...recommendation, leadExcerpt } : recommendation;
       };
       const contentRecommendations = deterministicRecommendations.map(withLead);
-      // Report stories first, reserves last: with SGI's eight places the two reserves add at most one parallel batch.
+      // Report stories first, reserves and market-context candidates last: never more than the batch limit.
       const explainedRecommendations = [...contentRecommendations, ...reserveRecommendations.map(withLead)];
       const parts: Array<{ part: string; request: ReportContentRequest }> = [
         { part: 'S', request: { publisherId: input.publisherId, profile, themes, includeExplanations: false, ...(coverageLimited ? { coverage: 'limited' as const } : {}), recommendations: contentRecommendations } },
@@ -1184,7 +1242,7 @@ export class ReportGenerationService {
           for (const articleId of skipped) notReturnedIds.set(articleId, outcome.part);
           return outcome.value.explanations ?? [];
         });
-        const articleById = new Map([...ranked, ...reserves].map((item) => [item.article.id, item.article]));
+        const articleById = new Map([...ranked, ...explainedOnly].map((item) => [item.article.id, item.article]));
         // An explanation that only retells the headline and excerpt shown above it is weak: regenerate those once
         // from the reader's side; one still restated (or not returned) falls back like any unexplained story.
         const restatedIds = await this.regenerateRestated(input, profile, accepted, explainedRecommendations, articleById, explanationOutcomes);
@@ -1194,7 +1252,7 @@ export class ReportGenerationService {
           explanationById.set(item.articleId, { explanation: item.explanation, angle: article ? angleForArticle(normalizeAngle(item.angle), article) : normalizeAngle(item.angle) });
         }
         aiExplanationUsed = explanationById.size > 0;
-        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map([...ranked, ...reserves].map((item) => {
+        this.logQualityWarnings(input, 'explanation', explanationQualityWarnings(accepted, new Map([...ranked, ...explainedOnly].map((item) => {
           const timing = articleTiming(item.article.publishedAt);
           return [item.article.id, { title: item.article.title, olderYear: timing.older ? timing.published : undefined, sourceText: yearSources.get(item.article.id)?.text }];
         }))));
@@ -1204,7 +1262,7 @@ export class ReportGenerationService {
     const afterContent = removeWeakFits(contentRanked, new Set([...contentWeakIds, ...notReturnedIds.keys()]));
     if (notReturnedIds.size) {
       const removedIds = new Set(afterContent.removed.map((item) => item.article.id));
-      for (const [articleId, part] of notReturnedIds) if (!reserveIds.has(articleId)) this.logger?.info('not_returned_treated_as_weak', { requestId: input.requestId, publisherId: input.publisherId, part, articleId: safeLogText(articleId, 200), operation: removedIds.has(articleId) ? 'removed' : 'kept_lower_confidence' });
+      for (const [articleId, part] of notReturnedIds) if (!extraIds.has(articleId)) this.logger?.info('not_returned_treated_as_weak', { requestId: input.requestId, publisherId: input.publisherId, part, articleId: safeLogText(articleId, 200), operation: removedIds.has(articleId) ? 'removed' : 'kept_lower_confidence' });
     }
     // A report left thin (under five stories) by content weak fits gets the reserves back, best first: they passed
     // the threshold and the rerank. With AI explanations on, only a reserve with an accepted, non-restated AI
@@ -1219,8 +1277,18 @@ export class ReportGenerationService {
     const ownKept = afterContent.kept.filter(isOwn).length;
     const maxRestore = nonOwnEligible >= THIN_REPORT_STORIES ? Math.max(0, Math.floor((OWN_COMPANY_MAX_SHARE * afterContent.kept.length - ownKept) / (1 - OWN_COMPANY_MAX_SHARE) + 1e-9)) : restorable.length;
     const restoredOwn = afterContent.kept.length < THIN_REPORT_STORIES ? restoreHeldBack(afterContent.kept, restorable.slice(0, maxRestore), afterRerank.kept) : { kept: afterContent.kept, restored: [] as RankedCandidate[] };
-    const weakFit = { kept: restoredOwn.kept, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
-    const finalCoverageLimited = coverageLimited || hasLimitedCoverage(weakFit.kept);
+    // Market context first; only then may own-company stories pass 60%. An added story needs an accepted,
+    // non-restated AI explanation (when explanations ran) and must not be a content weak fit.
+    const marketNeeded = Math.max(0, MIN_MARKET_CONTEXT_STORIES - restoredOwn.kept.filter((item) => !namesOwn(item)).length);
+    const marketAdded = marketCandidates.filter((item) => !contentWeakIds.has(item.article.id) && (!explanationsAttempted || explanationById.has(item.article.id))).slice(0, marketNeeded);
+    const withMarket = [...restoredOwn.kept, ...marketAdded];
+    // Over the report's places: the lowest-ranked own-company stories make room for them.
+    let marketDisplaced = 0;
+    for (let index = restoredOwn.kept.length - 1; index >= 0 && withMarket.length > ranking.finalLimit; index -= 1) {
+      if (namesOwn(withMarket[index])) { withMarket.splice(index, 1); marketDisplaced += 1; }
+    }
+    const weakFit = { kept: withMarket, lowerConfidenceIds: new Set([...afterRerank.lowerConfidenceIds, ...afterContent.lowerConfidenceIds]) };
+    const finalCoverageLimited = coverageLimited || hasLimitedCoverage(restoredOwn.kept);
     const coverageNote = finalCoverageLimited ? limitedCoverageNote(definition.manifest?.name ?? definition.config.publisherName, profile, themes) : undefined;
     if (!aiSummaryUsed) generatedSummary = finalCoverageLimited ? limitedCoverageSummary(profile) : reportSummary(profile, weakFit.kept.length);
     if (rerankWeakIds.size || contentWeakIds.size || notReturnedIds.size) this.logger?.info('weak_fit_removed', { requestId: input.requestId, publisherId: input.publisherId, weakFlagged: new Set([...rerankWeakIds, ...contentWeakIds, ...notReturnedIds.keys()]).size, weakFromRerank: rerankWeakIds.size, weakFromContent: contentWeakIds.size, weakRemoved: afterRerank.removed.length + afterContent.removed.length, weakKeptLowerConfidence: weakFit.lowerConfidenceIds.size, finalRecommendationCount: weakFit.kept.length });
@@ -1277,7 +1345,7 @@ export class ReportGenerationService {
     const unsupportedThemes = consolidated.themes.filter((theme) => !themeArticleIds[theme]).length;
     if (unsupportedThemes || consolidated.merged) this.logger?.info('theme_unsupported_removed', { requestId: input.requestId, publisherId: input.publisherId, themeCount: themes.length, removedCount: unsupportedThemes, mergedCount: consolidated.merged });
     const ownCompanyCount = recommendations.filter((recommendation) => articleRelationship(recommendation.article, profile) === 'own_company').length;
-    this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ownCompanyCap.deferred - restoredOwn.restored.length, ownCompanyRestored: restoredOwn.restored.length, nonOwnCompanyEligible: nonOwnEligible, ownCompanyCapExceeded: ownCompanyCount > recommendations.length * OWN_COMPANY_MAX_SHARE });
+    this.logger?.info('own_company_share', { requestId: input.requestId, publisherId: input.publisherId, ownCompanyShare: recommendations.length ? Number((ownCompanyCount / recommendations.length).toFixed(2)) : 0, ownCompanyCount, recommendationCount: recommendations.length, ownCompanyDeferred: ownCompanyCap.deferred - restoredOwn.restored.length + marketDisplaced, ownCompanyRestored: restoredOwn.restored.length, nonOwnCompanyEligible: nonOwnEligible, nonOwnCompanyRelaxed: marketAdded.length, ownCompanyCapExceeded: ownCompanyCount > recommendations.length * OWN_COMPANY_MAX_SHARE });
     const report: ReportRecord = {
       id: reportId(), publisherId: input.publisherId, sessionId: activeSession, companyUrl: normalized.canonicalUrl, companyDomain: normalized.domain, companyName: profile.companyName, jobTitle: profile.jobTitle, professionalProfile: { ...profile, themes: consolidated.themes, themeArticleIds, ...(ranking.normalizedArticleCount > 0 ? { catalogueArticleCount: ranking.normalizedArticleCount } : {}), ...(coverageNote ? { coverage: { limited: true as const, note: coverageNote } } : {}) }, retrievalContext: profile.retrieval, overallMatchScore: displayRelevanceScore(recommendations.length ? recommendations.reduce((sum, item) => sum + item.displayScore, 0) / recommendations.length : 0), generatedSummary, summarySource: aiSummaryUsed ? 'ai' : 'deterministic', summaryFallbackReason: aiSummaryUsed ? undefined : summaryFallbackReason, recommendations, sections: allocation.sections, ...(themeDescriptions ? { themeDescriptions } : {}), generationVersion: GENERATION_VERSION, rankingVersion: RANKING_VERSION, professionalProfileVersion: profile.profileVersion, aiProviderVersion: aiProfileUsed || aiRerankUsed || aiSummaryUsed || aiExplanationUsed ? `${this.ai?.provider.providerName}:${this.ai?.config.model}` : 'deterministic', publisherConfigVersion: definition.manifest?.publisherConfigVersion ?? 'legacy', widgetVersion: WIDGET_VERSION, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };

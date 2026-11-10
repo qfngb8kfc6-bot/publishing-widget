@@ -55,7 +55,13 @@ qfngb8kfc6-bot/publishing-widget.
 5. Content calls in parallel, each ≤ ~350 output tokens under its own 5 s cap and fallback: S (summary +
    citedArticleIds + theme card lines) and E1..En (explanations, ≤4 articles per batch, ≤4 batches; ≤5 calls).
 6. Own-company articles held to ~60% when alternatives pass the threshold; sections; transactional persist;
-   analytics in the background.
+   analytics in the background. Market context: a report always has ≥2 stories not naming the reader's company
+   when any score ≥ `RELAXED_MARKET_FLOOR` (threshold − 15 = 9; report threshold unchanged). Candidates (named
+   competitors, then same sector, then score) ride in the E batches like reserves and join only with an accepted
+   AI "why", displacing the lowest own-company stories; only then may own share pass 60% (`nonOwnCompanyRelaxed`).
+   Own-company story (`isOwnCompanyStory`, `relationship.ts`): the company (entered/resolved name, without legal
+   form, or domain label) is the subject — whole word in the headline (not "Nike supplier…"), or the actor in the
+   excerpt's first sentence (first 5 words, not after "of/for/with…"). Checked before supplier/partner words.
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word
@@ -63,6 +69,11 @@ qfngb8kfc6-bot/publishing-widget.
   Each theme's supporting report stories are stored as `professionalProfile.themeArticleIds` (the S call's
   `themeDescriptions[].articleIds`, else stories naming the theme); themes with none are hidden. Focused reading
   shows those stories first (`briefingRecommendations`, by score), then on-theme archive results.
+  Procurement family (procurement, suppliers, vendors, sourcing, purchasing; exact word forms, so "supply chains"
+  stays separate): a second member is chosen only if its own stories clearly differ, and cards merge when ≥75%
+  of their supporting stories are shared.
+- Card labels (`src/hosted.ts`): only Top developments, Companies to watch, Market moves; other section ids
+  (e.g. the old "More relevant stories") show no label.
 - Explanations that restate the headline/excerpt (>5 consecutive words or ≥70% content-word overlap) are
   regenerated once (part R); still restated → fallback with the "why" box hidden (`explanationRestated`).
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.

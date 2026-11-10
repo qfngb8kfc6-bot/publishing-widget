@@ -45,7 +45,17 @@ const THEME_FAMILIES: string[][] = [
   ['chemicals', 'pfas', 'hazardous substances'],
   // Physical retail: "stores" and "store openings" are one theme card, not two.
   ['stores', 'store openings', 'store opening', 'store closures', 'retail locations', 'physical retail', 'flagship', 'retail footprint'],
+  // Buying from suppliers: "suppliers" and "vendors" are one card unless their own stories clearly differ.
+  ['procurement', 'suppliers', 'supplier', 'vendors', 'vendor', 'sourcing', 'purchasing'],
 ];
+
+/**
+ * Families whose members are matched by exact word (plural or singular) rather than shared prefix, so "supply
+ * chains" is not read as "suppliers", and where a second member may still be chosen when its own stories (those
+ * naming that member, not the whole family) clearly differ from the first's: both have some, and under 75% of
+ * them are shared. Keyed by the family's first member.
+ */
+const STORY_SPLIT_FAMILIES = new Set(['procurement']);
 
 /** Two articles in four or more matching both candidates mark them as one subtopic in this report. */
 const THEME_ARTICLE_OVERLAP = 0.75;
@@ -58,9 +68,19 @@ function containsTerm(haystack: string[], term: string): boolean {
   return termWords.length > 0 && termWords.every((word) => haystack.some((candidate) => wordsMatch(candidate, word)));
 }
 
+const singular = (word: string): string => (word.length > 3 && word.endsWith('s') ? word.slice(0, -1) : word);
+
+/** True when every word of the term occurs among the given words as the same word, singular or plural. */
+function containsExactTerm(haystack: string[], term: string): boolean {
+  const termWords = words(term);
+  return termWords.length > 0 && termWords.every((word) => haystack.some((candidate) => singular(candidate) === singular(word)));
+}
+
+const isStorySplitFamily = (family: number): boolean => family >= 0 && STORY_SPLIT_FAMILIES.has(THEME_FAMILIES[family][0]);
+
 function themeFamily(theme: string): number {
   const themeWords = words(theme);
-  return THEME_FAMILIES.findIndex((family) => family.some((member) => containsTerm(themeWords, member)));
+  return THEME_FAMILIES.findIndex((family) => family.some((member) => (STORY_SPLIT_FAMILIES.has(family[0]) ? containsExactTerm(themeWords, member) : containsTerm(themeWords, member))));
 }
 
 type ThemeArticle = { title: string; description?: string };
@@ -81,13 +101,22 @@ function distinctSubjectThemes(topics: string[], subjectTerms: string[], article
 }
 
 /** The indexes of the articles whose title or description names the theme or a member of its concept family. */
-function themeCoverage(articles: ThemeArticle[]): (theme: string) => Set<number> {
+function themeCoverage(articles: ThemeArticle[], ownTermsOnly = false): (theme: string) => Set<number> {
   const articleWords = articles.map((article) => words(`${article.title} ${article.description ?? ''}`));
   return (theme: string): Set<number> => {
-    const family = themeFamily(theme);
+    const themeFamilyIndex = themeFamily(theme);
+    const family = ownTermsOnly ? -1 : themeFamilyIndex;
     const terms = family >= 0 ? [theme, ...THEME_FAMILIES[family]] : [theme];
-    return new Set(articleWords.flatMap((text, index) => (terms.some((term) => containsTerm(text, term)) ? [index] : [])));
+    const contains = isStorySplitFamily(themeFamilyIndex) ? containsExactTerm : containsTerm;
+    return new Set(articleWords.flatMap((text, index) => (terms.some((term) => contains(text, term)) ? [index] : [])));
   };
+}
+
+/** Both themes have stories of their own and under 75% of them are shared. */
+function storiesClearlyDiffer(left: Set<number>, right: Set<number>): boolean {
+  if (!left.size || !right.size) return false;
+  const shared = [...left].filter((index) => right.has(index)).length;
+  return shared / new Set([...left, ...right]).size < THEME_ARTICLE_OVERLAP;
 }
 
 /**
@@ -98,20 +127,22 @@ function themeCoverage(articles: ThemeArticle[]): (theme: string) => Set<number>
  */
 function distinctThemes(candidates: string[], articles: ThemeArticle[]): string[] {
   const coverage = themeCoverage(articles);
-  const chosen: Array<{ theme: string; family: number; articles: Set<number> }> = [];
+  const ownCoverage = themeCoverage(articles, true);
+  const chosen: Array<{ theme: string; family: number; articles: Set<number>; own: Set<number> }> = [];
   for (const theme of candidates) {
     if (chosen.length === 4) break;
     const family = themeFamily(theme);
     const articleSet = coverage(theme);
+    const own = ownCoverage(theme);
     const nearSynonym = chosen.some((other) => {
-      if (family >= 0 && family === other.family) return true;
+      if (family >= 0 && family === other.family) return !(isStorySplitFamily(family) && storiesClearlyDiffer(own, other.own));
       const [shorter, longer] = words(theme).length <= words(other.theme).length ? [theme, other.theme] : [other.theme, theme];
       if (containsTerm(words(longer), shorter)) return true;
       const shared = [...articleSet].filter((index) => other.articles.has(index)).length;
       const union = new Set([...articleSet, ...other.articles]).size;
       return shared >= 2 && shared / union >= THEME_ARTICLE_OVERLAP;
     });
-    if (!nearSynonym) chosen.push({ theme, family, articles: articleSet });
+    if (!nearSynonym) chosen.push({ theme, family, articles: articleSet, own });
   }
   return chosen.map(({ theme }) => theme);
 }
@@ -137,7 +168,8 @@ export function selectReportThemes(profile: ProfessionalProfile, articles: Theme
  * The themes a report shows, once each has its supporting stories: a theme whose stories are the same as another
  * theme's, or all among them and at least 75% of them, is merged into it (the theme with more stories stays; on a
  * tie the earlier one), and there are never more themes than stories. A small subtopic inside an umbrella theme
- * that backs every story ("omnichannel": 2 of the 8 "stores" stories) stays its own card. Order is kept; themes with no supporting story are left to
+ * that backs every story ("omnichannel": 2 of the 8 "stores" stories) stays its own card. Members of the
+ * procurement family merge whenever 75% or more of their stories are shared, subset or not. Order is kept; themes with no supporting story are left to
  * reportThemes, which hides them.
  */
 export function consolidateThemes(themes: readonly string[], support: Readonly<Record<string, readonly string[]>>, storyCount: number): { themes: string[]; support: Record<string, string[]>; merged: number } {
@@ -148,6 +180,13 @@ export function consolidateThemes(themes: readonly string[], support: Readonly<R
     if (other === theme) return false;
     const mine = sets.get(theme)!;
     const theirs = sets.get(other)!;
+    // Two members of a story-split family ("suppliers", "vendors") are one card unless their supporting stories
+    // clearly differ: 75% or more shared merges them (more stories stays; on a tie the earlier one).
+    const family = themeFamily(theme);
+    if (isStorySplitFamily(family) && family === themeFamily(other)) {
+      const shared = [...mine].filter((id) => theirs.has(id)).length;
+      if (shared / new Set([...mine, ...theirs]).size >= THEME_ARTICLE_OVERLAP) return theirs.size > mine.size || (theirs.size === mine.size && otherIndex < index);
+    }
     if (!within(mine, theirs)) return false;
     // Equal sets: the earlier theme stays. A strict subset merges into the larger theme when it is most of it.
     if (mine.size === theirs.size) return otherIndex < index;
