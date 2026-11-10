@@ -60,6 +60,17 @@ describe('theme cards and focused reading', () => {
     expect(document.querySelector('[data-theme-group="archive"] .theme-results-group-heading')?.textContent).toBe('More on this theme 1');
   });
 
+  it('hides a theme whose AI line says no article covers it and counts only the shown themes', async () => {
+    const report = shaped();
+    const ids = report.recommendations.map((item) => item.articleId);
+    await render({ ...report, professionalProfile: { ...report.professionalProfile, themes: ['connected fitness', 'regulation', 'ai coaching'], themeArticleIds: { 'connected fitness': ids, regulation: ids.slice(0, 1), 'ai coaching': ids.slice(0, 1) } }, themeDescriptions: { regulation: 'No supplied article directly addresses regulation.' } });
+    expect([...document.querySelectorAll('.cx-theme h3')].map((node) => node.textContent)).toEqual(['Connected fitness', 'AI coaching']);
+    expect(document.body.textContent).not.toContain('No supplied article');
+    expect(document.querySelector('.cx-theme-total')?.textContent).toMatch(/^2 themes/);
+    const stats = [...document.querySelectorAll('.brief-stat')].find((node) => node.querySelector('dt')?.textContent === 'Themes');
+    expect(stats?.querySelector('dd')?.textContent).toBe('2');
+  });
+
   it('shows match alone in the top row and category with date on a quiet line that wraps, never truncated', async () => {
     const report = shaped();
     await render(report);

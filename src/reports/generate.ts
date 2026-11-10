@@ -9,7 +9,7 @@ import type { ReportRecord, ReportRecommendation, GenerateReportInput, ReportPer
 import type { ReportStore } from './types';
 import type { StoredAnalyticsEvent } from '../analytics/types';
 import type { AnalyticsStore } from '../analytics/types';
-import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, consolidateThemes, profileForTheme, selectReportThemes, themeSupport } from './themes';
+import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, consolidateThemes, dropDeniedThemes, profileForTheme, selectReportThemes, themeSupport } from './themes';
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
@@ -1339,7 +1339,14 @@ export class ReportGenerationService {
     const matchedById = new Map(weakFit.kept.map((item) => [item.article.id, [...item.directMatches, ...item.adjacentMatches]]));
     const chosenSupport = themeSupport(themes, recommendations.map((item) => ({ articleId: item.articleId, article: item.article, matchedConcepts: matchedById.get(item.articleId) })), aiThemeLinks);
     // A theme whose stories equal or sit within another theme's is merged into it; never more themes than stories.
-    const consolidated = consolidateThemes(themes, chosenSupport, recommendations.length);
+    // A theme whose AI line says no supplied story covers it ("No supplied article directly addresses regulation")
+    // is dropped whatever the text match found: its card would contradict itself.
+    const denied = dropDeniedThemes(themes, chosenSupport, themeDescriptions);
+    if (denied.dropped.length) {
+      themeDescriptions = denied.descriptions;
+      this.logger?.info('theme_unsupported_dropped', { requestId: input.requestId, publisherId: input.publisherId, themeCount: themes.length, removedCount: denied.dropped.length });
+    }
+    const consolidated = consolidateThemes(themes, denied.support, recommendations.length);
     const themeArticleIds = consolidated.support;
     // All chosen themes stay on the profile (focused search accepts them); reportThemes shows only supported ones.
     const unsupportedThemes = consolidated.themes.filter((theme) => !themeArticleIds[theme]).length;

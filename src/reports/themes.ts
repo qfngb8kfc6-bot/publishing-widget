@@ -200,7 +200,38 @@ export function consolidateThemes(themes: readonly string[], support: Readonly<R
   };
 }
 
-type ThemeReport = Pick<ReportRecord, 'professionalProfile' | 'recommendations'>;
+type ThemeReport = Pick<ReportRecord, 'professionalProfile' | 'recommendations'> & Partial<Pick<ReportRecord, 'themeDescriptions'>>;
+
+const COVERAGE_NOUN = String.raw`(?:supplied |provided |selected |these |the )?(?:articles?|stor(?:y|ies)|pieces?|coverage|items?|reports?|headlines?)`;
+const COVERAGE_VERB = String.raw`(?:directly |specifically |explicitly |clearly |yet |really )?(?:address|cover|mention|discuss|focus|deal|touch|relate|tackle|concern|speak|report|explore|examine|feature)`;
+/** "No supplied article directly addresses regulation", "None of the stories cover…", "The articles do not mention…". */
+const DENIES_COVERAGE = [
+  new RegExp(String.raw`\b(?:no|none of the|not one of the|neither of the)\s+${COVERAGE_NOUN}\s+(?:here\s+|in this briefing\s+)?(?:\w+ly\s+)?${COVERAGE_VERB}`, 'i'),
+  new RegExp(String.raw`\b${COVERAGE_NOUN}\s+(?:here\s+)?(?:do not|don['’]t|does not|doesn['’]t|did not|didn['’]t|fail to|never)\s+${COVERAGE_VERB}`, 'i'),
+  new RegExp(String.raw`\b(?:is|are)\s+(?:not|n['’]t)\s+(?:directly\s+|specifically\s+)?(?:covered|addressed|mentioned|discussed)\s+(?:in|by)\b`, 'i'),
+  /\bno (?:direct |specific )?coverage (?:of|on)\b/i,
+];
+
+/** True when an AI theme line says no supplied story covers the theme: such a theme has no card. */
+export function themeLineDeniesCoverage(line: string | undefined): boolean {
+  if (!line) return false;
+  return DENIES_COVERAGE.some((pattern) => pattern.test(line));
+}
+
+/**
+ * Themes whose AI line says no story covers them, removed from the support map and the lines; the generator logs
+ * theme_unsupported_dropped with the count.
+ */
+export function dropDeniedThemes(themes: readonly string[], support: Readonly<Record<string, readonly string[]>>, descriptions: Readonly<Record<string, string>> | undefined): { support: Record<string, string[]>; descriptions?: Record<string, string>; dropped: string[] } {
+  const dropped = themes.filter((theme) => themeLineDeniesCoverage(descriptions?.[theme]));
+  const droppedSet = new Set(dropped);
+  const keptDescriptions = descriptions ? Object.fromEntries(Object.entries(descriptions).filter(([theme]) => !droppedSet.has(theme))) : undefined;
+  return {
+    support: Object.fromEntries(Object.entries(support).filter(([theme]) => !droppedSet.has(theme)).map(([theme, ids]) => [theme, [...ids]])),
+    ...(keptDescriptions && Object.keys(keptDescriptions).length ? { descriptions: keptDescriptions } : {}),
+    dropped,
+  };
+}
 type SupportArticle = Pick<ReportRecommendation['article'], 'title' | 'description' | 'categories'> & Partial<Pick<ReportRecommendation['article'], 'summary' | 'tags'>>;
 
 /**
@@ -266,11 +297,12 @@ export function themeSupportingRecommendations(report: ThemeReport, theme: strin
 
 /**
  * The same bounded theme list is used by the report UI and the focused-search API. A theme no report story
- * supports is not shown: its card would promise stories that focused reading cannot list.
+ * supports is not shown: its card would promise stories that focused reading cannot list. Nor is one whose AI
+ * line says no story covers it ("No supplied article directly addresses regulation"), in older reports too.
  */
 export function reportThemes(report: ThemeReport): string[] {
   const themes = report.professionalProfile.themes ?? selectReportThemes(report.professionalProfile);
-  return themes.filter((theme) => supportingIds(report, theme).length > 0);
+  return themes.filter((theme) => supportingIds(report, theme).length > 0 && !themeLineDeniesCoverage(report.themeDescriptions?.[theme]));
 }
 
 /**
