@@ -59,6 +59,9 @@ qfngb8kfc6-bot/publishing-widget.
    when any score ≥ `RELAXED_MARKET_FLOOR` (threshold − 15 = 9; report threshold unchanged). Candidates (named
    competitors, then same sector, then score) ride in the E batches like reserves and join only with an accepted
    AI "why", displacing the lowest own-company stories; only then may own share pass 60% (`nonOwnCompanyRelaxed`).
+   Own-company story (`isOwnCompanyStory`, `relationship.ts`): the company (entered/resolved name, without legal
+   form, or domain label) is the subject — whole word in the headline (not "Nike supplier…"), or the actor in the
+   excerpt's first sentence (first 5 words, not after "of/for/with…"). Checked before supplier/partner words.
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word

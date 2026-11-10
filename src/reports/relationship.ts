@@ -11,9 +11,69 @@ function mentions(text: string, name: string): boolean {
   return new RegExp(`(^|[^a-z0-9])${escapeRegExp(name.toLowerCase())}($|[^a-z0-9])`).test(text);
 }
 
-function ownCompanyNames(profile: ProfessionalProfile): string[] {
+/** Legal-form and filler words dropped to get the name a headline uses ("Nike, Inc." → "Nike"). */
+const NAME_SUFFIXES = new Set(['inc', 'incorporated', 'ltd', 'limited', 'llc', 'plc', 'corp', 'corporation', 'co', 'company', 'group', 'holdings', 'sa', 'se', 'ag', 'gmbh', 'nv', 'bv', 'spa', 'ab', 'as', 'oy']);
+
+function nameVariants(name: string): string[] {
+  const words = name.toLowerCase().replace(/[.,]/g, ' ').split(/\s+/).filter(Boolean);
+  const core = words.filter((word, index) => !(index === 0 && word === 'the')).filter((word, index, all) => index === 0 || !NAME_SUFFIXES.has(word) || all.length === 1);
+  return [words.join(' '), core.join(' ')];
+}
+
+/**
+ * The names a story may use for the reader's company: the entered or resolved name with and without its legal
+ * form, and the resolved domain's label ("decathlon" for decathlon.co.uk). Works from the name alone.
+ */
+export function ownCompanyNames(profile: ProfessionalProfile): string[] {
   const domainLabel = profile.companyDomain?.replace(/^www\./i, '').split('.')[0];
-  return [...new Set([profile.companyName, profile.company?.name, domainLabel].filter((name): name is string => Boolean(name && name.trim().length >= 2)).map((name) => name.trim().toLowerCase()))];
+  const names = [profile.companyName, profile.company?.name].filter((name): name is string => Boolean(name?.trim())).flatMap(nameVariants);
+  return [...new Set([...names, domainLabel?.toLowerCase()].map((name) => name?.trim() ?? '').filter((name) => name.length >= 2))];
+}
+
+/** Words that, right before the name, make it a passing mention ("a veteran of Nike Golf", "orders for Nike"). */
+const PASSING_MENTION_BEFORE = new Set(['of', 'at', 'from', 'with', 'for', 'by', 'to', 'than', 'including', 'like', 'via', 'versus', 'vs', 'against', 'into', 'on', 'over', 'ex', 'former']);
+/** How far into the excerpt's first sentence the name may start and still be its actor ("French retailer Decathlon has"). */
+const ACTOR_MAX_LEADING_WORDS = 5;
+
+function firstSentence(text: string): string {
+  const match = text.trim().match(/^[\s\S]*?[.!?](?=\s+["“‘'(]?[A-Z0-9]|\s*$)/);
+  return (match ? match[0] : text).trim();
+}
+
+/** True when the name opens the sentence's subject: within its first few words and not after a preposition. */
+function isActor(sentence: string, name: string): boolean {
+  const words = sentence.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const nameWords = name.split(/[^a-z0-9]+/).filter(Boolean);
+  if (!nameWords.length) return false;
+  for (let index = 0; index <= Math.min(ACTOR_MAX_LEADING_WORDS, words.length - nameWords.length); index += 1) {
+    if (!nameWords.every((word, offset) => words[index + offset] === word)) continue;
+    return index === 0 || !PASSING_MENTION_BEFORE.has(words[index - 1]);
+  }
+  return false;
+}
+
+/** The name only qualifies a supply noun ("Nike supplier adds a factory", "Nike's factories"): a supplier story. */
+const SUPPLY_NOUN_AFTER = /^(?:['’]s\s+)?(?:suppliers?|vendors?|factor(?:y|ies)|manufacturers?|contract manufactur\w*|licensees?)\b/;
+
+function modifiesSupplyNoun(text: string, name: string): boolean {
+  const pattern = new RegExp(`(^|[^a-z0-9])${escapeRegExp(name)}(?=$|[^a-z0-9])`, 'g');
+  const positions = [...text.matchAll(pattern)].map((match) => match.index! + match[1].length + name.length);
+  return positions.length > 0 && positions.every((end) => SUPPLY_NOUN_AFTER.test(text.slice(end).trimStart()));
+}
+
+/**
+ * A story is about the reader's own company only when the company is its subject: named in the headline, or the
+ * actor of the excerpt's first sentence. A passing mention ("a veteran of Nike Golf") does not count, nor a headline
+ * where the name only qualifies a supplier ("Nike supplier adds a factory"). Whole-word
+ * and case-insensitive; supplier or partner words elsewhere in the story do not change it.
+ */
+export function isOwnCompanyStory(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): boolean {
+  const names = ownCompanyNames(profile);
+  if (!names.length) return false;
+  const title = article.title.toLowerCase();
+  if (names.some((name) => mentions(title, name) && !modifiesSupplyNoun(title, name))) return true;
+  const sentence = firstSentence(article.description ?? '');
+  return Boolean(sentence) && names.some((name) => isActor(sentence, name));
 }
 
 /**
@@ -71,11 +131,8 @@ export function restoreHeldBack<T>(kept: T[], heldBack: readonly T[], pool: read
 /** A briefing always carries at least this many stories that are not about the reader's own company, when any qualify. */
 export const MIN_MARKET_CONTEXT_STORIES = 2;
 
-/** True when the title or description names the reader's own company (whatever the relationship). */
-export function namesOwnCompany(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): boolean {
-  const text = `${article.title} ${article.description ?? ''}`.toLowerCase();
-  return ownCompanyNames(profile).some((name) => mentions(text, name));
-}
+/** Market context counts stories whose subject is not the reader's company (see isOwnCompanyStory). */
+export const namesOwnCompany = isOwnCompanyStory;
 
 /**
  * How good a market-context story is for this reader: 0 names a competitor or peer the profile knows about,
@@ -102,8 +159,10 @@ export function orderMarketContext<T extends { article: Pick<NormalizedArticle, 
 export function articleRelationship(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): ArticleRelationship {
   const text = `${article.title} ${article.description ?? ''}`.toLowerCase();
   const own = ownCompanyNames(profile);
+  // The company as subject comes first: a "partners" or "suppliers" word in the excerpt used to turn every
+  // own-company story into supplier_partner, so the own-company count (and the cap) saw none.
+  if (isOwnCompanyStory(article, profile)) return 'own_company';
   if (SUPPLY_TERMS.test(text)) return 'supplier_partner';
-  if (own.some((name) => mentions(text, name))) return 'own_company';
   const peers = [...new Set([...(profile.entities ?? []), ...(profile.company?.entities ?? [])].map((name) => name.trim().toLowerCase()))].filter((name) => name.length >= 3 && !own.includes(name));
   if (peers.some((name) => mentions(text, name))) return 'likely_competitor';
   return 'wider_market';
