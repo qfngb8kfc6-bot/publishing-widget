@@ -66,6 +66,8 @@ export interface FeedSourceConfig {
   mappings?: ArticleFieldMappings;
   headers?: Record<string, string>;
   allowedHostnames?: string[];
+  /** Hosts story images are served from, probed (first bytes only) to tell logos from photos. Default: allowedHostnames. */
+  imageHostnames?: string[];
   deriveCategoryFromUrl?: boolean;
   timeoutMs?: number;
   maxBytes?: number;
@@ -80,6 +82,8 @@ export interface SitemapSourceConfig {
   maxUrls?: number;
   maxSitemaps?: number;
   allowedHostnames?: string[];
+  /** Hosts story images are served from, probed (first bytes only) to tell logos from photos. Default: allowedHostnames. */
+  imageHostnames?: string[];
   urlPattern?: string;
   sourceName?: string;
 }

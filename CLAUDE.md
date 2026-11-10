@@ -88,7 +88,8 @@ qfngb8kfc6-bot/publishing-widget.
 - Role titles are displayed with `displayRoleTitle` (`src/core/role-title.ts`): CEO, CFO, VP, HR, ESG… stay capitals.
 - Logo-like story images (≥2.4:1, a "logo" file name, mostly white or white edges) get `is-logo`: contain on a tint.
   Server side (`src/reports/image-probe.ts`): at generation the first 64 KB of each story image is read (Range GET,
-  1.5 s timeout, allowlisted hosts only: manifest `imageHostnames`, else the content source hosts; cached per URL)
+  1.5 s timeout, allowlisted hosts only: manifest `imageHostnames`, else the content source hosts plus its
+  `imageHostnames` — SGI: `"imageHostnames": ["d1f00kj7ad54bu.cloudfront.net"]` in the admin Content source JSON; cached per URL)
   and wide / transparent or palette PNG / GIF / SVG / logo-named images get `rankingMetadata.imageIsLogo`. Probes
   run alongside the AI calls and are waited on ≤300 ms; on failure the browser check applies as before.
 - Company typo hint: `GET /api/publishers/:id/company-suggestion?company=` (`src/reports/company-suggestion.ts`, cached

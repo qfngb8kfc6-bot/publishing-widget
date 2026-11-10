@@ -295,7 +295,10 @@ function removeWeakFits(ranked: RankedCandidate[], weakIds: ReadonlySet<string>)
 /** How long the report waits, after its AI calls, for logo probes still running (they started before those calls). */
 export const LOGO_PROBE_FINAL_WAIT_MS = 300;
 
-/** Hosts story images may be probed on: the manifest's imageHostnames, else the content source's own hosts. */
+/**
+ * Hosts story images may be probed on: the manifest's imageHostnames, else the content source's own hosts plus its
+ * imageHostnames (set in the admin Content source JSON, e.g. SGI's "d1f00kj7ad54bu.cloudfront.net").
+ */
 export function imageHostsFor(manifest: PublisherManifest | undefined): string[] {
   if (manifest?.imageHostnames?.length) return [...manifest.imageHostnames];
   const source = manifest?.contentSource as { allowedHostnames?: string[]; imageHostnames?: string[]; rss?: { allowedHostnames?: string[] } } | undefined;

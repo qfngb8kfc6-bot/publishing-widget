@@ -2,6 +2,7 @@ import type { PublisherConfig } from './types';
 import type { PublisherManifest } from '../publishers/manifest';
 import { DEFAULT_THEME } from './theme';
 import { MAX_CONFIGURED_FEED_MAX_BYTES } from '../publishers/content/types';
+import { isPrivateHostname } from './company-url';
 
 export function isValidPublisherId(value: string): boolean {
   return /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value);
@@ -51,6 +52,20 @@ export function validatePublisherConfig(config: PublisherConfig): void {
   }
 }
 
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/**
+ * Story-image hosts the server may probe (first bytes only): bare public DNS names such as
+ * "d1f00kj7ad54bu.cloudfront.net". No scheme, path, port, wildcard, IP address or private name.
+ */
+export function validateImageHostnames(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length > 20) throw new Error(`${field} must be a list of at most 20 hostnames.`);
+  for (const host of value) {
+    if (typeof host !== 'string' || !HOSTNAME.test(host) || /^[\d.]+$/.test(host) || isPrivateHostname(host) || host.endsWith('.internal')) throw new Error(`${field} entries must be public hostnames like "images.example.com" (no https://, paths, wildcards or IP addresses).`);
+  }
+}
+
 export function validatePublisherManifest(manifest: PublisherManifest, options: { allowDisabled?: boolean } = {}): void {
   if (!isValidPublisherId(manifest.publisherId)) throw new Error('Publisher id must be kebab-case and start with a letter.');
   if (!manifest.name.trim()) throw new Error('Publisher manifest requires name.');
@@ -60,6 +75,8 @@ export function validatePublisherManifest(manifest: PublisherManifest, options: 
   validateAllowedOrigins(manifest.allowedOrigins);
   if (manifest.api?.timeoutMs !== undefined && manifest.api.timeoutMs < 1) throw new Error('Publisher API timeout must be positive.');
   const source = manifest.contentSource;
+  validateImageHostnames(manifest.imageHostnames, 'imageHostnames');
+  validateImageHostnames((source as { imageHostnames?: unknown } | undefined)?.imageHostnames, 'Content source imageHostnames');
   if (source?.type === 'rest-json') {
     if (!source.baseUrl.trim() || !source.endpoint.trim()) throw new Error('REST content source requires baseUrl and endpoint.');
     if (source.timeoutMs !== undefined && source.timeoutMs < 1) throw new Error('Content source timeout must be positive.');

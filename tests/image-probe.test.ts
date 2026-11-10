@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { IMAGE_PROBE_MAX_BYTES, ImageProbe, isLogoImage, parseImageHeader } from '../src/reports/image-probe';
 import { imageHostsFor } from '../src/reports/generate';
+import { validatePublisherManifest } from '../src/core/config';
 import { sgiEuropeManifest } from '../src/publishers/sgi-europe';
 import { MemoryPublisherStore } from '../src/publishers/store';
 import { createProductionApp } from '../src/server/production';
@@ -82,6 +83,21 @@ describe('ImageProbe', () => {
     expect(imageHostsFor({ ...sgiEuropeManifest, imageHostnames: ['img.sgieurope.com'] })).toEqual(['img.sgieurope.com']);
     expect(imageHostsFor(undefined)).toEqual([]);
   });
+
+  it('takes SGI\'s CloudFront image host from the Content source JSON (admin-editable, not hardcoded)', () => {
+    const configured = { ...sgiEuropeManifest, contentSource: { ...sgiEuropeManifest.contentSource!, imageHostnames: ['d1f00kj7ad54bu.cloudfront.net'] } } as typeof sgiEuropeManifest;
+    expect(() => validatePublisherManifest(configured)).not.toThrow();
+    expect(imageHostsFor(configured)).toEqual(['www.sgieurope.com', 'sgieurope.com', 'd1f00kj7ad54bu.cloudfront.net']);
+    expect(imageHostsFor(sgiEuropeManifest)).not.toContain('d1f00kj7ad54bu.cloudfront.net');
+  });
+
+  it('rejects image hosts that are URLs, wildcards, IP addresses or private names', () => {
+    for (const bad of ['https://d1f00kj7ad54bu.cloudfront.net', 'd1f00kj7ad54bu.cloudfront.net/images', '*.cloudfront.net', '10.0.0.5', 'localhost', 'images.local', 'metadata.google.internal']) {
+      const manifest = { ...sgiEuropeManifest, contentSource: { ...sgiEuropeManifest.contentSource!, imageHostnames: [bad] } } as typeof sgiEuropeManifest;
+      expect(() => validatePublisherManifest(manifest), bad).toThrow(/public hostnames/);
+    }
+    expect(() => validatePublisherManifest({ ...sgiEuropeManifest, imageHostnames: ['https://x.example'] })).toThrow(/public hostnames/);
+  });
 });
 
 describe('report generation stores imageIsLogo per story', () => {
@@ -91,6 +107,29 @@ describe('report generation stores imageIsLogo per story', () => {
     ['JD Sports retail stores expand in Europe', 'https://cdn.elsewhere.example/jd.png'],
   ];
   const rss = `<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>SGI</title>${stories.map(([title, image], i) => `<item><title>${title}</title><link>https://www.sgieurope.com/retail/s-${i}/17000${i}.article</link><guid>https://www.sgieurope.com/retail/s-${i}/17000${i}.article</guid><description>${title}: retail stores and omnichannel distribution.</description><enclosure url="${image}" type="image/jpeg" /><pubDate>Mon, 02 Nov 2026 10:00:00 GMT</pubDate></item>`).join('')}</channel></rss>`;
+
+  it('probes SGI images on the configured CloudFront host and marks the logo', async () => {
+    const cdnStories = [['Decathlon reports first-half retail sales growth', 'https://d1f00kj7ad54bu.cloudfront.net/Pictures/decathlon-store.png']];
+    const cdnRss = rss.replace(stories[0][1], cdnStories[0][1]);
+    const probed: string[] = [];
+    const manifest = { ...sgiEuropeManifest, contentSource: { ...sgiEuropeManifest.contentSource!, imageHostnames: ['d1f00kj7ad54bu.cloudfront.net'] } } as typeof sgiEuropeManifest;
+    const app = createProductionApp({
+      environment: 'test',
+      publisherStore: new MemoryPublisherStore([manifest]),
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.includes('cloudfront.net')) { probed.push(url); return new Response(png(500, 500, 6), { headers: { 'Content-Type': 'image/png' } }); }
+        if (url.includes('/Pictures/') || url.includes('cdn.elsewhere')) return new Response(jpeg(1200, 675), { headers: { 'Content-Type': 'image/jpeg' } });
+        return new Response(cdnRss, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } });
+      },
+      companyContextProvider: { getContext: async (domain: string) => ({ domain, canonicalUrl: `https://${domain}/`, name: 'Nike', industry: 'sporting goods', topics: [], entities: ['Nike'], source: 'submitted-domain' as const, fetchedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), analysisVersion: 'test' }) },
+    });
+    const response = await app.handle(new Request('https://discovery.ldsystems.uk/api/reports/generate?mode=sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publisherId: 'sgi-europe', companyUrl: 'nike.com', jobTitle: 'Head of Retail' }) }));
+    const { reportId } = await response.json() as { reportId: string };
+    const report = (await app.reportStore.get(reportId, 'sgi-europe'))!;
+    expect(probed).toEqual([cdnStories[0][1]]);
+    expect(report.recommendations.find((item) => item.article.imageUrl === cdnStories[0][1])?.rankingMetadata.imageIsLogo).toBe(true);
+  });
 
   it('marks the logo, keeps the photo, and never probes an image off the allowlist', async () => {
     const imageCalls: string[] = [];
