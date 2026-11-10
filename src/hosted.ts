@@ -8,7 +8,7 @@ import { generationPageMarkup, runGenerationPage } from './hosted-loading';
 import { generationInputMessage } from './widget/messages';
 import { displayRoleTitle } from './core/role-title';
 import { bindCitationChips, briefHeroMarkup, briefHeroStyle } from './hosted-hero';
-import { bindFocusPanel, cardsStyle, displayStories, displayTitle, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext } from './hosted-cards';
+import { bindCardImages, bindFocusPanel, cardsStyle, displayStories, displayTitle, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext } from './hosted-cards';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&#38;', '<': '&#60;', '>': '&#62;', "'": '&#39;', '"': '&#34;' })[character] ?? character);
@@ -269,6 +269,7 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
 
   const themeResults = app.querySelector<HTMLElement>('[data-theme-results]');
   // Focused reading opens in a panel (sheet on phones, side panel on desktop).
+  bindCardImages(app, documentRef);
   const focusPanel = bindFocusPanel(app, documentRef);
   // Articles shown by each theme opened on this page, so another theme's results do not repeat them.
   const shownByTheme = new Map<string, string[]>();
