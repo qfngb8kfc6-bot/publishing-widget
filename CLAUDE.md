@@ -6,8 +6,8 @@ briefing of a publisher's own articles (summary, ranked stories with "why this m
 qfngb8kfc6-bot/publishing-widget.
 
 ## Working rules
-- Work only on branch `claude/keen-darwin-6i5lk3`. Never push to main; the owner merges via PRs. After a
-  merge, restart the branch from main: `git checkout -B claude/keen-darwin-6i5lk3 origin/main`.
+- Create a new `claude/<task>` branch from main for each task (`git fetch origin main && git checkout -b
+  claude/<task> origin/main`); never push to main; the user merges via PRs.
 - One commit per task, clear messages. Report per commit with before/after evidence, then stop.
 - Run `npm run release:check` (lint, typecheck, tests, build, secret scan) once at the end of a batch, plus
   `git diff --check` and `npm run build:server` before pushing.
