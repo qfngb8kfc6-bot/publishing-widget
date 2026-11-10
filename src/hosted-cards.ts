@@ -5,6 +5,7 @@
  * modules here.
  */
 import type { ReportRecommendation, ReportRecord } from './reports';
+import { displayRoleTitle } from './core/role-title';
 import { themeDisplayTitle, themeInlineText, themeSupportingRecommendations } from './reports/themes';
 
 const SERIF = "'Source Serif 4',Georgia,serif";
@@ -203,7 +204,7 @@ export function focusHeading(theme: string): string {
 
 /** Panel contents: "In your briefing" first (no repeated "why"), then "More on this theme". */
 export function focusResultsMarkup(report: ReportRecord, briefing: ReportRecommendation[], archive: ReportRecommendation[], context: CardContext): string {
-  const intro = `<p class="theme-results-subheading">Selected for your role as ${escapeHtml(displayTitle(report.jobTitle))}</p>`;
+  const intro = `<p class="theme-results-subheading">Selected for your role as ${escapeHtml(displayRoleTitle(report.jobTitle))}</p>`;
   if (!briefing.length && !archive.length) return `${intro}<p class="theme-results-status">No strong stories were found for this theme in the current coverage.</p>`;
   const list = (items: ReportRecommendation[], showWhy: (item: ReportRecommendation) => boolean, themeMatch: boolean) => `<div class="cx-focus-list">${items.map((item) => cardMarkup(item, context, { compact: true, showWhy: showWhy(item), themeMatch })).join('')}</div>`;
   // Briefing stories keep their report % and pill; archive results carry the theme search's own % as "Theme match".

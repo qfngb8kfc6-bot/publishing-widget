@@ -209,3 +209,12 @@ describe('self-hosted serif', () => {
     expect(readFileSync(path.resolve('src/assets/fonts/SourceSerif4-OFL.txt'), 'utf8')).toContain('SIL Open Font License');
   });
 });
+
+describe('role acronyms in the report identity', () => {
+  it('shows "CEO at Decathlon" in the hero and the sticky bar for a role typed as "Ceo"', async () => {
+    await render(shaped({ jobTitle: 'Ceo', companyName: 'Decathlon' }));
+    expect(document.querySelector('.brief-role')?.textContent).toBe('CEO');
+    expect(document.querySelector('[data-sticky-context] .context-label')?.textContent).toBe('CEO at Decathlon');
+    expect(document.body.textContent).not.toContain('Ceo');
+  });
+});

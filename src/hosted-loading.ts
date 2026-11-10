@@ -2,6 +2,7 @@ import { createEvent, createSessionId, type AnalyticsClient, type AnalyticsEvent
 import type { PublisherManifest } from './publishers/manifest';
 import { GENERATION_STAGES, type GenerationDetails, type GenerationStage } from './reports/generation-jobs';
 import { generationInputMessage } from './widget/messages';
+import { displayRoleTitle } from './core/role-title';
 
 /**
  * The hosted loading page (/p/:publisherId/generate/:id). It polls the generation status and shows the real
@@ -59,17 +60,6 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&#38;', '<': '&#60;', '>': '&#62;', "'": '&#39;', '"': '&#34;' })[character] ?? character);
 }
 
-const SMALL_WORDS = new Set(['a', 'an', 'and', 'at', 'for', 'in', 'of', 'on', 'or', 'the', 'to']);
-
-/** "head of retail" → "Head of Retail"; acronyms stay as typed. Matches the report's identity pill. */
-function displayTitle(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().split(' ').map((word, index) => {
-    if (/^[A-Z\d-]{2,}$/.test(word) || !word) return word;
-    if (index > 0 && SMALL_WORDS.has(word.toLowerCase())) return word.toLowerCase();
-    return word.charAt(0).toUpperCase() + word.slice(1);
-  }).join(' ');
-}
-
 /** "a Head of Retail", "an Editor", "an HR Director". */
 function withArticle(role: string): string {
   const first = role.split(' ')[0] ?? '';
@@ -82,7 +72,7 @@ interface StageCopy { label: string; messages: string[] }
 /** Step labels and the rotating sub-messages for each stage. Each message describes something the pipeline does. */
 function stageCopy(details: GenerationDetails, publisherName: string): StageCopy[] {
   const company = details.companyName;
-  const role = details.jobTitle ? displayTitle(details.jobTitle) : undefined;
+  const role = details.jobTitle ? displayRoleTitle(details.jobTitle) : undefined;
   const articles = details.articlesSearched ? `${details.articlesSearched.toLocaleString('en-GB')} ${publisherName} articles` : `${publisherName} articles`;
   return [
     { label: company ? `Understanding ${company}` : 'Understanding your company', messages: [company ? `Reading ${company}’s public website` : 'Reading your company’s public website', company ? `Noting the market ${company} works in` : 'Noting the market your company works in'] },
@@ -264,7 +254,7 @@ export function runGenerationPage(root: HTMLElement, manifest: PublisherManifest
       fitThemeChips(chips);
     }
     const identity = query('[data-loading-identity]');
-    if (identity && details.jobTitle) identity.textContent = `For ${withArticle(displayTitle(details.jobTitle))}${details.companyName ? ` at ${details.companyName}` : ''}`;
+    if (identity && details.jobTitle) identity.textContent = `For ${withArticle(displayRoleTitle(details.jobTitle))}${details.companyName ? ` at ${details.companyName}` : ''}`;
     if (!complete && activeIndex >= 0 && activeIndex < copy.length) {
       const messages = copy[activeIndex].messages;
       if (messages.join('|') !== activeMessages.join('|')) {

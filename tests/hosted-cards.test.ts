@@ -330,5 +330,7 @@ describe('focused-reading heading and summary opening', () => {
     const html = focusResultsMarkup(report, [report.recommendations[0]], [], { publisherName: 'SGI Europe', link: (article) => `<a href="${article.url}">Read</a>` });
     expect(html).toContain('Selected for your role as Head of Retail<');
     expect(displayTitle('VP of CRM and loyalty')).toBe('VP of CRM and Loyalty');
+    const ceo = focusResultsMarkup({ ...report, jobTitle: 'Ceo' }, [report.recommendations[0]], [], { publisherName: 'SGI Europe', link: (article) => `<a href="${article.url}">Read</a>` });
+    expect(ceo).toContain('Selected for your role as CEO<');
   });
 });

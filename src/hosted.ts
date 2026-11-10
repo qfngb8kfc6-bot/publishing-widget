@@ -6,6 +6,7 @@ import { MAX_SHOWN_THEME_ARTICLE_IDS, reportThemes, themeInlineText, themeSuppor
 import { allocateEditorialSections, articleIdentityKeys, type EditorialSection } from './reports/sections';
 import { generationPageMarkup, runGenerationPage } from './hosted-loading';
 import { generationInputMessage } from './widget/messages';
+import { displayRoleTitle } from './core/role-title';
 import { bindCitationChips, briefHeroMarkup, briefHeroStyle } from './hosted-hero';
 import { bindFocusPanel, cardsStyle, displayStories, displayTitle, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext } from './hosted-cards';
 
@@ -131,7 +132,7 @@ export function sectionCardLabel(sectionId: string): string | undefined {
 }
 
 function identityLabel(report: ReportRecord): string {
-  return `${displayTitle(report.jobTitle)} at ${displayCompany(report)}`;
+  return `${displayRoleTitle(report.jobTitle)} at ${displayCompany(report)}`;
 }
 
 function editSheetMarkup(report: ReportRecord): string {
@@ -208,7 +209,7 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   const feature = report.recommendations[0];
   const stories = displayStories([{ recommendations: feature ? [feature] : [] }, { recommendations: presentation.additional }, ...presentation.sections.map((section) => ({ recommendations: section.recommendations, label: sectionCardLabel(section.id) }))]);
   const storiesOnPage = stories.map((story) => story.recommendation);
-  const heroMarkup = `${briefHeroStyle()}${briefHeroMarkup({ report, publisherName: manifest.name, role: displayTitle(report.jobTitle), company: displayCompany(report), themeCount: reportThemes(report).length, storiesOnPage, brand: brandMarkup(manifest) })}`;
+  const heroMarkup = `${briefHeroStyle()}${briefHeroMarkup({ report, publisherName: manifest.name, role: displayRoleTitle(report.jobTitle), company: displayCompany(report), themeCount: reportThemes(report).length, storiesOnPage, brand: brandMarkup(manifest) })}`;
   const cardContext: CardContext = { publisherName: manifest.name, link: (article) => articleLink(article, manifest) };
   const reportActions = '<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div>';
   const body = `${cardsStyle()}<div class="report-content cx">${themesSectionMarkup(report, reportThemes(report), (theme) => themeDescription(report, theme))}${storiesSectionMarkup(stories, cardContext, reportTitle)}${reportActions}</div>${focusPanelMarkup()}`;
