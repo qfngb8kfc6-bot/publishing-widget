@@ -62,6 +62,10 @@ qfngb8kfc6-bot/publishing-widget.
    Own-company story (`isOwnCompanyStory`, `relationship.ts`): the company (entered/resolved name, without legal
    form, or domain label) is the subject — whole word in the headline (not "Nike supplier…"), or the actor in the
    excerpt's first sentence (first 5 words, not after "of/for/with…"). Checked before supplier/partner words.
+- Executive roles (`isExecutiveTitle`: CEO, MD, GM, founder, president, COO, CFO; not VP) get `role.executive` and
+  `EXECUTIVE_MARKET_CONCEPTS` (results, trading, revenue, profit, investors, acquisition, expansion, sales…, source
+  `market`): direct only when the story shows the company's sector (a company concept or named peer), else adjacent.
+  The rerank intent carries `executive: true`. `own_company_share` also logs `nonOwnCompanyRerankWeak`.
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word

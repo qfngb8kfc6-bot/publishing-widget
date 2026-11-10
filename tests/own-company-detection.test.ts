@@ -135,7 +135,9 @@ describe('CEO at Decathlon, entered as a name: own-company cap and market contex
     expect(report.companyName).toBe('Decathlon');
     expect(titles.filter((title) => liveDecathlon.some((entry) => entry.title === title))).toHaveLength(3);
     expect(titles.filter((title) => market.some((entry) => entry.title === title))).toHaveLength(2);
-    expect(logs.find((entry) => entry.message === 'own_company_share')!.fields).toMatchObject({ ownCompanyCount: 3, recommendationCount: 5, nonOwnCompanyRelaxed: 2, ownCompanyCapExceeded: false });
+    // Executive role: the market stories pass the threshold themselves (sector-gated market concepts), so the cap
+    // holds Decathlon to 60% without the relaxed floor.
+    expect(logs.find((entry) => entry.message === 'own_company_share')!.fields).toMatchObject({ ownCompanyCount: 3, recommendationCount: 5, nonOwnCompanyRelaxed: 0, ownCompanyCapExceeded: false });
     expect(report.recommendations.every((recommendation) => recommendation.rankingMetadata.explanationSource === 'ai')).toBe(true);
   });
 });
