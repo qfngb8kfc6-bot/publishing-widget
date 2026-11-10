@@ -120,7 +120,15 @@ function themeDescription(report: ReportRecord, theme: string): string {
   return `Relevant to your ${focus} focus and the information needs identified for this briefing.`;
 }
 
-const SECTION_LABELS: Record<string, string> = { 'top-developments': 'Top developments', 'companies-to-watch': 'Companies to watch', 'market-moves': 'Market moves', 'technology-developments': 'Technology developments', 'what-to-watch-next': 'What to watch next', 'from-the-archive': 'From the archive', 'more-relevant-stories': 'More relevant stories' };
+/**
+ * Card labels: only these three editorial groupings are shown on a card. Any other section id (the old
+ * "More relevant stories" fallback, technology or sustainability developments, archive groupings) gets no label.
+ */
+export const SECTION_LABELS: Readonly<Record<string, string>> = { 'top-developments': 'Top developments', 'companies-to-watch': 'Companies to watch', 'market-moves': 'Market moves' };
+
+export function sectionCardLabel(sectionId: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(SECTION_LABELS, sectionId) ? SECTION_LABELS[sectionId] : undefined;
+}
 
 function identityLabel(report: ReportRecord): string {
   return `${displayTitle(report.jobTitle)} at ${displayCompany(report)}`;
@@ -198,7 +206,7 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   app.className = 'report-page';
   // Every story on the page in display order (highest match first); the hero's "Source N" chips use the same order.
   const feature = report.recommendations[0];
-  const stories = displayStories([{ recommendations: feature ? [feature] : [] }, { recommendations: presentation.additional }, ...presentation.sections.map((section) => ({ recommendations: section.recommendations, label: SECTION_LABELS[section.id] }))]);
+  const stories = displayStories([{ recommendations: feature ? [feature] : [] }, { recommendations: presentation.additional }, ...presentation.sections.map((section) => ({ recommendations: section.recommendations, label: sectionCardLabel(section.id) }))]);
   const storiesOnPage = stories.map((story) => story.recommendation);
   const heroMarkup = `${briefHeroStyle()}${briefHeroMarkup({ report, publisherName: manifest.name, role: displayTitle(report.jobTitle), company: displayCompany(report), themeCount: reportThemes(report).length, storiesOnPage, brand: brandMarkup(manifest) })}`;
   const cardContext: CardContext = { publisherName: manifest.name, link: (article) => articleLink(article, manifest) };

@@ -89,6 +89,26 @@ describe('report body (magazine layout)', () => {
     }
   });
 
+  it('labels cards only with Top developments, Companies to watch or Market moves; leftover section names get no label', async () => {
+    const report = sgiReport();
+    report.sections = [
+      { id: 'top-developments', recommendations: report.recommendations.slice(1, 2) },
+      { id: 'sustainability-developments', recommendations: report.recommendations.slice(2, 3) },
+      { id: 'companies-to-watch', recommendations: report.recommendations.slice(3, 4) },
+      { id: 'market-moves', recommendations: report.recommendations.slice(4, 5) },
+      { id: 'more-relevant-stories', recommendations: report.recommendations.slice(5, 7) },
+    ];
+    await render(report, '');
+    const section = document.querySelector<HTMLElement>('#top-stories.cx-stories')!;
+    expect(storyIds(section)).toEqual(report.recommendations.map((item) => item.articleId));
+    expect(section.querySelector('[data-story-card="s-1"] .cx-label')?.textContent).toBe('Top developments');
+    expect(section.querySelector('[data-story-card="s-3"] .cx-label')?.textContent).toBe('Companies to watch');
+    expect(section.querySelector('[data-story-card="s-4"] .cx-label')?.textContent).toBe('Market moves');
+    for (const id of ['s-2', 's-5', 's-6']) expect(section.querySelector(`[data-story-card="${id}"] .cx-label`)).toBeNull();
+    expect(document.body.textContent?.toLowerCase()).not.toContain('more relevant stories');
+    expect(document.body.textContent?.toLowerCase()).not.toContain('sustainability developments');
+  });
+
   it('shows stories by match % descending (lead = highest) without changing the selection, and Source N follows the cards', async () => {
     const report = sgiReport();
     // Ranking order s-0..s-6 with display scores out of order: the lead was 33% and the next story 42%.

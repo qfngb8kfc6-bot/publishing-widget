@@ -66,6 +66,8 @@ qfngb8kfc6-bot/publishing-widget.
   Each theme's supporting report stories are stored as `professionalProfile.themeArticleIds` (the S call's
   `themeDescriptions[].articleIds`, else stories naming the theme); themes with none are hidden. Focused reading
   shows those stories first (`briefingRecommendations`, by score), then on-theme archive results.
+- Card labels (`src/hosted.ts`): only Top developments, Companies to watch, Market moves; other section ids
+  (e.g. the old "More relevant stories") show no label.
 - Explanations that restate the headline/excerpt (>5 consecutive words or ≥70% content-word overlap) are
   regenerated once (part R); still restated → fallback with the "why" box hidden (`explanationRestated`).
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
