@@ -26,7 +26,8 @@ function nameVariants(name: string): string[] {
  */
 export function ownCompanyNames(profile: ProfessionalProfile): string[] {
   const domainLabel = profile.companyDomain?.replace(/^www\./i, '').split('.')[0];
-  const names = [profile.companyName, profile.company?.name].filter((name): name is string => Boolean(name?.trim())).flatMap(nameVariants);
+  // Sub-brands and aliases from the enrichment ("Jordan", "Converse" for Nike) count as the company too.
+  const names = [profile.companyName, profile.company?.name, ...(profile.subBrands ?? [])].filter((name): name is string => Boolean(name?.trim())).flatMap(nameVariants);
   return [...new Set([...names, domainLabel?.toLowerCase()].map((name) => name?.trim() ?? '').filter((name) => name.length >= 2))];
 }
 
@@ -150,10 +151,20 @@ export function marketContextTier(article: Pick<NormalizedArticle, 'title' | 'de
   return sectorTerms.some((term) => mentions(text, term)) ? 1 : 2;
 }
 
-/** Market-context candidates best first: competitors, then same sector, then the rest; by score within each. */
+/** Does the story name one of the company's validated peers (direct competitors from the enrichment)? */
+export function namesPeer(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): boolean {
+  const text = `${article.title} ${article.description ?? ''}`.toLowerCase();
+  return (profile.peers ?? []).some((peer) => peer.trim().length >= 3 && mentions(text, peer.trim().toLowerCase()));
+}
+
+/**
+ * Market-context candidates best first: competitors (named peers from the enrichment before other known companies),
+ * then same sector, then the rest; by score within each.
+ */
 export function orderMarketContext<T extends { article: Pick<NormalizedArticle, 'title' | 'description'>; finalScore: number; directMatches?: string[]; adjacentMatches?: string[] }>(candidates: readonly T[], profile: ProfessionalProfile): T[] {
   const tiers = new Map(candidates.map((item) => [item, marketContextTier(item.article, profile, [...(item.directMatches ?? []), ...(item.adjacentMatches ?? [])])]));
-  return [...candidates].sort((left, right) => tiers.get(left)! - tiers.get(right)! || right.finalScore - left.finalScore);
+  const peer = new Map(candidates.map((item) => [item, namesPeer(item.article, profile) ? 0 : 1]));
+  return [...candidates].sort((left, right) => tiers.get(left)! - tiers.get(right)! || peer.get(left)! - peer.get(right)! || right.finalScore - left.finalScore);
 }
 
 export function articleRelationship(article: Pick<NormalizedArticle, 'title' | 'description'>, profile: ProfessionalProfile): ArticleRelationship {

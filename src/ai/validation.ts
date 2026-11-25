@@ -32,6 +32,70 @@ function overlapsConcept(left: string, right: string): boolean {
   return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
 }
 
+/** Most peers or sub-brands kept from the enrichment. */
+export const MAX_COMPANY_NAMES = 8;
+const COMPANY_NAME_MAX_LENGTH = 40;
+
+/** Lower-case letters and digits only, for comparing names ("Nike, Inc." ~ "nike inc"). */
+function nameKey(name: string): string {
+  return name.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+/**
+ * Short company or brand names: 3-40 characters, at most 4 words, with a letter; duplicates (by nameKey) removed,
+ * at most MAX_COMPANY_NAMES. Anything else (sentences, URLs, lists in one string) is dropped.
+ */
+export function validCompanyNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const name = item.replace(/\s+/g, ' ').trim();
+    const key = nameKey(name);
+    if (name.length < 3 || name.length > COMPANY_NAME_MAX_LENGTH || key.split(' ').length > 4 || !/\p{L}/u.test(name) || /[/:@<>{}|;]|https?|www\./i.test(name) || seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+    if (names.length === MAX_COMPANY_NAMES) break;
+  }
+  return names;
+}
+
+/** A name that is the reader's company: equal to it, or it plus a legal form or other words ("Nike Inc"). */
+function isOwnName(name: string, ownKeys: readonly string[]): boolean {
+  const key = nameKey(name);
+  return ownKeys.some((own) => own && (key === own || key.startsWith(`${own} `)));
+}
+
+/**
+ * Applies validated peers and sub-brands to a profile (from the enrichment, or cached for the company). Peers never
+ * include the reader's own company or a sub-brand; sub-brands never repeat the company name or a peer. Peers join
+ * the profile's entities (market-context picks, competitor relationship); for an executive they are also direct
+ * concepts (source market, so the sector gate counts them as evidence: a peer is sector evidence).
+ */
+export function withCompanyPeers(profile: ProfessionalProfile, peers: readonly string[] = [], subBrands: readonly string[] = []): ProfessionalProfile {
+  const ownKeys = [profile.companyName, profile.company?.name, profile.companyDomain?.replace(/^www\./i, '').split('.')[0]].filter((name): name is string => Boolean(name?.trim())).map(nameKey);
+  const brandList = validCompanyNames(subBrands).filter((name) => !ownKeys.includes(nameKey(name)));
+  const brandKeys = new Set(brandList.map(nameKey));
+  const peerList = validCompanyNames(peers).filter((name) => !isOwnName(name, ownKeys) && !brandKeys.has(nameKey(name)));
+  const peerKeys = new Set(peerList.map(nameKey));
+  const cleanBrands = brandList.filter((name) => !peerKeys.has(nameKey(name)));
+  if (!peerList.length && !cleanBrands.length) return profile;
+  const entities = appendUnique(profile.entities, peerList, 40);
+  const existing = profile.retrieval.concepts ?? [];
+  const peerConcepts = profile.role.executive ? peerList.map((concept) => ({ concept, weight: 1.1, relevanceType: 'direct' as const, source: 'market' as const })) : [];
+  const concepts = [...existing.filter((item) => item.relevanceType === 'direct'), ...peerConcepts, ...existing.filter((item) => item.relevanceType !== 'direct')]
+    .filter((item, index, values) => values.findIndex((candidate) => normalizeToken(candidate.concept) === normalizeToken(item.concept)) === index)
+    .slice(0, 72);
+  return {
+    ...profile,
+    entities,
+    ...(peerList.length ? { peers: peerList } : {}),
+    ...(cleanBrands.length ? { subBrands: cleanBrands } : {}),
+    retrieval: { ...profile.retrieval, entities: appendUnique(profile.retrieval.entities, peerList, 40), concepts },
+  };
+}
+
 export function validateProfessionalProfileEnhancement(raw: unknown): AIProfessionalProfileEnhancement | null {
   const value = record(raw);
   if (!value) return null;
@@ -61,6 +125,8 @@ export function validateProfessionalProfileEnhancement(raw: unknown): AIProfessi
     professionalInterests: strings(value.professionalInterests, 24, 100),
     likelyInformationNeeds: strings(value.likelyInformationNeeds, 16, 120),
     relevantEntities: strings(value.relevantEntities, 16, 100),
+    competitors: validCompanyNames(value.competitors),
+    subBrands: validCompanyNames(value.subBrands),
     searchTerms: strings(value.searchTerms, 32, 80),
     semanticQueries: strings(value.semanticQueries, 8, 180),
     excludedConcepts: strings(value.excludedConcepts, 16, 80),
@@ -69,7 +135,7 @@ export function validateProfessionalProfileEnhancement(raw: unknown): AIProfessi
   const hasValues = Boolean(
     result.company && Object.values(result.company).some((item) => item !== undefined && (!Array.isArray(item) || item.length > 0))
       || result.person && Object.values(result.person).some((item) => item !== undefined && (!Array.isArray(item) || item.length > 0))
-      || result.professionalInterests?.length || result.likelyInformationNeeds?.length || result.relevantEntities?.length
+      || result.professionalInterests?.length || result.likelyInformationNeeds?.length || result.relevantEntities?.length || result.competitors?.length || result.subBrands?.length
       || result.searchTerms?.length || result.semanticQueries?.length || result.excludedConcepts?.length || result.subjectVocabulary?.length,
   );
   return hasValues ? result : null;
@@ -180,7 +246,7 @@ export function mergeProfessionalProfileEnhancement(profile: ProfessionalProfile
     exclusions: appendUnique(profile.retrieval.exclusions, enhancement.excludedConcepts, 24),
     concepts,
   };
-  return { ...profile, company, role, professionalInterests, directInterests, adjacentInterests, entities, likelyInformationNeeds, searchTerms, semanticQueries, excludedConcepts: retrieval.exclusions, retrieval };
+  return withCompanyPeers({ ...profile, company, role, professionalInterests, directInterests, adjacentInterests, entities, likelyInformationNeeds, searchTerms, semanticQueries, excludedConcepts: retrieval.exclusions, retrieval }, enhancement.competitors, enhancement.subBrands);
 }
 
 /** Report-level shape problems with the explanations list, reported with the response's top-level field names. */

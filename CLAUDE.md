@@ -76,6 +76,12 @@ qfngb8kfc6-bot/publishing-widget.
   candidates (relaxed, accepted "why") before own-company reserves; only executives let relaxed candidates and then
   remaining market weak fits fill a thin report's places, and own-company stories are then trimmed to 60%
   (≥2 market stories, ≥3 stories). Other roles take relaxed candidates only for the two-story floor (unchanged).
+- Peers and sub-brands: the main enrichment call also returns `competitors` and `subBrands` (≤8 each;
+  `validCompanyNames`: 3–40 chars, ≤4 words, deduped). `withCompanyPeers` stores `profile.peers` (never the reader's
+  own name or a sub-brand) and `profile.subBrands`; sub-brands count as the company in `ownCompanyNames`; peers join
+  `entities` (competitor relationship), go first among competitor market picks (`namesPeer`), and are direct
+  `market` concepts for executives. Cached per publisher + company domain for 24 h (`applyCompanyPeers`, any role);
+  no enrichment and no cache → no peers (as before).
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word

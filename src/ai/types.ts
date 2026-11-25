@@ -110,6 +110,10 @@ export interface AIProfessionalProfileEnhancement {
   professionalInterests?: string[];
   likelyInformationNeeds?: string[];
   relevantEntities?: string[];
+  /** Up to 8 named direct competitors of the company (never the company itself or its own brands). */
+  competitors?: string[];
+  /** Up to 8 of the company's own sub-brands and aliases (Nike: Jordan, Converse). */
+  subBrands?: string[];
   searchTerms?: string[];
   semanticQueries?: string[];
   excludedConcepts?: string[];

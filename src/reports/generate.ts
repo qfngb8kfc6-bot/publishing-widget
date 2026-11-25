@@ -1,7 +1,7 @@
 import { acceptTitleCorrection, displayCompanyName, calibrateRelevanceScore, combineHybridScore, buildProfessionalProfile, createEvent, createProfessionalScorer, roleSubjectLabel, roleSubjectTerms, subjectMatcher, mapInSlices, displayRelevanceScore, passesRelevanceThreshold, RANKING_VERSION, RELEVANCE_THRESHOLDS, scoreProfessionalArticle, type Intent, type NormalizedArticle, type PublisherRegistry, type RelevanceResult, type RelevanceScoreComponents } from '../core';
 import { aiResponseDiagnostics, AIProviderError, type AIResponseDiagnostics } from '../ai/provider';
 import { AI_OPERATION_TIMEOUT_CAP_MS } from '../ai/config';
-import { mergeProfessionalProfileEnhancement, validateProfessionalProfileEnhancement, validateReportContent, validateSubjectVocabulary, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
+import { mergeProfessionalProfileEnhancement, validateProfessionalProfileEnhancement, withCompanyPeers, validateReportContent, validateSubjectVocabulary, validateSemanticResults, type ExplanationRejection, type ExplanationShapeIssue } from '../ai/validation';
 import type { AIRecommendationLayer, EnrichedIntent, ProfessionalAIProvider, ReportContentRequest, SemanticCandidate } from '../ai/types';
 import { BoundedCompanyInputResolver, classifyCompanyInput, type CompanyContextProvider, type CompanyInputResolver, type ResolvedCompanyInput } from '../server/company';
 import { WIDGET_VERSION } from '../version';
@@ -96,6 +96,8 @@ function loadingThemes(profile: ReturnType<typeof buildProfessionalProfile>): st
   }).slice(0, MAX_GENERATION_THEMES);
 }
 const ENRICHED_PROFILE_TTL_MS = 24 * 60 * 60 * 1000;
+/** Companies whose peers and sub-brands are kept in memory; the oldest entry leaves first. */
+const COMPANY_PEERS_CACHE_LIMIT = 2_000;
 
 interface EnrichmentParts { main?: unknown; vocabulary?: string[] }
 interface EnrichmentResult { profile?: ReturnType<typeof buildProfessionalProfile>; complete: boolean; needsVocabulary: boolean; parts: EnrichmentParts }
@@ -410,6 +412,26 @@ export class ReportGenerationService {
   private pendingAnalyticsWrites = 0;
   private readonly enrichedProfileInFlight = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
   private readonly enrichmentRetries = new Map<string, Promise<ReturnType<typeof buildProfessionalProfile> | undefined>>();
+  /** Peers and sub-brands per publisher and company domain (any role), from the last enrichment that returned them. */
+  private readonly companyPeers = new Map<string, { peers: string[]; subBrands: string[]; expiresAt: number }>();
+
+  /**
+   * Caches an enrichment's peers and sub-brands for the company, or, when this profile has none (enrichment off,
+   * failed, or silent on them), applies the company's cached ones. With neither, the profile is unchanged.
+   */
+  private applyCompanyPeers(publisherId: string, domain: string, profile: ReturnType<typeof buildProfessionalProfile>): ReturnType<typeof buildProfessionalProfile> {
+    const key = `${publisherId}:${domain.toLowerCase()}`;
+    if (profile.peers?.length || profile.subBrands?.length) {
+      this.companyPeers.delete(key);
+      this.companyPeers.set(key, { peers: profile.peers ?? [], subBrands: profile.subBrands ?? [], expiresAt: Date.now() + ENRICHED_PROFILE_TTL_MS });
+      if (this.companyPeers.size > COMPANY_PEERS_CACHE_LIMIT) this.companyPeers.delete(this.companyPeers.keys().next().value!);
+      return profile;
+    }
+    const cached = this.companyPeers.get(key);
+    if (!cached) return profile;
+    if (cached.expiresAt <= Date.now()) { this.companyPeers.delete(key); return profile; }
+    return withCompanyPeers(profile, cached.peers, cached.subBrands);
+  }
 
   constructor(private readonly registry: PublisherRegistry, private readonly companyProvider: CompanyContextProvider, private readonly reports: ReportStore, private readonly analytics?: AnalyticsStore, private readonly ai?: AIRecommendationLayer, private readonly logger?: StructuredLogger, private readonly runtimeDiagnostics?: (publisherId: string) => Partial<ServerLogFields>, companyResolver?: CompanyInputResolver, private readonly catalogueCache = new PublisherCatalogueCache(), private readonly fullText?: FullTextLookup, private readonly imageProbe?: ImageProbe) {
     this.companyResolver = companyResolver ?? new BoundedCompanyInputResolver();
@@ -1212,6 +1234,7 @@ export class ReportGenerationService {
       const [enriched, warmed] = await Promise.all([this.enrichProfileWithAI(input.publisherId, normalized, company, profile, input.requestId), catalogueWarmup]);
       warmupDiagnostics = warmed;
       if (enriched) { profile = enriched; aiProfileUsed = true; }
+      profile = this.applyCompanyPeers(input.publisherId, normalized.domain, profile);
     } else {
       warmupDiagnostics = await catalogueWarmup;
     }
