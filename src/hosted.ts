@@ -1,5 +1,5 @@
 import { BatchingAnalyticsClient } from './analytics/client';
-import { createEvent, DEFAULT_THEME, normalizeToken, roleSubjectLabel, type PublisherRegistry } from './core';
+import { createEvent, defaultPrivacyPolicy, DEFAULT_REPORT_RETENTION_DAYS, DEFAULT_THEME, normalizeToken, privacyNoticeText, privacyPagePath, roleSubjectLabel, type PublisherRegistry } from './core';
 import type { PublisherExperienceBranding, PublisherManifest } from './publishers/manifest';
 import type { ReportRecord, ReportRecommendation } from './reports';
 import { MAX_SHOWN_THEME_ARTICLE_IDS, reportThemes, themeInlineText, themeSupportingRecommendations } from './reports/themes';
@@ -106,6 +106,36 @@ function legalMarkup(manifest: PublisherManifest): string {
   return [manifest.privacyUrl ? `<a href="${escapeHtml(safeUrl(manifest.privacyUrl) || '#')}">Privacy</a>` : '', manifest.termsUrl ? `<a href="${escapeHtml(safeUrl(manifest.termsUrl) || '#')}">Terms</a>` : ''].filter(Boolean).join('<span aria-hidden="true">·</span>');
 }
 
+/** The privacy line in the report footer: what is stored, why, how long, and the publisher's privacy page. */
+function privacyNoteMarkup(publisherId: string): string {
+  return `<p class="report-privacy" data-privacy-note><span data-privacy-text>${escapeHtml(privacyNoticeText(DEFAULT_REPORT_RETENTION_DAYS))}</span> <a href="${escapeHtml(privacyPagePath(publisherId))}">Privacy</a></p>`;
+}
+
+async function fetchPrivacy(publisherId: string): Promise<{ text?: string; retentionDays?: number } | undefined> {
+  try {
+    const response = await fetch(`/api/publishers/${encodeURIComponent(publisherId)}/privacy`);
+    return response.ok ? await response.json() as { text?: string; retentionDays?: number } : undefined;
+  } catch { return undefined; }
+}
+
+/** Updates the footer line with the server's configured retention (it starts from the default). */
+async function refreshPrivacyNote(scope: ParentNode, publisherId: string): Promise<void> {
+  const privacy = await fetchPrivacy(publisherId);
+  const text = scope.querySelector<HTMLElement>('[data-privacy-text]');
+  if (text && typeof privacy?.retentionDays === 'number') text.textContent = privacyNoticeText(privacy.retentionDays);
+}
+
+/** /p/:publisherId/privacy: the publisher's privacy text from admin (else the default), plain text in paragraphs. */
+async function renderPrivacyPage(documentRef: Document, manifest: PublisherManifest): Promise<void> {
+  documentRef.body.innerHTML = routeStyle(manifest) + `<style>.privacy-page{max-width:760px;margin:clamp(16px,5vw,48px) auto;padding:clamp(24px,5vw,48px);background:#fff;border-radius:24px}.privacy-page h1{margin:6px 0 18px;font-size:clamp(1.8rem,4vw,2.6rem);line-height:1.05}.privacy-page p{color:#3f4652;line-height:1.6}</style><main class="hosted-shell generation-shell"><div class="hosted-inner"><article class="hosted-card privacy-page" id="hosted-app">${brandMarkup(manifest)}<p>Loading…</p></article></div></main>`;
+  const privacy = await fetchPrivacy(manifest.publisherId);
+  const text = typeof privacy?.text === 'string' && privacy.text.trim() ? privacy.text : defaultPrivacyPolicy(manifest.name, typeof privacy?.retentionDays === 'number' ? privacy.retentionDays : DEFAULT_REPORT_RETENTION_DAYS);
+  const [title, ...paragraphs] = text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+  const own = manifest.privacyUrl && safeUrl(manifest.privacyUrl) ? `<p><a href="${escapeHtml(safeUrl(manifest.privacyUrl))}">${escapeHtml(manifest.name)} privacy policy</a></p>` : '';
+  const app = documentRef.querySelector<HTMLElement>('#hosted-app');
+  if (app) app.innerHTML = `${brandMarkup(manifest)}<p class="eyebrow">Privacy</p><h1>${escapeHtml(title ?? 'Privacy')}</h1>${paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`).join('')}${own}`;
+}
+
 function articleLink(article: ReportRecommendation['article'], manifest: PublisherManifest): string {
   const href = safeUrl(article.url) || '#';
   const newTab = manifest.branding.articleLinkBehavior !== 'same-tab' && manifest.results.openArticleInNewTab !== false;
@@ -157,6 +187,7 @@ export async function renderHostedRoute(documentRef: Document, registry: Publish
   const publisherId = parts[1];
   const manifest = registry.get(publisherId)?.manifest;
   if (!manifest) { documentRef.body.innerHTML = '<main class="hosted-shell generation-shell"><div class="hosted-inner"><section class="generation-frame hosted-card"><div class="generation-inner"><p class="generation-eyebrow">Publisher unavailable</p><h1>Publisher not found</h1></div></section></div></main>'; return; }
+  if (parts[2] === 'privacy') { await renderPrivacyPage(documentRef, manifest); return; }
   const reportId = parts[2] === 'generate' ? parts[3] : parts[2];
   const isGeneration = parts[2] === 'generate';
   documentRef.body.innerHTML = routeStyle(manifest) + `<main class="hosted-shell ${reportId && !isGeneration ? 'report-shell report' : `generation-shell generation${reportId && isGeneration ? ' loading-shell' : ''}`}"><div class="hosted-inner">${reportId && isGeneration ? generationPageMarkup(manifest, brandMarkup(manifest), legalMarkup(manifest)) : `<div class="report-loading hosted-card" id="hosted-app">${brandMarkup(manifest)}<p>Loading your briefing…</p></div>`}</div></main>`;
@@ -186,6 +217,7 @@ function compactReportStyle(): string {
   // smaller than the bar without the bar covering the HIGHLIGHTS eyebrow. Story cards are styled in hosted-cards.ts.
   return `<style>
 html{scroll-padding-top:104px}.report-page section,.report-page [id]{scroll-margin-top:104px}
+.report-page .report-privacy{max-width:720px;margin:16px auto 0;color:#69707d;font-size:.78rem;line-height:1.5;text-align:center}.report-page .report-privacy a{color:inherit;font-weight:700}
 .report-page .coverage-note{margin:0 0 12px;padding:9px 12px;border-radius:12px;color:#5b4a12;background:#fff6dc;font-size:.84rem;line-height:1.45}
 .report-page .report-content{padding-top:clamp(96px,8vw,112px)}
 @media(max-width:639px){
@@ -244,12 +276,13 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   const storiesOnPage = stories.map((story) => story.recommendation);
   const heroMarkup = `${briefHeroStyle()}${briefHeroMarkup({ report, publisherName: manifest.name, role: displayRoleTitle(report.jobTitle), company: displayCompany(report), themeCount: reportThemes(report).length, storiesOnPage, brand: brandMarkup(manifest) })}`;
   const cardContext: CardContext = { publisherName: manifest.name, link: (article) => articleLink(article, manifest) };
-  const reportActions = '<div class="report-actions report-feedback">' + voteMarkup(undefined, 'Was this briefing useful?') + '<button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div>';
+  const reportActions = '<div class="report-actions report-feedback">' + voteMarkup(undefined, 'Was this briefing useful?') + '<button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div>' + privacyNoteMarkup(report.publisherId);
   const body = `${cardsStyle()}<div class="report-content cx">${themesSectionMarkup(report, reportThemes(report), (theme) => themeDescription(report, theme))}${storiesSectionMarkup(stories, cardContext, reportTitle)}${reportActions}</div>${focusPanelMarkup()}`;
   app.innerHTML = `${reportCoverStyle}${heroMarkup}<div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div>${body}${editSheetMarkup(report)}`;
 
   bindCitationChips(app, window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
   bindFeedback(app, report);
+  void refreshPrivacyNote(app, report.publisherId);
   const cover = app.querySelector<HTMLElement>('.report-hero');
   const contextBar = app.querySelector<HTMLElement>('[data-sticky-context]');
   // The bar is shown only from the scroll position where it is already stuck to the top (hero end + its in-flow

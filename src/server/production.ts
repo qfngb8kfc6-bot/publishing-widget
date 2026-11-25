@@ -34,6 +34,8 @@ import { inspectWvcCatalogue, wvcCatalogueConfigErrors, wvcCatalogueFetchConfig,
 import { TextEnrichmentSync } from '../reports/text-enrichment';
 import { enrichedPublisherIds, enrichmentSourceFor } from '../publishers/enrichment';
 import { MemoryFeedbackStore, type FeedbackStore } from '../reports/feedback';
+import { ReportRetention, reportRetentionDays } from '../reports/retention';
+import { defaultPrivacyPolicy } from '../core/privacy';
 
 export interface ProductionServerOptions {
   environment?: 'development' | 'test' | 'production';
@@ -140,6 +142,8 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   // Feedback votes: a briefing has at most ~9 buttons, so 30 a minute per client is plenty.
   const feedbackLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.feedback ?? 30 });
   const feedbackStore = options.feedbackStore ?? new MemoryFeedbackStore();
+  // Reports and their feedback are deleted after REPORT_RETENTION_DAYS (default 365); started by server-entry.
+  const reportRetention = new ReportRetention({ days: reportRetentionDays(serverEnvironment), reports: reportStore, feedback: feedbackStore, logger });
   const adminAuth = new AdminAuth(environment, serverEnvironment);
   const aiConfig = createAIConfig(serverEnvironment);
   const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: Math.min(aiConfig.timeoutMs, AI_OPERATION_TIMEOUT_CAP_MS), maxTokens: aiConfig.maxTokens, stageMaxTokens: aiConfig.stageMaxTokens, temperature: aiConfig.temperature, reasoningEffort: aiConfig.reasoningEffort }, options.fetchImpl) : undefined);
@@ -279,6 +283,15 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
         const suggestion = reportGeneration.companySuggestion(publisherId, company);
         return withHeaders(Response.json(suggestion ? { suggestion } : {}, { headers: { 'Cache-Control': 'no-store' } }), request, manifest, environment, requestId, hostedOriginPolicy);
       }
+      // The publisher's privacy page text (admin-edited, else the default) and the report retention period.
+      if (url.pathname.match(/^\/api\/publishers\/[^/]+\/privacy$/) && request.method === 'GET') {
+        if (!publisherId || !manifest || registry.get(publisherId)?.manifest?.enabled === false) return jsonError('publisher_not_found', 404, requestId);
+        if (!originAllowed(manifest, request.headers.get('Origin'), environment, hostedOriginPolicy)) return jsonError('origin_not_allowed', 403, requestId);
+        const decision = publisherLimiter.check(requestRateLimitKey(request, 'privacy', publisherId, trustedProxy));
+        if (!decision.allowed) return new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } });
+        const text = manifest.privacyPolicy?.trim() || defaultPrivacyPolicy(manifest.name, reportRetention.days);
+        return withHeaders(Response.json({ publisherName: manifest.name, text, custom: Boolean(manifest.privacyPolicy?.trim()), retentionDays: reportRetention.days }, { headers: { 'Cache-Control': 'public, max-age=300' } }), request, manifest, environment, requestId, hostedOriginPolicy);
+      }
       if (url.pathname === '/api/analytics/events') {
         const decision = analyticsLimiter.check(requestRateLimitKey(request, 'analytics', 'global', trustedProxy));
         if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, undefined, environment, requestId);
@@ -381,7 +394,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, generationJobs, feedbackStore, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); }, startTextEnrichment: (): string[] => {
+  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, generationJobs, feedbackStore, reportRetention, startReportRetention: () => reportRetention.start(), stopReportRetention: () => reportRetention.stop(), adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); }, startTextEnrichment: (): string[] => {
     void ensureCatalogueSyncs().catch((error) => logger.error('wvc_catalogue_sync_failed', { errorName: error instanceof Error ? error.name : 'unknown' }));
     if (!catalogueRescan) { catalogueRescan = setInterval(() => { void ensureCatalogueSyncs().catch(() => undefined); }, 5 * 60 * 1000); (catalogueRescan as { unref?: () => void }).unref?.(); }
     if (!textEnrichmentEnabled) return [];

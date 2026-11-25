@@ -34,7 +34,7 @@ describe('widget hand-off to the hosted loading page', () => {
   it('shows "Starting your briefing…" while the job is created, then navigates to the loader on the platform origin', async () => {
     let respond!: (response: Response) => void;
     const calls: string[] = [];
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => { calls.push(String(input)); return new Promise<Response>((resolve) => { respond = resolve; }); }));
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => { if (String(input).endsWith('/privacy')) return Promise.resolve(Response.json({ retentionDays: 365 })); calls.push(String(input)); return new Promise<Response>((resolve) => { respond = resolve; }); }));
     const { widget, navigate } = await loadWidget();
     fill(widget, 'nike', 'Head of Retail');
     await tick();
@@ -88,7 +88,8 @@ describe('widget hand-off to the hosted loading page', () => {
     const { widget } = await loadWidget();
     fill(widget, 'nike.com', 'x'.repeat(161));
     await tick();
-    expect(request).not.toHaveBeenCalled();
+    // Only the privacy line's retention lookup; no job is created.
+    expect(request.mock.calls.filter(([url]) => !String(url).endsWith('/privacy'))).toHaveLength(0);
     expect(widget.shadowRoot.querySelector('[data-profile-error]')?.textContent).toContain('too long');
   });
 

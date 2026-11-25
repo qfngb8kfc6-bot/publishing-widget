@@ -114,6 +114,11 @@ qfngb8kfc6-bot/publishing-widget.
   story card (not theme/archive results). `POST /api/reports/:id/feedback?publisherId=` `{vote, articleId?}` → 204;
   the article must be in the report; 30/min per client. Stored anonymously (report ID, article ID, vote, time;
   `report_feedback`, migration 011). Admin: `GET /api/admin/publishers/:id/feedback` totals + "Reader feedback" card.
+- Privacy: `privacyNoticeText` (`src/core/privacy.ts`) under the widget form and in the report footer, linking to
+  `/p/:publisherId/privacy` (hosted page; text from manifest `privacyPolicy`, edited in admin, ≤20k chars, else
+  `defaultPrivacyPolicy`). `GET /api/publishers/:id/privacy` → text + `retentionDays`. Retention
+  (`src/reports/retention.ts`): reports + feedback deleted after `REPORT_RETENTION_DAYS` (default 365), every 6 h,
+  `report_retention_cleanup`. Analytics events have no retention yet.
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),

@@ -49,6 +49,8 @@ button:focus-visible,input:focus-visible { outline: 3px solid color-mix(in srgb,
 .profile-error:empty { display:none; }
 .company-suggestion { grid-column:1 / -1; margin:-4px 0 0; color:#4b5563; font-size:11px; }
 .company-suggestion:empty { display:none; }
+.privacy-note { grid-column:1 / -1; margin:2px 0 0; color:#6b7280; font-size:10.5px; line-height:1.4; }
+.privacy-note a { color:inherit; font-weight:700; text-decoration:underline; }
 .company-suggestion-button { padding:0; border:0; color:var(--ss-primary); background:none; font:inherit; font-weight:700; text-decoration:underline; cursor:pointer; }
 .close-control { position:absolute; z-index:4; top:-19px; right:7px; display:grid; width:18px; height:18px; place-items:center; padding:0; border:0; border-radius:50%; color:#777881; background:transparent; font-size:15px; line-height:1; opacity:.6; }
 .icon-minimise { display:none; width:20px; height:20px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:2; }

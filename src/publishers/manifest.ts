@@ -49,6 +49,8 @@ export interface PublisherManifest {
    * source's own hosts. Subdomains of a listed host are included.
    */
   imageHostnames?: string[];
+  /** The publisher's privacy page (/p/:publisherId/privacy), plain text edited in admin; a default text when absent. */
+  privacyPolicy?: string;
   results: PublisherConfig['results'];
   ranking?: {
     mode: 'deterministic' | 'hybrid';
