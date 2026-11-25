@@ -5,6 +5,7 @@ import type { ReportStore } from '../reports/types';
 import type { ReportPerformanceTiming } from '../reports/types';
 import { findReportTheme, MAX_SHOWN_THEME_ARTICLE_IDS, themeSupportingRecommendations } from '../reports/themes';
 import { GENERATION_STAGES, SAFE_GENERATION_ERROR_CODES, type GenerationJob, type GenerationJobs } from '../reports/generation-jobs';
+import { parseFeedbackBody, type FeedbackStore } from '../reports/feedback';
 
 export interface ReportRouteContext { runtimeMs?: number }
 
@@ -96,7 +97,7 @@ function uuidLike(value: string | undefined): string | null {
  * job and returns 202 with its status and loading-page URLs while the report is built in the background.
  * ?mode=sync keeps the original behaviour (201 once the report is persisted) for scripts and tests.
  */
-export function createReportRoutes(registry: PublisherRegistry, generation: ReportGenerationService, reports: ReportStore, jobs: GenerationJobs) {
+export function createReportRoutes(registry: PublisherRegistry, generation: ReportGenerationService, reports: ReportStore, jobs: GenerationJobs, feedback?: FeedbackStore) {
   /** Resolves the company, creates the job and builds the report in the background; returns the 202 response. */
   async function startGeneration(publisherId: string, companyUrl: string, jobTitle: string, sessionId: string | undefined, requestId: string | undefined): Promise<Response> {
     const resolvedCompany = await generation.resolveCompanyInput({ publisherId, companyUrl, requestId });
@@ -185,6 +186,23 @@ export function createReportRoutes(registry: PublisherRegistry, generation: Repo
       } catch {
         return Response.json({ error: 'theme_search_unavailable' }, { status: 503 });
       }
+    }
+    // Anonymous 👍/👎 on the briefing or one of its stories: report ID, article ID, vote and time only.
+    const feedbackMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/feedback$/);
+    if (feedbackMatch) {
+      if (request.method !== 'POST') return Response.json({ error: 'method_not_allowed' }, { status: 405 });
+      if (!feedback) return Response.json({ error: 'feedback_unavailable' }, { status: 503 });
+      const id = uuidLike(feedbackMatch[1]);
+      const publisherId = safeRouteId(url.searchParams.get('publisherId') ?? undefined);
+      if (!id || !publisherId) return Response.json({ error: 'invalid_request' }, { status: 400 });
+      let vote: ReturnType<typeof parseFeedbackBody>;
+      try { vote = parseFeedbackBody(await readJsonBody(request, 2_000)); } catch { return Response.json({ error: 'invalid_request' }, { status: 400 }); }
+      if (!vote) return Response.json({ error: 'invalid_feedback' }, { status: 400 });
+      const report = await reports.get(id, publisherId);
+      if (!report || report.publisherId !== publisherId) return Response.json({ error: 'report_not_found' }, { status: 404 });
+      if (vote.articleId && !report.recommendations.some((recommendation) => recommendation.articleId === vote!.articleId)) return Response.json({ error: 'invalid_feedback' }, { status: 400 });
+      await feedback.record({ publisherId, reportId: report.id, ...(vote.articleId ? { articleId: vote.articleId } : {}), vote: vote.vote, createdAt: new Date().toISOString() });
+      return new Response(null, { status: 204, headers: NO_STORE });
     }
     const reportMatch = url.pathname.match(/^\/api\/reports\/([^/]+)$/);
     if (reportMatch && request.method === 'GET') {

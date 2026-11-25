@@ -110,6 +110,10 @@ qfngb8kfc6-bot/publishing-widget.
   run alongside the AI calls and are waited on ≤300 ms; on failure the browser check applies as before.
 - Company typo hint: `GET /api/publishers/:id/company-suggestion?company=` (`src/reports/company-suggestion.ts`, cached
   catalogue only) → "Did you mean Nike?" under the company field of the widget, edit forms and admin Test report; never blocks.
+- Feedback (`src/reports/feedback.ts`): 👍/👎 on the whole briefing (above the report actions) and on each report
+  story card (not theme/archive results). `POST /api/reports/:id/feedback?publisherId=` `{vote, articleId?}` → 204;
+  the article must be in the report; 30/min per client. Stored anonymously (report ID, article ID, vote, time;
+  `report_feedback`, migration 011). Admin: `GET /api/admin/publishers/:id/feedback` totals + "Reader feedback" card.
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),
@@ -147,7 +151,7 @@ qfngb8kfc6-bot/publishing-widget.
 - Render, 1 CPU / 2 GB RAM, `NODE_OPTIONS=--max-old-space-size=1536`. Supabase Postgres via `DATABASE_URL`.
 - `npm start` = build + `node server-entry.mjs`. Migrations are expected to run on start via Render's start
   command (`npm run db:migrate` is not part of `npm start` in this repo — keep that Render setting). Apply a
-  new migration before code that uses it (latest: `010_publisher_article_catalogue.sql`, required before creating a WVC-catalogue publisher; `009` before enabling WVC full text).
+  new migration before code that uses it (latest: `011_report_feedback.sql`, before feedback votes; `010_publisher_article_catalogue.sql` required before creating a WVC-catalogue publisher; `009` before enabling WVC full text).
 - Startup prewarms catalogues (snapshot hydrate → refresh if stale → index prebuild → snapshot save, one job at
   a time) and logs `heap_usage` every 60 s.
 

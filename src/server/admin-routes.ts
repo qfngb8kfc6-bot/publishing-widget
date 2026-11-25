@@ -13,11 +13,14 @@ import { AdminAuth, adminOriginAllowed } from './admin-auth';
 import { readJsonBody, safeRouteId } from './request-validation';
 import { safeLogText, type ServerLogFields, type StructuredLogger } from './logging';
 import { classifyCompanyInput } from './company-resolver';
+import type { FeedbackStore } from '../reports/feedback';
 
 interface AdminRoutesOptions {
   registry: PublisherRegistry;
   publisherRuntime: PublisherRuntime;
   analyticsStore: AnalyticsStore;
+  /** Anonymous briefing feedback: totals per publisher only. */
+  feedbackStore?: FeedbackStore;
   generation: ReportGenerationService;
   auth: AdminAuth;
   environment: 'development' | 'test' | 'production';
@@ -310,7 +313,7 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
         return Response.json({ error: error instanceof Error ? safeText(error.message) ?? 'invalid_source_test' : 'invalid_source_test' }, { status: 400 });
       }
     }
-    const match = url.pathname.match(/^\/api\/admin\/publishers\/([^/]+)(?:\/(content-check|test-report|validate|export|config))?$/);
+    const match = url.pathname.match(/^\/api\/admin\/publishers\/([^/]+)(?:\/(content-check|test-report|validate|export|config|feedback))?$/);
     if (!match) return Response.json({ error: 'not_found' }, { status: 404 });
     const publisherId = safeRouteId(match[1]);
     if (!publisherId) return Response.json({ error: 'publisher_not_found' }, { status: 404 });
@@ -347,6 +350,10 @@ export function createAdminRoutes(options: AdminRoutesOptions) {
       const report = buildAnalyticsReport(Array.isArray(events) ? events : [], publisherId);
       const current = capabilities();
       return Response.json({ publisher: safeManifest(manifest, current), analytics: analyticsSummary(report), lastContentCheck: lastContentChecks.get(publisherId) ?? null, embed: `<script src="${new URL('/widget.js', request.url).toString()}" data-publisher="${publisherId}" defer></script>`, links: { analytics: `/analytics?publisher=${encodeURIComponent(publisherId)}`, publicDemo: `/?publisher=${encodeURIComponent(publisherId)}` }, persistence: legacyPersistence(current), capabilities: current });
+    }
+    if (action === 'feedback' && request.method === 'GET') {
+      const totals = options.feedbackStore ? await options.feedbackStore.totals(publisherId) : { publisherId, briefing: { up: 0, down: 0 }, stories: { up: 0, down: 0 }, topStories: [] };
+      return Response.json(totals, { headers: { 'Cache-Control': 'no-store' } });
     }
     if (action === 'content-check' && request.method === 'POST') {
       try {

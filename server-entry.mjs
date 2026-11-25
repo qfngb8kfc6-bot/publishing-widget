@@ -3,7 +3,7 @@ import path from 'node:path';
 import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import { createProductionApp, PostgresAnalyticsStore, PostgresReportStore, PostgresPublisherStore, PostgresCatalogueSnapshotStore, PostgresGenerationJobStore, PostgresArticleTextStore, resolveCommitSha } from './dist/server.mjs';
+import { createProductionApp, PostgresAnalyticsStore, PostgresReportStore, PostgresPublisherStore, PostgresCatalogueSnapshotStore, PostgresGenerationJobStore, PostgresArticleTextStore, PostgresFeedbackStore, resolveCommitSha } from './dist/server.mjs';
 import { staticResponse } from './server-static.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'dist');
@@ -44,7 +44,7 @@ async function createAnalyticsStore() {
   });
   try {
     await pool.query('SELECT 1');
-    return { store: new PostgresAnalyticsStore(pool), reportStore: new PostgresReportStore(pool), publisherStore: new PostgresPublisherStore(pool), catalogueSnapshotStore: new PostgresCatalogueSnapshotStore(pool), generationJobStore: new PostgresGenerationJobStore(pool), articleTextStore: new PostgresArticleTextStore(pool), mode: 'postgres', pool };
+    return { store: new PostgresAnalyticsStore(pool), reportStore: new PostgresReportStore(pool), publisherStore: new PostgresPublisherStore(pool), catalogueSnapshotStore: new PostgresCatalogueSnapshotStore(pool), generationJobStore: new PostgresGenerationJobStore(pool), articleTextStore: new PostgresArticleTextStore(pool), feedbackStore: new PostgresFeedbackStore(pool), mode: 'postgres', pool };
   } catch (error) {
     await pool.end();
     throw error;
@@ -70,14 +70,15 @@ async function start() {
   let catalogueSnapshotStore;
   let generationJobStore;
   let articleTextStore;
+  let feedbackStore;
   try {
-    ({ store: analyticsStore, reportStore, publisherStore, catalogueSnapshotStore, generationJobStore, articleTextStore, mode: analyticsStoreMode } = await createAnalyticsStore());
+    ({ store: analyticsStore, reportStore, publisherStore, catalogueSnapshotStore, generationJobStore, articleTextStore, feedbackStore, mode: analyticsStoreMode } = await createAnalyticsStore());
   } catch (error) {
     console.error(`[publisher-widget] database startup failed: ${error instanceof Error ? error.name : 'unknown'}`);
     process.exitCode = 1;
     return;
   }
-  const app = createProductionApp({ environment, serverEnvironment: process.env, analyticsStore, reportStore, publisherStore, catalogueSnapshotStore, generationJobStore, articleTextStore, analyticsStoreMode, trustedProxy: process.env.TRUSTED_PROXY === 'true', commitSha });
+  const app = createProductionApp({ environment, serverEnvironment: process.env, analyticsStore, reportStore, publisherStore, catalogueSnapshotStore, generationJobStore, articleTextStore, feedbackStore, analyticsStoreMode, trustedProxy: process.env.TRUSTED_PROXY === 'true', commitSha });
   if (publisherStore) {
     const existing = new Set((await publisherStore.list()).map((record) => record.manifest.publisherId));
     for (const definition of app.registry.list()) {

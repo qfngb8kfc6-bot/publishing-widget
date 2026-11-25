@@ -47,6 +47,14 @@ export interface CardOptions {
    * scale, so it is labelled "Theme match" in a quieter outline pill rather than the report's filled "match" pill.
    */
   themeMatch?: boolean;
+  /** Report stories only: 👍/👎 buttons (anonymous feedback on this story). */
+  feedback?: boolean;
+}
+
+/** 👍/👎 for a story (articleId) or, without one, for the whole briefing. Bound in renderReport. */
+export function voteMarkup(articleId?: string, label = 'Was this story useful?'): string {
+  const target = articleId ? ` data-vote-article="${escapeHtml(articleId)}"` : '';
+  return `<div class="cx-vote" data-vote-group${target}><span class="cx-vote-label">${escapeHtml(label)}</span><button class="cx-vote-button" type="button" data-vote="up" aria-pressed="false" aria-label="Yes, useful">👍</button><button class="cx-vote-button" type="button" data-vote="down" aria-pressed="false" aria-label="No, not useful">👎</button><span class="cx-vote-note" aria-live="polite" data-vote-note></span></div>`;
 }
 
 function whyMarkup(explanation: string): string {
@@ -132,7 +140,7 @@ export function cardMarkup(recommendation: ReportRecommendation, context: CardCo
   const media = image ? `<img class="cx-image${serverLogo ? ' is-logo" data-image-kind="logo' : ''}" src="${escapeHtml(image)}" alt="" loading="lazy">` : typePanelMarkup(panel?.keyLine, category, context);
   const meta = [category ? `<span>${escapeHtml(category)}</span>` : '', date ? `<time datetime="${escapeHtml(article.publishedAt ?? '')}">${escapeHtml(date)}</time>` : ''].filter(Boolean).join('<span class="cx-dot" aria-hidden="true">·</span>');
   const classes = ['cx-card', options.lead ? 'cx-lead' : options.compact ? 'cx-compact' : 'cx-rest-card', image ? 'has-image' : 'no-image'].join(' ');
-  return `<article class="${classes}" data-story-card="${escapeHtml(article.id)}"><div class="cx-media${serverLogo ? ' is-logo' : ''}">${media}</div><div class="cx-head"><div class="story-meta cx-top">${options.themeMatch ? `<span class="match-badge cx-match cx-theme-match" title="How closely this story fits the theme"><b>${recommendation.displayScore}%</b> Theme match</span>` : `<span class="match-badge cx-match"><b>${recommendation.displayScore}%</b> match</span>`}</div>${options.label ? `<p class="cx-label">${escapeHtml(options.label)}</p>` : ''}<h3 class="cx-title">${escapeHtml(article.title)}</h3>${meta ? `<p class="cx-meta">${meta}</p>` : ''}</div><div class="cx-body">${description ? `<p class="story-summary">${escapeHtml(description)}</p>` : ''}${showWhy ? whyMarkup(recommendation.explanation) : ''}${context.link(article)}</div></article>`;
+  return `<article class="${classes}" data-story-card="${escapeHtml(article.id)}"><div class="cx-media${serverLogo ? ' is-logo' : ''}">${media}</div><div class="cx-head"><div class="story-meta cx-top">${options.themeMatch ? `<span class="match-badge cx-match cx-theme-match" title="How closely this story fits the theme"><b>${recommendation.displayScore}%</b> Theme match</span>` : `<span class="match-badge cx-match"><b>${recommendation.displayScore}%</b> match</span>`}</div>${options.label ? `<p class="cx-label">${escapeHtml(options.label)}</p>` : ''}<h3 class="cx-title">${escapeHtml(article.title)}</h3>${meta ? `<p class="cx-meta">${meta}</p>` : ''}</div><div class="cx-body">${description ? `<p class="story-summary">${escapeHtml(description)}</p>` : ''}${showWhy ? whyMarkup(recommendation.explanation) : ''}${context.link(article)}${options.feedback ? voteMarkup(article.id) : ''}</div></article>`;
 }
 
 export interface StoryGroup {
@@ -168,8 +176,8 @@ export function storiesSectionMarkup(stories: DisplayStory[], context: CardConte
   const head = `<div class="cx-section-head"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${count ? `Your ${count} ${count === 1 ? 'story' : 'stories'}` : escapeHtml(heading)}</h2></div>${count > 1 ? '<p class="cx-section-note">Strongest match first</p>' : ''}</div>`;
   if (!count) return `<section class="stories-section top-stories cx-stories" id="top-stories" aria-labelledby="top-stories-heading">${head}<p>No strong matches were found in the current coverage.</p></section>`;
   const [lead, ...rest] = stories;
-  const leadMarkup = cardMarkup(lead.recommendation, context, { lead: true, label: lead.label ?? 'Top match' });
-  const restMarkup = rest.map((story) => cardMarkup(story.recommendation, context, { label: story.label })).join('');
+  const leadMarkup = cardMarkup(lead.recommendation, context, { lead: true, label: lead.label ?? 'Top match', feedback: true });
+  const restMarkup = rest.map((story) => cardMarkup(story.recommendation, context, { label: story.label, feedback: true })).join('');
   return `<section class="stories-section top-stories cx-stories" id="top-stories" aria-labelledby="top-stories-heading">${head}${leadMarkup}${rest.length ? `<div class="cx-grid">${restMarkup}</div>` : ''}</section>`;
 }
 
@@ -429,6 +437,7 @@ export function cardsStyle(): string {
 /* "Read the original story" sits at the bottom of every card, so cards in a grid row end on one line. */
 .cx-card .story-link{display:inline-flex;align-self:flex-start;align-items:center;gap:6px;min-height:40px;margin-top:auto;padding-top:6px;color:var(--brand);font-size:.86rem;font-weight:800;text-decoration:none}
 .cx-card .story-link:hover{text-decoration:underline}
+.cx .cx-vote{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px;color:#69707d;font-size:.76rem}.cx .cx-vote-button{min-width:36px;min-height:32px;padding:2px 8px;border:1px solid rgba(20,30,60,.14);border-radius:999px;background:#fff;font-size:.95rem;line-height:1;cursor:pointer}.cx .cx-vote-button[aria-pressed="true"]{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 12%,white)}.cx .cx-vote-button:disabled{cursor:default}.cx .cx-vote-button:focus-visible{outline:3px solid color-mix(in srgb,var(--brand) 55%,white);outline-offset:2px}.cx .cx-vote-note{min-width:4em}.cx .report-feedback .cx-vote{justify-content:center;width:100%;margin:0 0 6px;font-size:.88rem}
 .cx-card.cx-lead{margin-bottom:16px;border-color:color-mix(in srgb,var(--brand) 22%,white);box-shadow:0 18px 48px rgba(21,26,58,.09)}
 .cx-card.cx-lead .cx-title{font-size:clamp(1.45rem,2.4vw,2.1rem);line-height:1.12;letter-spacing:-.02em}
 .cx-card.cx-lead .story-summary{-webkit-line-clamp:4}

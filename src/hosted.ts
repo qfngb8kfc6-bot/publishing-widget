@@ -9,7 +9,7 @@ import { generationInputMessage } from './widget/messages';
 import { displayRoleTitle } from './core/role-title';
 import { bindCompanySuggestion, companySuggestionUrl } from './widget/company-suggestion';
 import { bindCitationChips, briefHeroMarkup, briefHeroStyle } from './hosted-hero';
-import { bindCardImages, bindFocusPanel, cardsStyle, displayStories, displayTitle, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, type CardContext } from './hosted-cards';
+import { bindCardImages, bindFocusPanel, cardsStyle, displayStories, displayTitle, focusHeading, focusPanelMarkup, focusResultsMarkup, storiesSectionMarkup, themesSectionMarkup, voteMarkup, type CardContext } from './hosted-cards';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&#38;', '<': '&#60;', '>': '&#62;', "'": '&#39;', '"': '&#34;' })[character] ?? character);
@@ -198,6 +198,38 @@ html{scroll-padding-top:84px}.report-page section,.report-page [id]{scroll-margi
 </style>`;
 }
 
+/**
+ * 👍/👎 on the briefing and on each report story: POST /api/reports/:id/feedback (vote and article ID only; no
+ * personal data). A vote is remembered for this browser tab (sessionStorage) so the buttons stay answered.
+ */
+function bindFeedback(app: HTMLElement, report: ReportRecord): void {
+  app.querySelectorAll<HTMLElement>('[data-vote-group]').forEach((group) => {
+    const articleId = group.dataset.voteArticle;
+    const key = `feedback:${report.id}:${articleId ?? 'briefing'}`;
+    const note = group.querySelector<HTMLElement>('[data-vote-note]');
+    const buttons = [...group.querySelectorAll<HTMLButtonElement>('[data-vote]')];
+    const settle = (vote: string) => {
+      for (const button of buttons) { button.disabled = true; button.setAttribute('aria-pressed', String(button.dataset.vote === vote)); }
+      if (note) note.textContent = 'Thanks';
+    };
+    let stored: string | null = null;
+    try { stored = window.sessionStorage?.getItem(key) ?? null; } catch { stored = null; }
+    if (stored === 'up' || stored === 'down') { settle(stored); return; }
+    for (const button of buttons) button.addEventListener('click', async () => {
+      const vote = button.dataset.vote === 'down' ? 'down' : 'up';
+      settle(vote);
+      try {
+        const response = await fetch(`/api/reports/${encodeURIComponent(report.id)}/feedback?publisherId=${encodeURIComponent(report.publisherId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(articleId ? { vote, articleId } : { vote }) });
+        if (!response.ok) throw new Error('feedback_failed');
+        try { window.sessionStorage?.setItem(key, vote); } catch { /* Private mode: the vote is still sent. */ }
+      } catch {
+        for (const other of buttons) { other.disabled = false; other.setAttribute('aria-pressed', 'false'); }
+        if (note) note.textContent = 'Couldn’t send. Try again?';
+      }
+    });
+  });
+}
+
 function renderReport(documentRef: Document, manifest: PublisherManifest, report: ReportRecord, analytics: BatchingAnalyticsClient): void {
   const app = documentRef.querySelector<HTMLElement>('#hosted-app');
   if (!app) return;
@@ -212,11 +244,12 @@ function renderReport(documentRef: Document, manifest: PublisherManifest, report
   const storiesOnPage = stories.map((story) => story.recommendation);
   const heroMarkup = `${briefHeroStyle()}${briefHeroMarkup({ report, publisherName: manifest.name, role: displayRoleTitle(report.jobTitle), company: displayCompany(report), themeCount: reportThemes(report).length, storiesOnPage, brand: brandMarkup(manifest) })}`;
   const cardContext: CardContext = { publisherName: manifest.name, link: (article) => articleLink(article, manifest) };
-  const reportActions = '<div class="report-actions"><button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div>';
+  const reportActions = '<div class="report-actions report-feedback">' + voteMarkup(undefined, 'Was this briefing useful?') + '<button class="action-button" type="button" data-edit>Edit profile</button><button class="text-button" type="button" data-share>Share report</button><p class="share-note" aria-live="polite" data-share-note></p></div>';
   const body = `${cardsStyle()}<div class="report-content cx">${themesSectionMarkup(report, reportThemes(report), (theme) => themeDescription(report, theme))}${storiesSectionMarkup(stories, cardContext, reportTitle)}${reportActions}</div>${focusPanelMarkup()}`;
   app.innerHTML = `${reportCoverStyle}${heroMarkup}<div class="context-bar" data-sticky-context aria-hidden="true"><div class="context-bar-inner"><div>${brandMarkup(manifest, 'compact')}</div><span class="context-label">${escapeHtml(identity)}</span></div><div class="bar-actions"><button class="text-button" type="button" data-edit>Edit</button><button class="action-button" type="button" data-share>Share</button></div></div>${body}${editSheetMarkup(report)}`;
 
   bindCitationChips(app, window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
+  bindFeedback(app, report);
   const cover = app.querySelector<HTMLElement>('.report-hero');
   const contextBar = app.querySelector<HTMLElement>('[data-sticky-context]');
   // The bar is shown only from the scroll position where it is already stuck to the top (hero end + its in-flow
