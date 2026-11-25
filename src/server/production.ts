@@ -136,7 +136,10 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const publisherLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.publisher ?? 60 });
   const aiLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.ai ?? 10 });
   const analyticsLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.analytics ?? 120 });
-  const generationLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generation ?? 12 });
+  // Generations per minute per client: 12 unless GENERATION_RATE_LIMIT_PER_MINUTE (1-600) is set, e.g. on a staging
+  // instance for npm run load:test (20 concurrent generations from one machine).
+  const configuredGenerationLimit = Number(serverEnvironment.GENERATION_RATE_LIMIT_PER_MINUTE);
+  const generationLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generation ?? (Number.isInteger(configuredGenerationLimit) && configuredGenerationLimit >= 1 && configuredGenerationLimit <= 600 ? configuredGenerationLimit : 12) });
   // The loading page polls about every 600 ms, so status gets its own, larger budget.
   const generationStatusLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generationStatus ?? 240 });
   // Feedback votes: a briefing has at most ~9 buttons, so 30 a minute per client is plenty.
