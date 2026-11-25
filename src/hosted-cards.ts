@@ -6,6 +6,7 @@
  */
 import type { ReportRecommendation, ReportRecord } from './reports';
 import { displayRoleTitle } from './core/role-title';
+import { orderByRecency, preferRecentLead } from './reports/recency';
 import { themeDisplayTitle, themeInlineText, themeSupportingRecommendations } from './reports/themes';
 
 const SERIF = "'Source Serif 4',Georgia,serif";
@@ -146,13 +147,16 @@ export interface DisplayStory {
 }
 
 /**
- * Display order only: every story on the page (sections flattened, labels kept), highest match % first so the lead
- * is the strongest match. Ties keep the ranking order. Selection and ranking are unchanged; the hero numbers its
- * "Source N" chips from this same order, so they match the cards.
+ * Display order only: every story on the page (sections flattened, labels kept), by match % times the same recency
+ * weight the report ranking uses (older than 12 months clearly lower), so the lead is the strongest recent match;
+ * the lead then prefers a story from the last six months within 10 points of an older first story, as on the
+ * server. Ties keep the ranking order. Selection is unchanged; the hero numbers its "Source N" chips from this same
+ * order, so they match the cards.
  */
-export function displayStories(groups: StoryGroup[]): DisplayStory[] {
+export function displayStories(groups: StoryGroup[], now = Date.now()): DisplayStory[] {
   const stories = groups.flatMap((group) => group.recommendations.map((recommendation) => ({ recommendation, label: group.label })));
-  return stories.map((story, index) => ({ story, index })).sort((left, right) => (right.story.recommendation.displayScore - left.story.recommendation.displayScore) || (left.index - right.index)).map(({ story }) => story);
+  const orderable = stories.map((story) => ({ story, article: story.recommendation.article, finalScore: story.recommendation.displayScore, relevanceType: 'direct' as const }));
+  return preferRecentLead(orderByRecency(orderable, now), now).map(({ story }) => story);
 }
 
 /**

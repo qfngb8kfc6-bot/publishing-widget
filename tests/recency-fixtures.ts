@@ -1,0 +1,21 @@
+/** SGI-style stories with ages in days, for the recency tests (CEO at Decathlon, Nike retail and procurement). Not a test file. */
+export const RECENCY_FIXTURE_STORIES: Array<[section: string, title: string, description: string, ageDays: number]> = [
+  ['retail', 'JD Sports H1 operating profit falls 19.5%', 'JD Sports Fashion reported a 19.5% fall in first-half operating profit as trading in North America softened.', 470],
+  ['retail', 'Decathlon reports first-half sales growth of 4%', 'Decathlon said first-half revenue rose 4% to 8.1 billion euros, led by its own brands and online sales.', 500],
+  ['business', 'Decathlon sells stake in Chinese operations', 'Decathlon has agreed to sell a stake in its Chinese operations to an investment group.', 820],
+  ['retail', 'Frasers Group profit rises on strong sports retail trading', 'Frasers Group reported higher annual profit as sports retail trading stayed strong in the UK.', 40],
+  ['retail', 'Intersport posts record revenue as store network grows', 'Intersport International said revenue rose 6% as members opened stores across Europe.', 75],
+  ['retail', 'Decathlon expands footprint in cities with two new stores in Nuremberg', 'Decathlon is opening two city-centre stores in Nuremberg as part of its store expansion strategy in Germany.', 30],
+  ['business', 'Decathlon names new chief strategy officer', 'Decathlon has appointed a new chief strategy officer to lead its growth plans in Europe and Asia.', 120],
+  ['business', 'Sportisimo acquires rival chain in Poland', 'Sportisimo has acquired a smaller sporting goods chain in Poland, adding 30 stores to its network.', 400],
+  ['retail', 'XXL ASA sales fall as Nordic market weakens', 'Nordic sporting goods retailer XXL ASA reported lower quarterly sales and a weaker gross margin.', 20],
+  ['business', 'Puma revenue slips in third quarter', 'Puma said third-quarter revenue slipped 2% as wholesale orders weakened in North America.', 35],
+  ['industry', 'Sporting goods market in Germany grows 3%', 'The German sporting goods market grew 3% last year, according to a new industry study by retailers.', 600],
+  ['retail', 'Nike opens House of Innovation flagship in Paris', 'Nike opened a House of Innovation flagship store in Paris as part of its retail and direct to consumer strategy.', 430],
+  ['retail', 'Nike closes 20 stores in direct to consumer reset', 'Nike is closing 20 stores in North America as it resets its retail and direct to consumer strategy.', 60],
+  ['business', 'Nike cuts supplier base as sourcing shifts to Vietnam', 'Nike is reducing its supplier base and shifting footwear sourcing and procurement to Vietnam.', 900],
+  ['business', 'Adidas renegotiates supplier contracts to cut sourcing costs', 'Adidas said procurement savings came from renegotiated supplier contracts and new sourcing in India.', 50],
+  ['business', 'Puma names new head of sourcing and procurement', 'Puma has appointed a new head of sourcing to run procurement and supplier relationships.', 140],
+  ['business', 'Asics consolidates footwear suppliers', 'Asics is consolidating footwear suppliers and moving procurement to fewer factories.', 380],
+  ['retail', 'Decathlon opens largest UK store in Manchester', 'Decathlon has opened its largest UK store in Manchester as it accelerates retail growth.', 700],
+];

@@ -16,6 +16,7 @@ import { articleSupportsTheme, MAX_SHOWN_THEME_ARTICLE_IDS, consolidateThemes, d
 import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
+import { orderByRecency, preferRecentLead } from './recency';
 import { articleRelationship, limitOwnCompanyShare, MIN_MARKET_CONTEXT_STORIES, namesOwnCompany, orderMarketContext, OWN_COMPANY_MAX_SHARE, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
 import { collapseNearDuplicates } from './near-duplicates';
 import { explanationQualityWarnings, explanationRestatement, ownCompanyMisframed, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
@@ -1255,7 +1256,8 @@ export class ReportGenerationService {
     }
     // Rerank weak fits leave first, before the content call, so the summary is never built on them. Only then are
     // the report's places taken, with own-company articles held to about 60% while alternatives exist.
-    const pool = ranking.ranked;
+    // Recency orders the qualifying pool (older than 12 months clearly lower); it never removes a story.
+    const pool = orderByRecency(ranking.ranked);
     const rerankWeakIds = new Set(pool.filter((item) => item.weakFit).map((item) => item.article.id));
     const afterRerank = removeWeakFits(pool, rerankWeakIds);
     this.logRerankDrops(input, 'report', afterRerank.removed.map((item) => ({ articleId: item.article.id, reason: 'weak_removed' as const })));
@@ -1505,6 +1507,8 @@ export class ReportGenerationService {
       }
     }
     const logoIds = await logoProbes(LOGO_PROBE_FINAL_WAIT_MS);
+    // The lead prefers the last six months when a comparably relevant recent story exists.
+    weakFit.kept = preferRecentLead(weakFit.kept);
     const rawRecommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds), articleTexts).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {

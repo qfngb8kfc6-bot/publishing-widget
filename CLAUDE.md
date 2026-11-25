@@ -52,6 +52,9 @@ qfngb8kfc6-bot/publishing-widget.
 3. Catalogue from cache (warm-up in parallel) → archive-wide preselection with the professional scorer (same as
    theme search) to ≤100 candidates → deterministic ranking.
 4. AI rerank (compact `{id, score, weak}`), hybrid blend; weak fits removed (min 3 kept).
+   Recency (`src/reports/recency.ts`) then orders the qualifying pool: weight 1 up to 6 months, 0.9 at 12, 0.75 at
+   13, 0.6 from 3 years (undated 0.9); direct still before adjacent; scores/thresholds unchanged, nothing removed
+   for age. The lead moves to the best ≤6-month story within 10 points of an older first story (`preferRecentLead`).
 5. Content calls in parallel, each ≤ ~350 output tokens under its own 5 s cap and fallback: S (summary +
    citedArticleIds + theme card lines) and E1..En (explanations, ≤4 articles per batch, ≤4 batches; ≤5 calls).
 6. Own-company articles held to ~60% when alternatives pass the threshold; sections; transactional persist;
