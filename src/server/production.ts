@@ -34,7 +34,7 @@ import { inspectWvcCatalogue, wvcCatalogueConfigErrors, wvcCatalogueFetchConfig,
 import { TextEnrichmentSync } from '../reports/text-enrichment';
 import { enrichedPublisherIds, enrichmentSourceFor } from '../publishers/enrichment';
 import { MemoryFeedbackStore, type FeedbackStore } from '../reports/feedback';
-import { ReportRetention, reportRetentionDays } from '../reports/retention';
+import { analyticsRetentionDays, ReportRetention, reportRetentionDays } from '../reports/retention';
 import { defaultPrivacyPolicy } from '../core/privacy';
 
 export interface ProductionServerOptions {
@@ -146,7 +146,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const feedbackLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.feedback ?? 30 });
   const feedbackStore = options.feedbackStore ?? new MemoryFeedbackStore();
   // Reports and their feedback are deleted after REPORT_RETENTION_DAYS (default 365); started by server-entry.
-  const reportRetention = new ReportRetention({ days: reportRetentionDays(serverEnvironment), reports: reportStore, feedback: feedbackStore, logger });
+  const reportRetention = new ReportRetention({ days: reportRetentionDays(serverEnvironment), reports: reportStore, feedback: feedbackStore, analytics: analyticsStore, analyticsDays: analyticsRetentionDays(serverEnvironment), logger });
   const adminAuth = new AdminAuth(environment, serverEnvironment);
   const aiConfig = createAIConfig(serverEnvironment);
   const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: Math.min(aiConfig.timeoutMs, AI_OPERATION_TIMEOUT_CAP_MS), maxTokens: aiConfig.maxTokens, stageMaxTokens: aiConfig.stageMaxTokens, temperature: aiConfig.temperature, reasoningEffort: aiConfig.reasoningEffort }, options.fetchImpl) : undefined);

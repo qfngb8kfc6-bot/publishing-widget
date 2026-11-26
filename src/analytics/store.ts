@@ -21,4 +21,10 @@ export class MemoryAnalyticsStore implements AnalyticsStore {
   async listPublisherIds(): Promise<string[]> {
     return [...new Set(this.events.map((event) => event.publisherId))].sort();
   }
+
+  async deleteOccurredBefore(publisherId: string, cutoff: Date, limit: number): Promise<number> {
+    const doomed = new Set(this.events.filter((event) => event.publisherId === publisherId && Date.parse(event.timestamp) < cutoff.getTime()).sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp)).slice(0, limit));
+    for (let index = this.events.length - 1; index >= 0; index -= 1) if (doomed.has(this.events[index])) this.events.splice(index, 1);
+    return doomed.size;
+  }
 }

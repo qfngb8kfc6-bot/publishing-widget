@@ -121,7 +121,8 @@ qfngb8kfc6-bot/publishing-widget.
   `/p/:publisherId/privacy` (hosted page; text from manifest `privacyPolicy`, edited in admin, ≤20k chars, else
   `defaultPrivacyPolicy`). `GET /api/publishers/:id/privacy` → text + `retentionDays`. Retention
   (`src/reports/retention.ts`): reports + feedback deleted after `REPORT_RETENTION_DAYS` (default 365), every 6 h,
-  `report_retention_cleanup`. Analytics events have no retention yet.
+  `report_retention_cleanup`. The same run deletes analytics events whose `occurred_at` is older than
+  `ANALYTICS_RETENTION_DAYS` (default 365; per publisher, batches of 5,000; `analyticsEventsDeleted`).
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),

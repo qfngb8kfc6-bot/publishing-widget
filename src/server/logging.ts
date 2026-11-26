@@ -163,6 +163,9 @@ export interface ServerLogFields {
   reportsDeleted?: number;
   feedbackDeleted?: number;
   retentionDays?: number;
+  /** report_retention_cleanup: analytics events deleted and their retention period in days. */
+  analyticsEventsDeleted?: number;
+  analyticsRetentionDays?: number;
   /** weak_fit_removed counts. */
   weakFlagged?: number;
   weakFromRerank?: number;

@@ -128,9 +128,10 @@ async function start() {
     // Full-text sync (WVC_ENRICHMENT_ENABLED=true only): background pages on the catalogue queue, after prewarm.
     const textPublishers = app.startTextEnrichment();
     console.log(`[publisher-widget] text_enrichment ${textPublishers.length ? `started publishers=${textPublishers.join(',')}` : 'disabled'}`);
-    // Reports and their feedback older than REPORT_RETENTION_DAYS (default 365) are deleted; first run after a minute.
+    // Reports and their feedback older than REPORT_RETENTION_DAYS, and analytics events older than
+    // ANALYTICS_RETENTION_DAYS (both default 365), are deleted; first run after a minute, then every 6 hours.
     app.startReportRetention();
-    console.log(`[publisher-widget] report_retention days=${app.reportRetention.days}`);
+    console.log(`[publisher-widget] report_retention days=${app.reportRetention.days} analyticsDays=${app.reportRetention.analyticsDays}`);
     // Load catalogues (and so start background index builds) before the first visitor needs them.
     if (process.env.PUBLISHER_CATALOGUE_PREWARM === 'false') return;
     const startedAt = Date.now();
