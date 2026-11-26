@@ -75,6 +75,8 @@ export interface ReportRecord {
 export interface ReportStore {
   save(report: ReportRecord): Promise<void>;
   get(id: string, publisherId?: string): Promise<ReportRecord | null>;
+  /** Retention: deletes up to `limit` reports created before `cutoff` (oldest first) and returns their IDs. */
+  deleteCreatedBefore?(cutoff: Date, limit: number): Promise<string[]>;
 }
 
 export interface ReportPerformanceTiming {

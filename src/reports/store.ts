@@ -13,6 +13,11 @@ export class MemoryReportStore implements ReportStore {
     if (!report || (publisherId && report.publisherId !== publisherId)) return null;
     return clone(report);
   }
+  async deleteCreatedBefore(cutoff: Date, limit: number): Promise<string[]> {
+    const ids = [...this.reports.values()].filter((report) => Date.parse(report.createdAt) < cutoff.getTime()).sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)).slice(0, limit).map((report) => report.id);
+    for (const id of ids) this.reports.delete(id);
+    return ids;
+  }
 }
 
 export interface ReportSqlClient {
@@ -55,6 +60,12 @@ function storedThemeDescriptions(value: unknown): Record<string, string> | undef
 /** Postgres adapter for persisted reports. Structured profile and recommendations stay versioned JSONB. */
 export class PostgresReportStore implements ReportStore {
   constructor(private readonly client: ReportSqlClient) {}
+
+  /** Retention: oldest first; recommendations go with their report (ON DELETE CASCADE). */
+  async deleteCreatedBefore(cutoff: Date, limit: number): Promise<string[]> {
+    const result = await this.client.query<{ id: string }>('DELETE FROM reports WHERE id IN (SELECT id FROM reports WHERE created_at < $1 ORDER BY created_at LIMIT $2) RETURNING id', [cutoff.toISOString(), limit]);
+    return result.rows.map((row) => row.id);
+  }
 
   /** Writes the report and all recommendations atomically: one transaction, one multi-row recommendation insert. */
   async save(report: ReportRecord): Promise<void> {

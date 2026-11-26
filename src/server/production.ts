@@ -33,6 +33,9 @@ import type { ArticleTextStore, WvcCatalogueStore } from '../reports/article-tex
 import { inspectWvcCatalogue, wvcCatalogueConfigErrors, wvcCatalogueFetchConfig, wvcCatalogueParseOptions, type WvcCatalogueSourceConfig } from '../publishers/content';
 import { TextEnrichmentSync } from '../reports/text-enrichment';
 import { enrichedPublisherIds, enrichmentSourceFor } from '../publishers/enrichment';
+import { MemoryFeedbackStore, type FeedbackStore } from '../reports/feedback';
+import { ReportRetention, reportRetentionDays } from '../reports/retention';
+import { defaultPrivacyPolicy } from '../core/privacy';
 
 export interface ProductionServerOptions {
   environment?: 'development' | 'test' | 'production';
@@ -41,7 +44,7 @@ export interface ProductionServerOptions {
   aiProvider?: AIProvider;
   logger?: StructuredLogger;
   fetchImpl?: typeof fetch;
-  rateLimits?: { publisher?: number; ai?: number; analytics?: number; generation?: number; generationStatus?: number };
+  rateLimits?: { publisher?: number; ai?: number; analytics?: number; generation?: number; generationStatus?: number; feedback?: number };
   trustedProxy?: boolean;
   commitSha?: string;
   analyticsStoreMode?: 'memory' | 'postgres';
@@ -58,6 +61,8 @@ export interface ProductionServerOptions {
   /** Full-text enrichment store (Postgres). Text is used only when WVC_ENRICHMENT_ENABLED=true. */
   /** Postgres in production; a WVC catalogue source also needs its catalogue methods (migration 010). */
   articleTextStore?: ArticleTextStore & Partial<WvcCatalogueStore>;
+  /** Anonymous briefing feedback (Postgres in production, migration 011); in memory when absent. */
+  feedbackStore?: FeedbackStore;
 }
 
 export { PostgresAnalyticsStore } from '../analytics/postgres-store';
@@ -66,6 +71,7 @@ export { PostgresPublisherStore } from '../publishers/store';
 export { PostgresCatalogueSnapshotStore } from '../reports/catalogue-snapshot';
 export { PostgresGenerationJobStore } from '../reports/generation-jobs';
 export { MemoryArticleTextStore, PostgresArticleTextStore } from '../reports/article-texts';
+export { MemoryFeedbackStore, PostgresFeedbackStore } from '../reports/feedback';
 // Used by scripts/wvc-check.mjs (read-only diagnostics).
 export { fetchWvcPage, fetchWvcPageCount, inspectWvcLastPage, storyCodeFromUrl, wvcCatalogueFetchConfig, wvcCatalogueParseOptions } from '../publishers/content/wvc';
 export { sgiEuropeEnrichmentSource, sgiEuropeFeedUrl, sgiEuropeManifest } from '../publishers/sgi-europe/config';
@@ -130,9 +136,17 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
   const publisherLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.publisher ?? 60 });
   const aiLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.ai ?? 10 });
   const analyticsLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.analytics ?? 120 });
-  const generationLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generation ?? 12 });
+  // Generations per minute per client: 12 unless GENERATION_RATE_LIMIT_PER_MINUTE (1-600) is set, e.g. on a staging
+  // instance for npm run load:test (20 concurrent generations from one machine).
+  const configuredGenerationLimit = Number(serverEnvironment.GENERATION_RATE_LIMIT_PER_MINUTE);
+  const generationLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generation ?? (Number.isInteger(configuredGenerationLimit) && configuredGenerationLimit >= 1 && configuredGenerationLimit <= 600 ? configuredGenerationLimit : 12) });
   // The loading page polls about every 600 ms, so status gets its own, larger budget.
   const generationStatusLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.generationStatus ?? 240 });
+  // Feedback votes: a briefing has at most ~9 buttons, so 30 a minute per client is plenty.
+  const feedbackLimiter = new SlidingWindowRateLimiter({ limit: options.rateLimits?.feedback ?? 30 });
+  const feedbackStore = options.feedbackStore ?? new MemoryFeedbackStore();
+  // Reports and their feedback are deleted after REPORT_RETENTION_DAYS (default 365); started by server-entry.
+  const reportRetention = new ReportRetention({ days: reportRetentionDays(serverEnvironment), reports: reportStore, feedback: feedbackStore, logger });
   const adminAuth = new AdminAuth(environment, serverEnvironment);
   const aiConfig = createAIConfig(serverEnvironment);
   const aiProvider = options.aiProvider ?? (environment !== 'production' && aiConfig.provider === 'mock' ? undefined : aiConfig.enabled && aiConfig.apiKey ? new OpenAICompatibleProvider({ endpoint: aiConfig.endpoint, apiKey: aiConfig.apiKey, model: aiConfig.model, timeoutMs: Math.min(aiConfig.timeoutMs, AI_OPERATION_TIMEOUT_CAP_MS), maxTokens: aiConfig.maxTokens, stageMaxTokens: aiConfig.stageMaxTokens, temperature: aiConfig.temperature, reasoningEffort: aiConfig.reasoningEffort }, options.fetchImpl) : undefined);
@@ -223,8 +237,8 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
     store: options.generationJobStore ?? new MemoryGenerationJobStore(),
     onPersistError: (error) => logger.error('generation_status_write_failed', { errorName: error instanceof Error ? error.name : 'unknown', errorMessage: safeLogText(error instanceof Error ? error.message : 'Generation status write failed.', 240) }),
   });
-  const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore, generationJobs);
-  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, generation: reportGeneration, auth: adminAuth, environment, logger, textEnrichmentStatus, inspectWvcSource: (source) => inspectWvcCatalogue(source, { fetchImpl: options.fetchImpl, resolveSecret }) });
+  const reportRoutes = createReportRoutes(registry, reportGeneration, reportStore, generationJobs, feedbackStore);
+  const adminRoutes = createAdminRoutes({ registry, publisherRuntime, analyticsStore, feedbackStore, generation: reportGeneration, auth: adminAuth, environment, logger, textEnrichmentStatus, inspectWvcSource: (source) => inspectWvcCatalogue(source, { fetchImpl: options.fetchImpl, resolveSecret }) });
 
   const trustedProxy = options.trustedProxy ?? false;
   const handle = async (request: Request): Promise<Response> => {
@@ -272,6 +286,15 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
         const suggestion = reportGeneration.companySuggestion(publisherId, company);
         return withHeaders(Response.json(suggestion ? { suggestion } : {}, { headers: { 'Cache-Control': 'no-store' } }), request, manifest, environment, requestId, hostedOriginPolicy);
       }
+      // The publisher's privacy page text (admin-edited, else the default) and the report retention period.
+      if (url.pathname.match(/^\/api\/publishers\/[^/]+\/privacy$/) && request.method === 'GET') {
+        if (!publisherId || !manifest || registry.get(publisherId)?.manifest?.enabled === false) return jsonError('publisher_not_found', 404, requestId);
+        if (!originAllowed(manifest, request.headers.get('Origin'), environment, hostedOriginPolicy)) return jsonError('origin_not_allowed', 403, requestId);
+        const decision = publisherLimiter.check(requestRateLimitKey(request, 'privacy', publisherId, trustedProxy));
+        if (!decision.allowed) return new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } });
+        const text = manifest.privacyPolicy?.trim() || defaultPrivacyPolicy(manifest.name, reportRetention.days);
+        return withHeaders(Response.json({ publisherName: manifest.name, text, custom: Boolean(manifest.privacyPolicy?.trim()), retentionDays: reportRetention.days }, { headers: { 'Cache-Control': 'public, max-age=300' } }), request, manifest, environment, requestId, hostedOriginPolicy);
+      }
       if (url.pathname === '/api/analytics/events') {
         const decision = analyticsLimiter.check(requestRateLimitKey(request, 'analytics', 'global', trustedProxy));
         if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, undefined, environment, requestId);
@@ -304,7 +327,10 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
           const requestedPublisher = safeRouteId(url.searchParams.get('publisherId') ?? undefined);
           reportManifest = requestedPublisher ? allowedOriginsFor(registry.get(requestedPublisher)?.manifest, serverEnvironment) : undefined;
           if (request.headers.get('Origin') && (!reportManifest || !originAllowed(reportManifest, request.headers.get('Origin'), environment, hostedOriginPolicy))) return jsonError('origin_not_allowed', 403, requestId);
-          if (url.pathname.startsWith('/api/generations/') && url.pathname.endsWith('/retry')) {
+          if (url.pathname.startsWith('/api/reports/') && url.pathname.endsWith('/feedback')) {
+            const decision = feedbackLimiter.check(requestRateLimitKey(request, 'report-feedback', reportManifest?.publisherId ?? 'unknown', trustedProxy));
+            if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, reportManifest, environment, requestId, hostedOriginPolicy);
+          } else if (url.pathname.startsWith('/api/generations/') && url.pathname.endsWith('/retry')) {
             // A retry starts a new generation, so it shares the generation budget.
             const decision = generationLimiter.check(requestRateLimitKey(request, 'report-generation', reportManifest?.publisherId ?? 'unknown', trustedProxy));
             if (!decision.allowed) return withHeaders(new Response(JSON.stringify({ error: 'rate_limited', requestId }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(decision.retryAfterSeconds) } }), request, reportManifest, environment, requestId, hostedOriginPolicy);
@@ -371,7 +397,7 @@ export function createProductionApp(options: ProductionServerOptions = {}) {
       logger.info('request_completed', { requestId, publisherId: publisherId ?? undefined, route: url.pathname, durationMs: Date.now() - started });
     }
   };
-  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, generationJobs, adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); }, startTextEnrichment: (): string[] => {
+  return { handle, registry, publisherRuntime, publisherStore, analyticsStore, analyticsStoreMode, reportStore, generationJobs, feedbackStore, reportRetention, startReportRetention: () => reportRetention.start(), stopReportRetention: () => reportRetention.stop(), adminAuth, flushAnalytics: () => reportGeneration.flushAnalytics(), flushEnrichmentRetries: () => reportGeneration.flushEnrichmentRetries(), logHeapUsage: (stage: string) => logHeapUsage(logger, stage), catalogueIdle: () => catalogueCache.idle(), prewarmCatalogues: async () => { await publisherRuntime.ensureLoaded(); return reportGeneration.prewarmCatalogues(); }, startTextEnrichment: (): string[] => {
     void ensureCatalogueSyncs().catch((error) => logger.error('wvc_catalogue_sync_failed', { errorName: error instanceof Error ? error.name : 'unknown' }));
     if (!catalogueRescan) { catalogueRescan = setInterval(() => { void ensureCatalogueSyncs().catch(() => undefined); }, 5 * 60 * 1000); (catalogueRescan as { unref?: () => void }).unref?.(); }
     if (!textEnrichmentEnabled) return [];

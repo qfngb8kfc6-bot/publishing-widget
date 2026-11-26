@@ -15,3 +15,4 @@ export { WIDGET_VERSION, PUBLISHER_CONFIG_VERSION } from '../version';
 export * from './compact-index';
 export * from './slices';
 export * from './lead-index';
+export * from './privacy';

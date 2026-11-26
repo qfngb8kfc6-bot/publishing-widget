@@ -116,6 +116,10 @@ export interface ProfessionalProfile {
   retrieval: RetrievalConcepts;
   generatedAt: string;
   profileVersion: string;
+  /** Named direct competitors of the reader's company, from the profile enrichment (validated, at most 8). */
+  peers?: string[];
+  /** The company's own sub-brands and aliases ("Jordan", "Converse" for Nike), from the enrichment (at most 8). */
+  subBrands?: string[];
   /** The report's theme cards, chosen once at generation from the subject vocabulary and the report's articles. */
   themes?: string[];
   /**

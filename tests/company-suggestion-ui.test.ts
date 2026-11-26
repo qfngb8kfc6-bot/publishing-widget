@@ -22,6 +22,8 @@ async function loadWidget() {
 function stubFetch(calls: Array<{ url: string; body?: string }>) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    // The privacy line's retention lookup (once per widget) is not part of these flows.
+    if (url.endsWith('/privacy')) return Response.json({ retentionDays: 365 });
     calls.push({ url, body: init?.body ? String(init.body) : undefined });
     if (url.includes('/company-suggestion')) return Response.json(new URL(url).searchParams.get('company') === 'Mike' ? { suggestion: 'Nike' } : {});
     return Response.json({ generationUrl: '/p/sgi-europe/generate/gen-1' });

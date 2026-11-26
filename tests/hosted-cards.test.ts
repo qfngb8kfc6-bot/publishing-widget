@@ -66,6 +66,31 @@ async function render(report: ReportRecord, search: string): Promise<void> {
 
 const storyIds = (scope: ParentNode) => [...scope.querySelectorAll<HTMLElement>('[data-story-card]')].filter((card) => !card.closest('[data-theme-results]')).map((card) => card.dataset.storyCard);
 
+describe('feedback buttons', () => {
+  afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ''; document.body.className = ''; window.sessionStorage.clear(); });
+
+  it('shows 👍/👎 on every report story and once for the whole briefing, and sends only the vote and article ID', async () => {
+    const report = sgiReport();
+    await render(report, '');
+    const groups = [...document.querySelectorAll<HTMLElement>('#top-stories [data-vote-group]')];
+    expect(groups.map((group) => group.dataset.voteArticle)).toEqual(storyIds(document.querySelector('#top-stories')!));
+    const briefing = document.querySelector<HTMLElement>('.report-feedback [data-vote-group]')!;
+    expect(briefing.dataset.voteArticle).toBeUndefined();
+    expect(briefing.textContent).toContain('Was this briefing useful?');
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    briefing.querySelector<HTMLButtonElement>('[data-vote="up"]')!.click();
+    groups[0].querySelector<HTMLButtonElement>('[data-vote="down"]')!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sent = fetchMock.mock.calls.filter(([url]) => String(url).includes('/feedback')).map(([url, init]) => ({ url: String(url), body: JSON.parse(String((init as RequestInit).body)) }));
+    expect(sent).toEqual([
+      { url: `/api/reports/${report.id}/feedback?publisherId=sgi-europe`, body: { vote: 'up' } },
+      { url: `/api/reports/${report.id}/feedback?publisherId=sgi-europe`, body: { vote: 'down', articleId: groups[0].dataset.voteArticle } },
+    ]);
+    expect(briefing.querySelector<HTMLButtonElement>('[data-vote="up"]')!.getAttribute('aria-pressed')).toBe('true');
+    expect([...briefing.querySelectorAll<HTMLButtonElement>('[data-vote]')].every((button) => button.disabled)).toBe(true);
+  });
+});
+
 describe('report body (magazine layout)', () => {
   afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ''; document.body.className = ''; });
 

@@ -31,7 +31,9 @@ describe('professional embed mode', () => {
     widget.openWidget();
     const form = widget.shadowRoot?.querySelector<HTMLFormElement>('form.briefing-bar');
     if (!form) throw new Error('briefing bar not rendered');
-    const mainChildren = [...form.children].filter((element) => !element.matches('.profile-error, .company-suggestion'));
+    expect(form.lastElementChild?.matches('.privacy-note')).toBe(true);
+    expect(form.querySelector('.privacy-note')?.textContent).toContain('We delete them after 1 year.');
+    const mainChildren = [...form.children].filter((element) => !element.matches('.profile-error, .company-suggestion, .privacy-note'));
     expect(mainChildren.map((element) => element.className)).toEqual([
       'briefing-label',
       'briefing-field briefing-field--company',

@@ -43,6 +43,9 @@ qfngb8kfc6-bot/publishing-widget.
 - `db/migrations/` — numbered SQL migrations; `db/schema.sql`. Docs in `docs/` (DEPLOYMENT, SECURITY, …).
 - Scripts: `npm run rank:sample` (ranking samples), `npm run wvc:compare` (SGI current vs WVC API-only, side-by-side HTML), `npm run sample:briefings`, `npm run db:migrate`,
   `npm run wvc:check` (read-only WVC last-page diagnostics; counts only).
+  `npm run load:test` (`BASE_URL=… [PUBLISHER, CONCURRENCY=20, MODE=sync|async, LOG_FILE, OUT]`): concurrent
+  generations with 20 varied profiles; p50/p95, errors, 429s, peak heap from a saved log. Never run it against
+  production unasked. The target needs `GENERATION_RATE_LIMIT_PER_MINUTE` (1–600, default 12) for a 20-request burst.
 
 ## Report pipeline (generate.ts)
 1. Resolve company (name or URL) → company context.
@@ -52,6 +55,9 @@ qfngb8kfc6-bot/publishing-widget.
 3. Catalogue from cache (warm-up in parallel) → archive-wide preselection with the professional scorer (same as
    theme search) to ≤100 candidates → deterministic ranking.
 4. AI rerank (compact `{id, score, weak}`), hybrid blend; weak fits removed (min 3 kept).
+   Recency (`src/reports/recency.ts`) then orders the qualifying pool: weight 1 up to 6 months, 0.9 at 12, 0.75 at
+   13, 0.6 from 3 years (undated 0.9); direct still before adjacent; scores/thresholds unchanged, nothing removed
+   for age. The lead moves to the best ≤6-month story within 10 points of an older first story (`preferRecentLead`).
 5. Content calls in parallel, each ≤ ~350 output tokens under its own 5 s cap and fallback: S (summary +
    citedArticleIds + theme card lines) and E1..En (explanations, ≤4 articles per batch, ≤4 batches; ≤5 calls).
 6. Own-company articles held to ~60% when alternatives pass the threshold; sections; transactional persist;
@@ -73,6 +79,12 @@ qfngb8kfc6-bot/publishing-widget.
   candidates (relaxed, accepted "why") before own-company reserves; only executives let relaxed candidates and then
   remaining market weak fits fill a thin report's places, and own-company stories are then trimmed to 60%
   (≥2 market stories, ≥3 stories). Other roles take relaxed candidates only for the two-story floor (unchanged).
+- Peers and sub-brands: the main enrichment call also returns `competitors` and `subBrands` (≤8 each;
+  `validCompanyNames`: 3–40 chars, ≤4 words, deduped). `withCompanyPeers` stores `profile.peers` (never the reader's
+  own name or a sub-brand) and `profile.subBrands`; sub-brands count as the company in `ownCompanyNames`; peers join
+  `entities` (competitor relationship), go first among competitor market picks (`namesPeer`), and are direct
+  `market` concepts for executives. Cached per publisher + company domain for 24 h (`applyCompanyPeers`, any role);
+  no enrichment and no cache → no peers (as before).
 - Generic roles ("Head of Sustainability", "Head of Legal") are anchored on their title subject: only
   subject concepts are direct; leadership words (strategy, finance, growth…) are adjacent at most.
 - Theme cards (`themes.ts`): up to 4 distinct subtopics chosen at generation (near-synonyms rejected by word
@@ -101,6 +113,15 @@ qfngb8kfc6-bot/publishing-widget.
   run alongside the AI calls and are waited on ≤300 ms; on failure the browser check applies as before.
 - Company typo hint: `GET /api/publishers/:id/company-suggestion?company=` (`src/reports/company-suggestion.ts`, cached
   catalogue only) → "Did you mean Nike?" under the company field of the widget, edit forms and admin Test report; never blocks.
+- Feedback (`src/reports/feedback.ts`): 👍/👎 on the whole briefing (above the report actions) and on each report
+  story card (not theme/archive results). `POST /api/reports/:id/feedback?publisherId=` `{vote, articleId?}` → 204;
+  the article must be in the report; 30/min per client. Stored anonymously (report ID, article ID, vote, time;
+  `report_feedback`, migration 011). Admin: `GET /api/admin/publishers/:id/feedback` totals + "Reader feedback" card.
+- Privacy: `privacyNoticeText` (`src/core/privacy.ts`) under the widget form and in the report footer, linking to
+  `/p/:publisherId/privacy` (hosted page; text from manifest `privacyPolicy`, edited in admin, ≤20k chars, else
+  `defaultPrivacyPolicy`). `GET /api/publishers/:id/privacy` → text + `retentionDays`. Retention
+  (`src/reports/retention.ts`): reports + feedback deleted after `REPORT_RETENTION_DAYS` (default 365), every 6 h,
+  `report_retention_cleanup`. Analytics events have no retention yet.
 - Angles come from a fixed list of 15 (`src/ai/angles.ts`); a collaboration/launch is never a leadership move.
 - Key logs: `ai_performance` (per call, `aiOperation`, tokens, finish reason), `ai_explanation_rejected`,
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),
@@ -138,7 +159,7 @@ qfngb8kfc6-bot/publishing-widget.
 - Render, 1 CPU / 2 GB RAM, `NODE_OPTIONS=--max-old-space-size=1536`. Supabase Postgres via `DATABASE_URL`.
 - `npm start` = build + `node server-entry.mjs`. Migrations are expected to run on start via Render's start
   command (`npm run db:migrate` is not part of `npm start` in this repo — keep that Render setting). Apply a
-  new migration before code that uses it (latest: `010_publisher_article_catalogue.sql`, required before creating a WVC-catalogue publisher; `009` before enabling WVC full text).
+  new migration before code that uses it (latest: `011_report_feedback.sql`, before feedback votes; `010_publisher_article_catalogue.sql` required before creating a WVC-catalogue publisher; `009` before enabling WVC full text).
 - Startup prewarms catalogues (snapshot hydrate → refresh if stale → index prebuild → snapshot save, one job at
   a time) and logs `heap_usage` every 60 s.
 

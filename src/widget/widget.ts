@@ -1,4 +1,4 @@
-import { ConsoleAnalytics, createEvent, createSessionId, DEFAULT_THEME, type AnalyticsClient, type DebugSink, type PublisherDefinition, type PublisherRegistry } from '../core';
+import { ConsoleAnalytics, createEvent, createSessionId, DEFAULT_REPORT_RETENTION_DAYS, DEFAULT_THEME, privacyNoticeText, privacyPagePath, type AnalyticsClient, type DebugSink, type PublisherDefinition, type PublisherRegistry } from '../core';
 import type { AIRecommendationLayer } from '../ai/types';
 import { widgetStyles } from './styles';
 import { generationInputMessage } from './messages';
@@ -67,6 +67,9 @@ export class ContentDiscoveryWidget extends HTMLElement {
     this.companySuggestion = suggestion;
     this.updateSuggestionHint();
   });
+  /** Report retention for the privacy line: the default until the publisher's privacy endpoint answers (once). */
+  private retentionDays = DEFAULT_REPORT_RETENTION_DAYS;
+  private privacyRequested = false;
   private lastScrollY = 0;
   private scrollSettleTimer?: number;
   /** Mobile only: the minimised pill steps aside while the reader scrolls down so it never sits on publisher CTAs. */
@@ -301,6 +304,35 @@ export class ContentDiscoveryWidget extends HTMLElement {
     if (!this.minimised) this.removeAttribute('data-scroll-hidden');
     this.root.innerHTML = `<style>${css}</style>${content}`;
     if (!this.closedByUser && focus) this.root.querySelector<HTMLElement>(focus)?.focus();
+    if (!this.minimised && !this.closedByUser) this.loadPrivacy();
+  }
+
+  /** The platform URL for a path, from the generation endpoint (the widget may run on a publisher's own site). */
+  private platformUrl(path: string): string {
+    try { return new URL(path, new URL(this.dataset.generationEndpoint ?? '/api/reports/generate', window.location.href)).toString(); } catch { return path; }
+  }
+
+  private privacyNoticeMarkup(): string {
+    const publisherId = this.dataset.publisher ?? 'demo';
+    return `<p class="privacy-note" data-privacy-note><span data-privacy-text>${escapeHtml(privacyNoticeText(this.retentionDays))}</span> <a href="${escapeHtml(this.platformUrl(privacyPagePath(publisherId)))}" target="_blank" rel="noopener">Privacy</a></p>`;
+  }
+
+  /** Once per widget: the configured retention, so the line says how long briefings are kept on this server. */
+  private loadPrivacy(): void {
+    if (this.privacyRequested || typeof fetch !== 'function') return;
+    this.privacyRequested = true;
+    const publisherId = this.dataset.publisher ?? 'demo';
+    let request: Promise<Response>;
+    try { request = Promise.resolve(fetch(this.platformUrl(`/api/publishers/${encodeURIComponent(publisherId)}/privacy`))); } catch { return; }
+    void request
+      .then((response) => (response?.ok ? response.json() as Promise<{ retentionDays?: unknown }> : undefined))
+      .then((body) => {
+        if (typeof body?.retentionDays !== 'number' || body.retentionDays === this.retentionDays) return;
+        this.retentionDays = body.retentionDays;
+        const text = this.root.querySelector<HTMLElement>('[data-privacy-text]');
+        if (text) text.textContent = privacyNoticeText(this.retentionDays);
+      })
+      .catch(() => undefined);
   }
 
   private renderPanel(): string {
@@ -309,7 +341,7 @@ export class ContentDiscoveryWidget extends HTMLElement {
     if (this.state === 'error') return `${minimise}<div class="error-state" id="ld-briefing-panel" role="alert"><h2>We could not start your briefing</h2><p>${escapeHtml(this.errorMessage)}</p><button class="briefing-submit" data-action="retry">Try again</button></div>`;
     return `${minimise}<form class="briefing-bar" id="ld-briefing-panel" data-profile-form role="dialog" aria-modal="true" aria-label="Build your professional briefing"><span class="briefing-label">I work at</span><label class="briefing-field briefing-field--company"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V5.5h9V20M14 9h5v11M8 8.5h2M8 12h2M8 15.5h2M16.5 12h1M16.5 15.5h1M3 20h18" /></svg><input type="text" inputmode="text" data-profile-field="companyUrl" value="${escapeHtml(this.companyUrl)}" placeholder="Nike or nike.com" autocomplete="organization" spellcheck="false" data-focus-start aria-label="Company or website"${this.inputError ? ' aria-invalid="true" aria-describedby="profile-error"' : ''}${this.starting ? ' readonly' : ''}></label><span class="briefing-label">as a</span><label class="briefing-field briefing-field--role"><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16v11H4zM8 8.5V6h8v2.5M8 13h8M12 13v2" /></svg><input type="text" data-profile-field="jobTitle" value="${escapeHtml(this.jobTitle)}" placeholder="Software Engineer" autocomplete="organization-title" aria-label="Job role"${this.starting ? ' readonly' : ''}></label><span class="briefing-arrow" aria-hidden="true">→</span>${this.starting
       ? '<button class="briefing-submit" type="submit" data-action="generate" aria-busy="true" aria-disabled="true"><span class="briefing-spinner" aria-hidden="true"></span>Starting your briefing…</button><p class="ss-visually-hidden" role="status" data-starting-status>Starting your briefing…</p>'
-      : '<button class="briefing-submit" type="submit" data-action="generate"><span class="briefing-spark" aria-hidden="true">✦</span>Build my briefing</button>'}<p class="profile-error" id="profile-error" data-profile-error role="alert">${escapeHtml(this.inputError)}</p><p class="company-suggestion" data-company-suggestion aria-live="polite">${this.companySuggestion && !this.starting ? suggestionMarkup(this.companySuggestion, escapeHtml) : ''}</p></form>`;
+      : '<button class="briefing-submit" type="submit" data-action="generate"><span class="briefing-spark" aria-hidden="true">✦</span>Build my briefing</button>'}<p class="profile-error" id="profile-error" data-profile-error role="alert">${escapeHtml(this.inputError)}</p><p class="company-suggestion" data-company-suggestion aria-live="polite">${this.companySuggestion && !this.starting ? suggestionMarkup(this.companySuggestion, escapeHtml) : ''}</p>${this.privacyNoticeMarkup()}</form>`;
   }
 
   /** Updates the hint in place, so typing keeps focus and caret. */

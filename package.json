@@ -28,7 +28,8 @@
     "wvc:compare": "npm run build:server && node scripts/wvc-compare.mjs",
     "release:check": "npm run typecheck && npm test && npm run build && npm run scan:secrets && node scripts/release-check.mjs",
     "ci": "npm run typecheck && npm test && npm run build && npm run scan:secrets",
-    "scan:secrets": "node scripts/scan-secrets.mjs"
+    "scan:secrets": "node scripts/scan-secrets.mjs",
+    "load:test": "node scripts/load-test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

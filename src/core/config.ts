@@ -1,3 +1,4 @@
+import { MAX_PRIVACY_POLICY_LENGTH } from './privacy';
 import type { PublisherConfig } from './types';
 import type { PublisherManifest } from '../publishers/manifest';
 import { DEFAULT_THEME } from './theme';
@@ -76,6 +77,7 @@ export function validatePublisherManifest(manifest: PublisherManifest, options: 
   if (manifest.api?.timeoutMs !== undefined && manifest.api.timeoutMs < 1) throw new Error('Publisher API timeout must be positive.');
   const source = manifest.contentSource;
   validateImageHostnames(manifest.imageHostnames, 'imageHostnames');
+  if (manifest.privacyPolicy !== undefined && (typeof manifest.privacyPolicy !== 'string' || manifest.privacyPolicy.length > MAX_PRIVACY_POLICY_LENGTH)) throw new Error(`privacyPolicy must be plain text of at most ${MAX_PRIVACY_POLICY_LENGTH} characters.`);
   validateImageHostnames((source as { imageHostnames?: unknown } | undefined)?.imageHostnames, 'Content source imageHostnames');
   if (source?.type === 'rest-json') {
     if (!source.baseUrl.trim() || !source.endpoint.trim()) throw new Error('REST content source requires baseUrl and endpoint.');
