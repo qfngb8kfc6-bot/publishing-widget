@@ -173,7 +173,7 @@ export function displayStories(groups: StoryGroup[], now = Date.now()): DisplayS
  */
 export function storiesSectionMarkup(stories: DisplayStory[], context: CardContext, heading: string): string {
   const count = stories.length;
-  const head = `<div class="cx-section-head"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${count ? `Your ${count} ${count === 1 ? 'story' : 'stories'}` : escapeHtml(heading)}</h2></div>${count > 1 ? '<p class="cx-section-note">Strongest match first</p>' : ''}</div>`;
+  const head = `<div class="cx-section-head"><div><p class="section-kicker">Top stories</p><h2 class="section-heading" id="top-stories-heading">${count ? `Your ${count} ${count === 1 ? 'story' : 'stories'}` : escapeHtml(heading)}</h2></div>${count > 1 ? '<p class="cx-section-note">Most relevant and recent first</p>' : ''}</div>`;
   if (!count) return `<section class="stories-section top-stories cx-stories" id="top-stories" aria-labelledby="top-stories-heading">${head}<p>No strong matches were found in the current coverage.</p></section>`;
   const [lead, ...rest] = stories;
   const leadMarkup = cardMarkup(lead.recommendation, context, { lead: true, label: lead.label ?? 'Top match', feedback: true });
