@@ -17,6 +17,7 @@ import type { ServerLogFields, StructuredLogger } from '../server/logging';
 import { safeLogText } from '../server/logging';
 import { allocateEditorialSections, articleIdentityKeys } from './sections';
 import { orderByRecency, preferRecentLead } from './recency';
+import { isPastEventPreview } from './past-events';
 import { articleRelationship, limitOwnCompanyShare, MIN_MARKET_CONTEXT_STORIES, namesOwnCompany, orderMarketContext, OWN_COMPANY_MAX_SHARE, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
 import { collapseNearDuplicates } from './near-duplicates';
 import { explanationQualityWarnings, explanationRestatement, ownCompanyMisframed, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
@@ -833,7 +834,7 @@ export class ReportGenerationService {
     }
   }
 
-  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string, articlesSearched?: number) => void, fullPool = false): Promise<{ ranked: RankedCandidate[]; relaxedPool: RankedCandidate[]; rankingDrops: SelectionDrop[]; finalLimit: number; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
+  private async rankProfile(definition: NonNullable<ReturnType<PublisherRegistry['get']>>, publisherId: string, profile: ReturnType<typeof buildProfessionalProfile>, excludedArticleKeys = new Set<string>(), requestId?: string, archiveWide = false, onStage?: (stage: string, articlesSearched?: number) => void, fullPool = false, excludeArticle?: (article: NormalizedArticle) => boolean): Promise<{ ranked: RankedCandidate[]; relaxedPool: RankedCandidate[]; rankingDrops: SelectionDrop[]; finalLimit: number; retrievedCount: number; normalizedCount: number; normalizedArticleCount: number; preselectionInputCount: number; preselectionOutputCount: number; rawCandidateCount: number; normalizedCandidateCount: number; excludedArticleCount: number; uniqueCandidateCount: number; thresholdInputCount: number; deterministicEligible: number; aiEligibleCount: number; aiInputCount: number; aiFilteredCount: number; aiRerankSurvivors: number; aiRerankUsed: boolean; timings: CatalogueCacheDiagnostics & { catalogueCacheLookupMs: number; catalogueSelectionMs: number; currentReportExclusionMs: number; preselectionMs: number; deterministicRankingMs: number; aiRerankMs: number; finalFormattingMs: number } }> {
     const intent = createIntent(profile, publisherId);
     let candidates: unknown[];
     const runtimeInfo = this.runtimeDiagnostics?.(publisherId);
@@ -942,6 +943,7 @@ export class ReportGenerationService {
     await mapInSlices(normalizedCandidates, (article) => {
       const keys = articleIdentityKeys(article);
       if (keys.some((key) => excludedArticleKeys.has(key))) { excludedArticleCount += 1; return; }
+      if (excludeArticle?.(article)) return;
       if (keys.some((key) => seenArticleKeys.has(key))) return;
       keys.forEach((key) => seenArticleKeys.add(key));
       unique.push(article);
@@ -1248,6 +1250,10 @@ export class ReportGenerationService {
     this.trackTimed(timing, 'profile_generated', input.publisherId, activeSession, { roleFunction: profile.role.function, industry: company.industry ?? 'unknown', aiProfileUsed });
     this.trackTimed(timing, 'retrieval_started', input.publisherId, activeSession);
     let ranking: Awaited<ReturnType<ReportGenerationService['rankProfile']>>;
+    // Event previews and guides whose event (or publication) is over 30 days past stay out of the main briefing
+    // only; focused reading still lists them.
+    const generationNow = Date.now();
+    const pastEventIds: string[] = [];
     try {
       // Archive-wide, like theme search: the professional scorer preselects across the whole catalogue. The
       // adapter's token preselection let company-name and leadership-word matches fill its 100 slots, so a
@@ -1256,13 +1262,18 @@ export class ReportGenerationService {
         this.markStage(input, stage);
         if (stage === 'content_retrieved') this.progress(input, { stage, details: { articlesSearched } });
         if (stage === 'ranking_complete') this.progress(input, { stage });
-      }, true);
+      }, true, (article) => {
+        if (!isPastEventPreview(article, generationNow)) return false;
+        pastEventIds.push(article.id);
+        return true;
+      });
     } catch (error) {
       const stage = (error as GenerationFailure).generationStage ?? 'ranking';
       annotateGenerationFailure(error, stage);
       this.logIbiError(input, stage, error, resolutionDiagnostics);
       throw error;
     }
+    if (pastEventIds.length) this.logger?.info('past_event_excluded', { requestId: input.requestId, publisherId: input.publisherId, articleIds: pastEventIds.slice(0, 50).map((id) => safeLogText(id, 200)).join(','), excludedCount: pastEventIds.length });
     if (warmupDiagnostics && !warmupDiagnostics.catalogueCacheHit) {
       ranking.timings = {
         ...ranking.timings,
