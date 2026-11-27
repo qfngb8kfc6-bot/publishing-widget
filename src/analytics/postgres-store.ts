@@ -1,6 +1,6 @@
 import type { AnalyticsDateRange, AnalyticsStore, StoredAnalyticsEvent } from './types';
 
-export interface SqlQueryResult<Row> { rows: Row[]; }
+export interface SqlQueryResult<Row> { rows: Row[]; rowCount?: number | null; }
 export interface SqlClient { query<Row = Record<string, unknown>>(sql: string, parameters?: unknown[]): Promise<SqlQueryResult<Row>>; end?(): Promise<void>; }
 
 type PostgresAnalyticsRow = Omit<StoredAnalyticsEvent, 'timestamp' | 'receivedAt'> & { timestamp: string | Date; receivedAt: string | Date };
@@ -33,6 +33,12 @@ export class PostgresAnalyticsStore implements AnalyticsStore {
   async listPublisherIds(): Promise<string[]> {
     const result = await this.client.query<{ publisherId: string }>('SELECT DISTINCT publisher_id AS "publisherId" FROM analytics_events ORDER BY publisher_id');
     return (Array.isArray(result.rows) ? result.rows : []).map((row) => row.publisherId);
+  }
+
+  /** Retention, one publisher at a time so the (publisher_id, occurred_at) index serves the scan; oldest first. */
+  async deleteOccurredBefore(publisherId: string, cutoff: Date, limit: number): Promise<number> {
+    const result = await this.client.query('DELETE FROM analytics_events WHERE event_id IN (SELECT event_id FROM analytics_events WHERE publisher_id = $1 AND occurred_at < $2 ORDER BY occurred_at LIMIT $3)', [publisherId, cutoff.toISOString(), limit]);
+    return result.rowCount ?? 0;
   }
 
   async close(): Promise<void> {
