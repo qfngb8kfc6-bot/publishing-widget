@@ -63,8 +63,23 @@ function stagedCandidateDomains(name: string, maxCandidates: number): string[] {
   const stages = companyNameStages(name);
   const fullFormCandidates = Math.min(4, maxCandidates);
   const domains = stages.flatMap((stage, index) => candidateDomains(stage, index === stages.length - 1 ? maxCandidates : fullFormCandidates));
-  return [...new Set(domains)];
+  // Pan-European readers: the bare name also tries European country TLDs, after every other candidate.
+  return [...new Set([...domains, ...europeanCandidateDomains(stages[stages.length - 1])])];
 }
+
+/** European TLDs tried for the bare name only, after the default ones ("XXL ASA" → xxl.no). */
+export const EUROPEAN_TLDS = ['fr', 'it', 'es', 'nl', 'be', 'at', 'ch', 'se', 'no', 'dk', 'fi', 'pl', 'pt', 'ie', 'eu'] as const;
+/** At most this many European candidates: the compact spelling on every TLD, then hyphenated while room remains. */
+export const EUROPEAN_CANDIDATE_LIMIT = 15;
+
+function europeanCandidateDomains(name: string): string[] {
+  return candidateBases(name).flatMap((base) => EUROPEAN_TLDS.map((tld) => `${base}.${tld}`)).slice(0, EUROPEAN_CANDIDATE_LIMIT);
+}
+
+/** Probes started at once; the first candidate in priority order that answers wins. */
+export const PROBE_CONCURRENCY = 12;
+/** One probe's limit; a missing domain usually fails much sooner (DNS). */
+const PROBE_TIMEOUT_MS = 800;
 
 function candidateBases(name: string): string[] {
   const words = name.toLowerCase()
@@ -102,7 +117,8 @@ export class BoundedCompanyInputResolver implements CompanyInputResolver {
 
   constructor(
     private readonly fetchImpl: typeof fetch = fetch,
-    private readonly timeoutMs = 4_000,
+    // ~2 s in total: up to three waves of parallel probes, each probe at most 800 ms.
+    private readonly timeoutMs = 2_000,
     private readonly maxCandidates = 12,
   ) {}
 
@@ -126,9 +142,8 @@ export class BoundedCompanyInputResolver implements CompanyInputResolver {
     if (cached) return { ...cached, displayName: value };
     const deadline = Date.now() + this.timeoutMs;
     // The name as typed first, then without its legal form(s); the typed name stays the display name.
-    for (const domain of stagedCandidateDomains(value, this.maxCandidates)) {
-      if (Date.now() >= deadline || signal?.aborted) throw abortError();
-      if (!await this.probe(domain, deadline, signal)) continue;
+    const domain = await this.firstAnswering(stagedCandidateDomains(value, this.maxCandidates), deadline, signal);
+    if (domain) {
       const normalized = normalizeCompanyUrl(domain);
       const resolved: ResolvedCompanyInput = { inputType, displayName: value, ...normalized, resolutionMethod: 'bounded_public_site' };
       if (this.successCache.size >= 128) this.successCache.delete(this.successCache.keys().next().value as string);
@@ -138,10 +153,37 @@ export class BoundedCompanyInputResolver implements CompanyInputResolver {
     throw new Error('company_resolution_failed');
   }
 
+  /**
+   * Probes candidates in waves of PROBE_CONCURRENCY, in parallel, and returns the first one in priority order that
+   * answers (a later candidate never wins over an earlier one that also answers). The rest of the wave is aborted.
+   */
+  private async firstAnswering(domains: string[], deadline: number, signal?: AbortSignal): Promise<string | undefined> {
+    for (let start = 0; start < domains.length; start += PROBE_CONCURRENCY) {
+      if (Date.now() >= deadline || signal?.aborted) throw abortError();
+      const wave = new AbortController();
+      const onAbort = () => wave.abort();
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const batch = domains.slice(start, start + PROBE_CONCURRENCY);
+      const probes = batch.map((domain) => this.probe(domain, deadline, wave.signal).then((ok) => ({ ok }), (error: unknown) => ({ ok: false, error })));
+      try {
+        for (let index = 0; index < batch.length; index += 1) {
+          const outcome = await probes[index];
+          if (outcome.ok) return batch[index];
+          if ('error' in outcome && outcome.error) throw outcome.error;
+        }
+      } finally {
+        wave.abort();
+        signal?.removeEventListener('abort', onAbort);
+        await Promise.allSettled(probes);
+      }
+    }
+    return undefined;
+  }
+
   private async probe(domain: string, deadline: number, parentSignal?: AbortSignal): Promise<boolean> {
     const normalized = normalizeCompanyUrl(domain);
     const controller = new AbortController();
-    const remaining = Math.max(1, Math.min(1_200, deadline - Date.now()));
+    const remaining = Math.max(1, Math.min(PROBE_TIMEOUT_MS, deadline - Date.now()));
     const timeout = setTimeout(() => controller.abort(), remaining);
     const onAbort = () => controller.abort();
     parentSignal?.addEventListener('abort', onAbort, { once: true });
