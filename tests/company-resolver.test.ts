@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BoundedCompanyInputResolver, classifyCompanyInput } from '../src/server/company';
-import { companyNameStages } from '../src/server/company-resolver';
+import { companyNameStages, EUROPEAN_TLDS } from '../src/server/company-resolver';
 import { createProductionApp } from '../src/server/production';
 
 function companyContext(domain: string) {
@@ -77,6 +77,33 @@ describe('server-side company input resolution', () => {
 
     it('fails as before when no stage resolves', async () => {
       await expect(resolveWith('XXL ASA', [])).rejects.toThrow('company_resolution_failed');
+    });
+
+    it('resolves "XXL ASA" when only xxl.no answers, trying European TLDs after the default ones', async () => {
+      const { resolved, requested } = await resolveWith('XXL ASA', ['xxl.no']);
+      expect(resolved).toMatchObject({ displayName: 'XXL ASA', domain: 'xxl.no' });
+      expect(requested.indexOf('xxl.de')).toBeLessThan(requested.indexOf('xxl.fr'));
+      // European TLDs are for the bare name only.
+      expect(requested.filter((host) => host.startsWith('xxlasa.') && EUROPEAN_TLDS.some((tld) => host.endsWith(`.${tld}`)))).toEqual([]);
+    });
+
+    it('prefers a default TLD over a European one when both answer', async () => {
+      expect((await resolveWith('XXL ASA', ['xxl.no', 'xxl.com'])).resolved.domain).toBe('xxl.com');
+    });
+
+    it('stays under ~2 s even when every other candidate hangs', async () => {
+      // Missing hosts never answer until the probe times out; only xxl.no answers, among the last candidates.
+      const hanging = (input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+        if (new URL(String(input)).hostname === 'xxl.no') { resolve(new Response(null, { status: 200 })); return; }
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      });
+      const startedAt = Date.now();
+      const resolved = await new BoundedCompanyInputResolver(hanging).resolve('XXL ASA');
+      expect(resolved.domain).toBe('xxl.no');
+      expect(Date.now() - startedAt).toBeLessThan(2_100);
+      const timedOutAt = Date.now();
+      await expect(new BoundedCompanyInputResolver(hanging).resolve('Nobody Here AB')).rejects.toThrow('company_resolution_timeout');
+      expect(Date.now() - timedOutAt).toBeLessThan(2_300);
     });
 
     it('generates a report for "XXL ASA" through the real endpoint, shown as typed', async () => {
