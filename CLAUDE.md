@@ -46,6 +46,8 @@ qfngb8kfc6-bot/publishing-widget.
   `npm run load:test` (`BASE_URL=… [PUBLISHER, CONCURRENCY=20, MODE=sync|async, LOG_FILE, OUT]`): concurrent
   generations with 20 varied profiles; p50/p95, errors, 429s, peak heap from a saved log. Never run it against
   production unasked. The target needs `GENERATION_RATE_LIMIT_PER_MINUTE` (1–600, default 12) for a 20-request burst.
+  It prints each completion (status, ms) and a summary line (p50, p95, errors), and exits 1 when BASE_URL is missing or
+  every request fails. The entry-point check compares file paths (`isMainModule`), so paths with spaces work.
 
 ## Report pipeline (generate.ts)
 1. Resolve company (name or URL) → company context.
