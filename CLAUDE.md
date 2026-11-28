@@ -50,7 +50,11 @@ qfngb8kfc6-bot/publishing-widget.
   every request fails. The entry-point check compares file paths (`isMainModule`), so paths with spaces work.
 
 ## Report pipeline (generate.ts)
-1. Resolve company (name or URL) → company context.
+1. Resolve company (name or URL) → company context. Names (`src/server/company-resolver.ts`) are probed as typed,
+   then with one trailing legal form removed at a time (`companyNameStages`: ASA, AS, AB, Oy(j), GmbH, AG, SA/S.A.,
+   SpA, NV, BV, plc, Ltd, Limited, Inc, LLC, Corp, Co., Group; "Frasers Group plc" → "Frasers Group" → "Frasers");
+   longer forms get 4 candidates, the bare name the full budget (12). The typed name stays the display name; a name
+   with a space and a dotted legal form ("Acme S.A.") is a name, not a domain.
 2. `buildProfessionalProfile` (role rules; dedicated vs generic roles). AI enrichment runs as two parallel
    calls — main profile + subject vocabulary (generic titled roles) — each under the 5 s AI cap; only a
    complete result is cached 24 h; a failed/partial one is retried once in the background (`enrichment_retry`).
