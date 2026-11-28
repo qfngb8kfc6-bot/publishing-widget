@@ -22,12 +22,48 @@ export interface CompanyInputResolverOptions {
 
 export function classifyCompanyInput(input: string): CompanyInputType {
   const value = input.trim();
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) || value.includes('.') || /^\d+$/.test(value)) return 'domain';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) || /^\d+$/.test(value)) return 'domain';
+  // A dot means a domain, except in a name with a dotted legal form ("Acme S.A.", "Smith & Co."): domains have no spaces.
+  if (value.includes('.') && !(/\s/.test(value) && legalSuffix(value))) return 'domain';
   return 'company_name';
 }
 
 function companyName(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+/** Legal forms (compared without dots, case-insensitive) that domains rarely contain: "XXL ASA" lives at xxl.*. */
+const LEGAL_SUFFIXES = new Set(['asa', 'as', 'ab', 'oy', 'oyj', 'gmbh', 'ag', 'sa', 'spa', 'nv', 'bv', 'plc', 'ltd', 'limited', 'inc', 'llc', 'corp', 'corporation', 'co', 'group']);
+
+/** The trailing legal form of a multi-word name ("XXL ASA" → "ASA", "Nike, Inc." → "Inc."), if any. */
+function legalSuffix(name: string): string | undefined {
+  const match = name.match(/[\s,]+([\p{L}.]+)\s*$/u);
+  return match && LEGAL_SUFFIXES.has(match[1].replace(/\./g, '').toLowerCase()) ? match[1] : undefined;
+}
+
+/**
+ * The name as typed, then with one trailing legal form removed at a time, so "Frasers Group plc" tries
+ * "Frasers Group plc", "Frasers Group", "Frasers". Never down to nothing: a single word is kept.
+ */
+export function companyNameStages(name: string): string[] {
+  const stages = [companyName(name)];
+  for (let current = stages[0]; ;) {
+    const suffix = legalSuffix(current);
+    if (!suffix) break;
+    const next = current.slice(0, current.length - current.match(/[\s,]+[\p{L}.]+\s*$/u)![0].length).trim();
+    if (!next) break;
+    stages.push(next);
+    current = next;
+  }
+  return stages;
+}
+
+/** Candidate domains per name stage: the bare name gets the full budget, longer forms a short look first. */
+function stagedCandidateDomains(name: string, maxCandidates: number): string[] {
+  const stages = companyNameStages(name);
+  const fullFormCandidates = Math.min(4, maxCandidates);
+  const domains = stages.flatMap((stage, index) => candidateDomains(stage, index === stages.length - 1 ? maxCandidates : fullFormCandidates));
+  return [...new Set(domains)];
 }
 
 function candidateBases(name: string): string[] {
@@ -42,17 +78,14 @@ function candidateBases(name: string): string[] {
   if (!words.length) return [];
   const compact = words.join('');
   const hyphenated = words.join('-');
-  const withoutCommonSuffix = words.filter((word) => !['inc', 'llc', 'ltd', 'limited', 'plc', 'corp', 'corporation'].includes(word));
-  const variants = [compact, hyphenated];
-  if (withoutCommonSuffix.length && withoutCommonSuffix.length !== words.length) {
-    variants.push(withoutCommonSuffix.join(''), withoutCommonSuffix.join('-'));
-  }
-  return [...new Set(variants)].filter((value) => value.length >= 2 && value.length <= 63);
+  return [...new Set([compact, hyphenated])].filter((value) => value.length >= 2 && value.length <= 63);
 }
 
 function candidateDomains(name: string, maxCandidates: number): string[] {
   const tlds = ['com', 'co.uk', 'uk', 'org', 'net', 'de'];
-  return candidateBases(name).flatMap((base) => tlds.map((tld) => `${base}.${tld}`)).slice(0, maxCandidates);
+  // TLD first, then spelling: a short budget covers both spellings on .com and .co.uk.
+  const bases = candidateBases(name);
+  return tlds.flatMap((tld) => bases.map((base) => `${base}.${tld}`)).slice(0, maxCandidates);
 }
 
 function abortError(): Error {
@@ -92,7 +125,8 @@ export class BoundedCompanyInputResolver implements CompanyInputResolver {
     const cached = this.successCache.get(cacheKey);
     if (cached) return { ...cached, displayName: value };
     const deadline = Date.now() + this.timeoutMs;
-    for (const domain of candidateDomains(value, this.maxCandidates)) {
+    // The name as typed first, then without its legal form(s); the typed name stays the display name.
+    for (const domain of stagedCandidateDomains(value, this.maxCandidates)) {
       if (Date.now() >= deadline || signal?.aborted) throw abortError();
       if (!await this.probe(domain, deadline, signal)) continue;
       const normalized = normalizeCompanyUrl(domain);
