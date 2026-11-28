@@ -104,6 +104,10 @@ qfngb8kfc6-bot/publishing-widget.
   (e.g. the old "More relevant stories") show no label.
 - Explanations that restate the headline/excerpt (>5 consecutive words or ≥70% content-word overlap) are
   regenerated once (part R); still restated → fallback with the "why" box hidden (`explanationRestated`).
+  The final text of every shown story (AI, regenerated, or the first-sentence fallback for weak_kept / not_returned /
+  batch_failed / misframed / AI off) is checked again (`whyRestatesStory`; rules `copied` — the text is the headline
+  or excerpt or a piece of it, any length — plus the two above) → `explanationRestated`, logged `explanation_restated`
+  part `final`, outcome `hidden`. The card renderer applies the same check, so older stored reports hide it too.
 - Own-company stories carry `ownCompany:true` in the AI content payload (with `reader.company`); the summary and
   explanations frame them as your company / your team. An own-company "why" with singular competitor/rival wording is
   regenerated once in part R (`own_company_misframed`); still misframed → first-sentence fallback.

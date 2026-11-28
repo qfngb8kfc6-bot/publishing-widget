@@ -166,7 +166,8 @@ describe('themes and explanations through the report pipeline', () => {
     expect(fitbit.rankingMetadata.explanationSource).toBe('ai');
     expect(fitbit.rankingMetadata.explanationRestated).toBeUndefined();
     expect(target.contentCalls.filter((call) => call.startsWith('R'))).toEqual(['R:1']);
-    const restated = target.logs.filter((entry) => entry.message === 'explanation_restated');
+    // Part R entries only (the final check logs part "final" for first-sentence fallbacks).
+    const restated = target.logs.filter((entry) => entry.message === 'explanation_restated' && entry.fields?.part !== 'final');
     expect(restated).toHaveLength(1);
     expect(restated[0].fields).toMatchObject({ articleId: fitbit.articleId, restatedRule: 'consecutive_words', outcome: 'regenerated' });
     // IDs and codes only: never the explanation text.

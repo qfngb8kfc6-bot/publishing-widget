@@ -27,7 +27,7 @@ function sgiReport(): ReportRecord {
     displayScore: 70 - index * 5,
     explanation: `Your roadmap gets a benchmark from story ${index}, which customers will compare your offer against within a year.`,
     article: { ...seed.article, id: `s-${index}`, url: `https://www.sgieurope.com/s-${index}.article`, title: `Story ${index} headline`, description: `Excerpt for story ${index}.`, categories: [index === 3 ? 'CSR and sustainability' : 'Technology'], publishedAt: `2026-10-${String(10 + index).padStart(2, '0')}T09:00:00Z`, imageUrl: index % 2 === 0 ? `https://www.sgieurope.com/Pictures/s-${index}.jpg` : undefined },
-    rankingMetadata: { ...seed.rankingMetadata, explanationSource: 'ai', citedInSummary: index === 4 || index === 6 ? true : undefined },
+    rankingMetadata: { ...seed.rankingMetadata, explanationSource: 'ai', explanationRestated: undefined, citedInSummary: index === 4 || index === 6 ? true : undefined },
   });
   const recommendations = Array.from({ length: 7 }, (_, index) => story(index));
   return {

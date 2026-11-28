@@ -121,8 +121,9 @@ export interface ServerLogFields {
   removedCount?: number;
   /** theme_unsupported_removed: themes merged into another whose supporting stories include theirs, or over the story count. */
   mergedCount?: number;
-  /** explanation_restated: which overlap rule fired, and what happened (regenerated / fallback); own_company_misframed uses outcome too. */
-  restatedRule?: 'consecutive_words' | 'token_overlap';
+  /** explanation_restated: which overlap rule fired, and what happened (regenerated / fallback; hidden for a final
+   * text, e.g. a first-sentence fallback, that repeats the headline or excerpt); own_company_misframed uses outcome too. */
+  restatedRule?: 'copied' | 'consecutive_words' | 'token_overlap';
   outcome?: string;
   /** catalogue_refresh_complete: time spent writing the persisted snapshot (0 when unchanged). */
   snapshotSaveMs?: number;

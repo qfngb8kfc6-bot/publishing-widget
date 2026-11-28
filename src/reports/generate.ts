@@ -20,7 +20,7 @@ import { orderByRecency, preferRecentLead } from './recency';
 import { isPastEventPreview } from './past-events';
 import { articleRelationship, limitOwnCompanyShare, MIN_MARKET_CONTEXT_STORIES, namesOwnCompany, orderMarketContext, OWN_COMPANY_MAX_SHARE, restoreHeldBack, THIN_REPORT_STORIES } from './relationship';
 import { collapseNearDuplicates } from './near-duplicates';
-import { explanationQualityWarnings, explanationRestatement, ownCompanyMisframed, summaryQualityWarnings, type ContentQualityCode } from '../ai/content-quality';
+import { explanationQualityWarnings, explanationRestatement, ownCompanyMisframed, whyRestatesStory, summaryQualityWarnings, type ContentQualityCode, type RestatedRule } from '../ai/content-quality';
 import { angleForArticle, normalizeAngle } from '../ai/angles';
 import { articleTiming } from '../ai/providers/openai-compatible';
 import { PublisherCatalogueCache, type CatalogueArticleIndex, type CatalogueCacheDiagnostics } from './catalogue-cache';
@@ -634,7 +634,7 @@ export class ReportGenerationService {
       return article ? explanationRestatement(explanation, { title: article.title, description: article.description ?? article.summary ?? article.contentSnippet }) : undefined;
     };
     const misframed = (articleId: string, explanation: string) => ownCompanyIds.has(articleId) && ownCompanyMisframed(explanation);
-    const restated = new Map<string, 'consecutive_words' | 'token_overlap'>();
+    const restated = new Map<string, RestatedRule>();
     const misframedIds = new Set<string>();
     for (const item of accepted) {
       const rule = restatedRule(item.articleId, item.explanation);
@@ -1543,12 +1543,22 @@ export class ReportGenerationService {
     const logoIds = await logoProbes(LOGO_PROBE_FINAL_WAIT_MS);
     // The lead prefers the last six months when a comparably relevant recent story exists.
     weakFit.kept = preferRecentLead(weakFit.kept);
+    // The final text is checked whatever produced it: a first-sentence fallback (weak_kept, not_returned_kept,
+    // batch_failed, misframed, AI off) repeats the excerpt by construction, so its "why" box is hidden too.
+    const finalRestated = new Set(restatedFallbackIds);
+    for (const item of weakFit.kept) {
+      if (finalRestated.has(item.article.id)) continue;
+      const rule = whyRestatesStory(explanationById.get(item.article.id)?.explanation ?? factualLine(item.article), item.article);
+      if (!rule) continue;
+      finalRestated.add(item.article.id);
+      this.logger?.info('explanation_restated', { requestId: input.requestId, publisherId: input.publisherId, articleId: safeLogText(item.article.id, 200), part: 'final', restatedRule: rule, outcome: 'hidden' });
+    }
     const rawRecommendations = withSubscriberOnly(this.recommendationsFromRanked(profile, weakFit.kept, explanationById, citedIds, weakFit.lowerConfidenceIds), articleTexts).map((recommendation) => ({
       ...recommendation,
       rankingMetadata: {
         ...recommendation.rankingMetadata,
         aiProvider: aiRerankUsed || aiExplanationUsed ? this.ai?.provider.providerName : undefined,
-        ...(restatedFallbackIds.has(recommendation.articleId) ? { explanationRestated: true } : {}),
+        ...(finalRestated.has(recommendation.articleId) ? { explanationRestated: true } : {}),
         ...(logoIds.has(recommendation.articleId) ? { imageIsLogo: true } : {}),
       },
     }));

@@ -152,15 +152,31 @@ export function ownCompanyMisframed(explanation: string): boolean {
   return COMPETITOR_WORDING.test(explanation);
 }
 
-export function explanationRestatement(explanation: string, article: { title: string; description?: string }): 'consecutive_words' | 'token_overlap' | undefined {
+export type RestatedRule = 'copied' | 'consecutive_words' | 'token_overlap';
+
+/**
+ * Also 'copied' (checked after consecutive_words, so it adds only short copies): the explanation is the headline or
+ * excerpt itself or a piece of it, of any length, compared on lower-cased words without punctuation.
+ */
+export function explanationRestatement(explanation: string, article: { title: string; description?: string }): RestatedRule | undefined {
   const text = words(explanation);
   const sources = [words(article.title), words(article.description ?? '')];
   const run = MAX_SHARED_CONSECUTIVE_WORDS + 1;
   const shingles = new Set(sources.flatMap((source) => source.slice(0, Math.max(0, source.length - run + 1)).map((_, index) => source.slice(index, index + run).join(' '))));
   for (let index = 0; index + run <= text.length; index += 1) if (shingles.has(text.slice(index, index + run).join(' '))) return 'consecutive_words';
+  const joined = ` ${text.join(' ')} `;
+  if (text.length && sources.some((source) => source.length && ` ${source.join(' ')} `.includes(joined))) return 'copied';
   const content = text.filter((word) => word.length >= 3 && !RESTATEMENT_STOP_WORDS.has(word));
   if (content.length < MIN_CONTENT_WORDS_FOR_OVERLAP) return undefined;
   const sourceWords = new Set(sources.flat());
   const shared = content.filter((word) => sourceWords.has(word)).length;
   return shared / content.length >= RESTATED_TOKEN_OVERLAP ? 'token_overlap' : undefined;
+}
+
+/**
+ * The final "why" check, whatever produced the text (AI, regeneration or the first-sentence fallback): compared
+ * with the headline and the excerpt the card shows (description, else summary, else snippet).
+ */
+export function whyRestatesStory(explanation: string | undefined, article: { title: string; description?: string; summary?: string; contentSnippet?: string }): RestatedRule | undefined {
+  return explanation ? explanationRestatement(explanation, { title: article.title, description: article.description ?? article.summary ?? article.contentSnippet }) : undefined;
 }

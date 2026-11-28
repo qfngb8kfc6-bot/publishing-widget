@@ -6,6 +6,7 @@
  */
 import type { ReportRecommendation, ReportRecord } from './reports';
 import { displayRoleTitle } from './core/role-title';
+import { whyRestatesStory } from './ai/content-quality';
 import { orderByRecency, preferRecentLead } from './reports/recency';
 import { themeDisplayTitle, themeInlineText, themeSupportingRecommendations } from './reports/themes';
 
@@ -134,7 +135,8 @@ export function cardMarkup(recommendation: ReportRecommendation, context: CardCo
   const panel = !image && !options.compact ? panelText(article) : undefined;
   const description = panel ? panel.excerpt : article.description ?? article.summary ?? article.contentSnippet ?? '';
   // An explanation that only retold the story is the excerpt's first sentence: the box is left out (as before).
-  const showWhy = (options.showWhy ?? true) && !recommendation.rankingMetadata?.explanationRestated && Boolean(recommendation.explanation);
+  // Checked here too, so reports stored before the server-side final check never show a copied "why".
+  const showWhy = (options.showWhy ?? true) && !recommendation.rankingMetadata?.explanationRestated && Boolean(recommendation.explanation) && !whyRestatesStory(recommendation.explanation, article);
   // The server probe marks logos (works for hosts the browser cannot read pixels from); the browser check covers the rest.
   const serverLogo = Boolean(image && recommendation.rankingMetadata?.imageIsLogo);
   const media = image ? `<img class="cx-image${serverLogo ? ' is-logo" data-image-kind="logo' : ''}" src="${escapeHtml(image)}" alt="" loading="lazy">` : typePanelMarkup(panel?.keyLine, category, context);
