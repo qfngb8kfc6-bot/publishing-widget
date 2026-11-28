@@ -19,8 +19,9 @@ beforeAll(async () => {
 function shaped(): ReportRecord {
   const [first, ...rest] = base.recommendations;
   const recommendations = [
-    { ...first, displayScore: 40, article: { ...first.article, categories: ['CSR and sustainability'] } },
-    ...rest.map((item, index) => ({ ...item, displayScore: 70 - index, rankingMetadata: { ...item.rankingMetadata, ...(index === 0 ? { explanationRestated: true, explanationSource: 'deterministic' as const } : {}) } })),
+    // The demo report has no AI, so its first-sentence "why"s are all restated; the others get reader-first ones here.
+    { ...first, displayScore: 40, explanation: `Your team can act on ${first.article.id} this quarter.`, article: { ...first.article, categories: ['CSR and sustainability'] }, rankingMetadata: { ...first.rankingMetadata, explanationRestated: undefined } },
+    ...rest.map((item, index) => ({ ...item, displayScore: 70 - index, ...(index === 0 ? {} : { explanation: `Your team can act on ${item.article.id} this quarter.` }), rankingMetadata: { ...item.rankingMetadata, ...(index === 0 ? { explanationRestated: true, explanationSource: 'deterministic' as const } : { explanationRestated: undefined }) } })),
   ];
   const ids = recommendations.map((item) => item.articleId);
   return { ...base, recommendations, sections: [], professionalProfile: { ...base.professionalProfile, coverage: undefined, themes: ['connected fitness', 'ai coaching', 'unsupported theme'], themeArticleIds: { 'connected fitness': ids, 'ai coaching': ids.slice(0, 1) } } };

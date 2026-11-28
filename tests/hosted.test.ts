@@ -14,6 +14,17 @@ function supportAllThemes<T extends { professionalProfile: { themes?: string[]; 
   return report;
 }
 
+/**
+ * The demo report is generated without AI, so every "why" is the excerpt's first sentence and is hidden as a
+ * restatement. Tests of the "why" box give its stories reader-first explanations, as the AI would.
+ */
+function withReaderWhys<T extends { recommendations: any[]; sections?: Array<{ recommendations: any[] }> }>(report: T): T {
+  const why = (item: any) => ({ ...item, explanation: `Your team can act on ${item.article.id} this quarter.`, rankingMetadata: { ...item.rankingMetadata, explanationSource: 'ai', explanationRestated: undefined } });
+  report.recommendations = report.recommendations.map(why);
+  report.sections = report.sections?.map((section) => ({ ...section, recommendations: section.recommendations.map(why) }));
+  return report;
+}
+
 describe('hosted professional experience', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -58,7 +69,7 @@ describe('hosted professional experience', () => {
     const report = await reportResponse.json();
     // The small demo archive has one direct match, so its report is flagged limited; this test covers the full page.
     delete report.professionalProfile.coverage;
-    supportAllThemes(report);
+    supportAllThemes(withReaderWhys(report));
     window.history.replaceState({}, '', `/p/demo/${payload.reportId}`);
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
 
@@ -141,7 +152,7 @@ describe('hosted professional experience', () => {
       body: JSON.stringify({ publisherId: 'demo', companyUrl: 'ldsystems.uk', jobTitle: 'Software Engineer' }),
     }));
     const { reportId } = await generated.json() as { reportId: string };
-    const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json();
+    const report = withReaderWhys(await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json());
     delete report.professionalProfile.coverage;
     supportAllThemes(report);
     report.themeDescriptions = { [report.professionalProfile.professionalInterests[0]]: 'Two platform teams <b>cut</b> release times by half.' };
@@ -152,7 +163,7 @@ describe('hosted professional experience', () => {
       if (url.includes('/api/analytics/events')) return Response.json({ accepted: true });
       if (url.includes('/themes/')) {
         const theme = decodeURIComponent(url.split('/themes/')[1].split('/search')[0]);
-        return Response.json({ theme, briefingRecommendations: [], recommendations: theme === report.professionalProfile.professionalInterests[0] ? report.recommendations.slice(1, 2).map((item: { article: Record<string, unknown> }) => ({ ...item, article: { ...item.article, categories: [] } })) : [] });
+        return Response.json({ theme, briefingRecommendations: [], recommendations: theme === report.professionalProfile.professionalInterests[0] ? report.recommendations.slice(1, 2).map((item: { article: Record<string, unknown>; rankingMetadata: Record<string, unknown> }) => ({ ...item, rankingMetadata: { ...item.rankingMetadata, explanationSource: 'deterministic' }, article: { ...item.article, categories: [] } })) : [] });
       }
       return Response.json(report);
     }));
@@ -201,7 +212,7 @@ describe('hosted professional experience', () => {
     const { reportId } = await generated.json() as { reportId: string };
     const source = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
     delete source.professionalProfile.coverage;
-    const seed = source.recommendations[0];
+    const seed = withReaderWhys(source).recommendations[0];
     const report = {
       ...source,
       sections: undefined,
@@ -230,7 +241,7 @@ describe('hosted professional experience', () => {
     const { reportId } = await generated.json() as { reportId: string };
     const source = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any;
     delete source.professionalProfile.coverage;
-    const seed = source.recommendations[0];
+    const seed = withReaderWhys(source).recommendations[0];
     const report = { ...source, sections: undefined, recommendations: [0, 1, 2].map((index) => ({ ...seed, articleId: `story-${index}`, rank: index + 1, article: { ...seed.article, id: `story-${index}`, url: `${seed.article.url}?story=${index}`, imageUrl: index === 1 ? undefined : 'https://images.example/story.jpg' } })) };
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(report)));
     window.history.replaceState({}, '', `/p/demo/${reportId}`);
@@ -279,7 +290,7 @@ describe('hosted professional experience', () => {
     const { reportId } = await generated.json() as { reportId: string };
     const report = await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=sgi-europe`))).json() as { recommendations: Array<{ articleId: string; explanation: string; article: { id: string }; rankingMetadata: { explanationSource?: string } }> };
     // Give every main-report article its own, identifiable explanation.
-    const own = <T extends { explanation: string; article: { id: string }; rankingMetadata: object }>(item: T): T => ({ ...item, explanation: `Explanation for ${item.article.id}`, rankingMetadata: { ...item.rankingMetadata, explanationSource: 'ai' } });
+    const own = <T extends { explanation: string; article: { id: string }; rankingMetadata: object }>(item: T): T => ({ ...item, explanation: `Explanation for ${item.article.id}`, rankingMetadata: { ...item.rankingMetadata, explanationSource: 'ai', explanationRestated: undefined } });
     report.recommendations = report.recommendations.map(own);
     const withSections = report as typeof report & { sections?: Array<{ recommendations: typeof report.recommendations }> };
     withSections.sections = withSections.sections?.map((section) => ({ ...section, recommendations: section.recommendations.map(own) }));
@@ -326,7 +337,7 @@ describe('hosted professional experience', () => {
     }));
     const { reportId } = await generated.json() as { reportId: string };
     const report = supportAllThemes(await (await app.handle(new Request(`https://product.example/api/reports/${reportId}?publisherId=demo`))).json() as any);
-    const seed = report.recommendations[0];
+    const seed = withReaderWhys(report).recommendations[0];
     const themed = ['t-1', 't-2', 't-3'].map((id, index) => ({ ...seed, articleId: id, explanation: `Why ${id}`, article: { ...seed.article, id, url: `${seed.article.url}?${id}`, title: `Theme story ${id}` }, rankingMetadata: { ...seed.rankingMetadata, explanationSource: index === 1 ? 'deterministic' : 'ai' } }));
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
