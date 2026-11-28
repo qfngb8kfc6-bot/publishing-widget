@@ -58,6 +58,11 @@ qfngb8kfc6-bot/publishing-widget.
    Recency (`src/reports/recency.ts`) then orders the qualifying pool: weight 1 up to 6 months, 0.9 at 12, 0.75 at
    13, 0.6 from 3 years (undated 0.9); direct still before adjacent; scores/thresholds unchanged, nothing removed
    for age. The lead moves to the best ≤6-month story within 10 points of an older first story (`preferRecentLead`).
+   The hosted stories section is labelled "Most relevant and recent first".
+   Past event previews (`src/reports/past-events.ts`): category "Trade Shows", "event guide", or "preview" / "what to
+   expect" / "ahead of" beside an event word (show, fair, expo, conference…) whose event date in the headline/excerpt
+   (else publication date) is >30 days past are left out before preselection in the main briefing only (theme search
+   still lists them); logged as `past_event_excluded` (article IDs and count).
 5. Content calls in parallel, each ≤ ~350 output tokens under its own 5 s cap and fallback: S (summary +
    citedArticleIds + theme card lines) and E1..En (explanations, ≤4 articles per batch, ≤4 batches; ≤5 calls).
 6. Own-company articles held to ~60% when alternatives pass the threshold; sections; transactional persist;
@@ -128,7 +133,7 @@ qfngb8kfc6-bot/publishing-widget.
   `ai_quality_warning`, `weak_fit_removed`, `duplicates_collapsed`, `explanation_fallback` (articleId, part, rejectReason: weak_kept / not_returned_kept / batch_failed / restated),
   `rerank_dropped` (stage report / theme / content: content-call weak or not returned), `selection_trace` (one per
   report: `articleId|stage|outcome|reason;…`, shown stories first, ≤4,000 chars, IDs and codes only),
-  `explanation_restated` (articleId, part, restatedRule, outcome: regenerated / fallback), `own_company_misframed` (articleId, part, outcome), `theme_unsupported_removed`, `theme_unsupported_dropped`, `own_company_share`, `report_performance`, `theme_performance`,
+  `explanation_restated` (articleId, part, restatedRule, outcome: regenerated / fallback), `own_company_misframed` (articleId, part, outcome), `past_event_excluded`, `theme_unsupported_removed`, `theme_unsupported_dropped`, `own_company_share`, `report_performance`, `theme_performance`,
   `slow_span`, `catalogue_refresh_complete`, `index_prebuild_complete`, `heap_usage`.
 
 ## Publishers
