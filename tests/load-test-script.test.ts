@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error plain ESM script without type declarations
-import { logStats, PROFILES } from '../scripts/load-test.mjs';
+import { isMainModule, logStats, PROFILES } from '../scripts/load-test.mjs';
 
 describe('npm run load:test helpers', () => {
   it('has 20 distinct, varied profiles', () => {
@@ -37,5 +43,83 @@ describe('GENERATION_RATE_LIMIT_PER_MINUTE', () => {
 
   it('applies a configured limit', async () => {
     expect(await statuses({ GENERATION_RATE_LIMIT_PER_MINUTE: '2' }, 3)).toEqual([201, 201, 429]);
+  });
+});
+
+describe('npm run load:test from a path with a space', () => {
+  let directory: string;
+  let script: string;
+  let server: Server;
+  let baseUrl: string;
+  let failAll = false;
+
+  beforeAll(async () => {
+    directory = await mkdtemp(path.join(tmpdir(), 'publishing widget '));
+    script = path.join(directory, 'load-test.mjs');
+    await copyFile(path.resolve('scripts/load-test.mjs'), script);
+    server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        if (failAll) { response.writeHead(500, { 'Content-Type': 'application/json' }); response.end('{"error":"boom"}'); return; }
+        response.writeHead(201, { 'Content-Type': 'application/json' });
+        response.end('{"reportId":"report_1"}');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const run = (env: Record<string, string>) => new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+    const { BASE_URL: _ignored, ...inherited } = process.env;
+    execFile(process.execPath, [script], { cwd: directory, env: { ...inherited, ...env } }, (error, stdout, stderr) => resolve({ code: error ? Number(error.code ?? 1) : 0, stdout, stderr }));
+  });
+
+  it('recognises itself as the entry point although import.meta.url encodes the space', () => {
+    expect(pathToFileURL(script).href).toContain('publishing%20widget');
+    expect(isMainModule(pathToFileURL(script).href, script)).toBe(true);
+    expect(isMainModule(pathToFileURL(script).href, path.join(directory, 'other.mjs'))).toBe(false);
+    expect(isMainModule(pathToFileURL(script).href, undefined)).toBe(false);
+  });
+
+  it('runs, prints progress and a summary, and writes OUT', async () => {
+    failAll = false;
+    const out = path.join(directory, 'result file.json');
+    const result = await run({ BASE_URL: baseUrl, CONCURRENCY: '3', OUT: out });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('[load-test] started 3 concurrent sync generations');
+    expect(result.stdout.match(/\[load-test\] \d\/3 #\d .*: ok status 201 \d+ ms/g)).toHaveLength(3);
+    expect(result.stdout).toMatch(/summary: 3\/3 succeeded, 0 errors, 0 rate limited; p50 \d+ ms, p95 \d+ ms/);
+    const saved = JSON.parse(await readFile(out, 'utf8'));
+    expect(saved).toMatchObject({ succeeded: 3, errors: 0, concurrency: 3 });
+    expect(saved.results).toHaveLength(3);
+  });
+
+  it('exits non-zero with a clear error when every request fails', async () => {
+    failAll = true;
+    const result = await run({ BASE_URL: baseUrl, CONCURRENCY: '2' });
+    expect(result.code).toBe(1);
+    expect(result.stdout).toMatch(/summary: 0\/2 succeeded, 2 errors/);
+    expect(result.stderr).toContain('every request failed (2x 500:boom)');
+  });
+
+  it('names the network error when nothing listens at BASE_URL', async () => {
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+    const port = (closed.address() as { port: number }).port;
+    await new Promise((resolve) => closed.close(resolve));
+    const result = await run({ BASE_URL: `http://127.0.0.1:${port}`, CONCURRENCY: '1' });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('every request failed (1x 0:ECONNREFUSED)');
+  });
+
+  it('exits non-zero with a clear error when BASE_URL is missing', async () => {
+    const result = await run({});
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('BASE_URL is required');
   });
 });
