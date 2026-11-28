@@ -11,14 +11,14 @@ import { RECENCY_FIXTURE_STORIES } from './recency-fixtures';
 const DAY_MS = 86_400_000;
 // Live card (Head of Procurement at Nike): the "why" box showed the excerpt word for word.
 const HEADLINE = 'Global Sources Hong Kong Shows spotlight pickleball';
-const EXCERPT = 'Pickleball took centre stage at the Global Sources Hong Kong Shows, where suppliers showcased paddles, balls and court equipment for sourcing teams.';
+const EXCERPT = "The Global Sources Hong Kong Shows drew 5,000 suppliers and 120,000 buyers, with Phase 3 spotlighting pickleball's rapid market growth and outdoor innovation.";
 
 describe('final "why" restatement check', () => {
   it('flags the excerpt copied verbatim, a short copied piece and the headline', () => {
     const article = { title: HEADLINE, description: EXCERPT };
     expect(whyRestatesStory(EXCERPT, article)).toBeDefined();
     expect(whyRestatesStory(factualLine(article), article)).toBeDefined();
-    expect(explanationRestatement('Pickleball took centre stage.', article)).toBe('copied');
+    expect(explanationRestatement("Pickleball's rapid market growth.", article)).toBe('copied');
     expect(explanationRestatement(HEADLINE, article)).toBeDefined();
     expect(explanationRestatement('Spotlight pickleball', article)).toBe('copied');
     expect(whyRestatesStory('Pickleball took centre stage at the show.', { title: 'Other headline', summary: 'Pickleball took centre stage at the show. More text follows here.' })).toBeDefined();
